@@ -1,85 +1,85 @@
 # TensorLab 3D
 
-本地运行的深度学习模型搭建与三维可视化工作台。根据提供的 Gemini 对话实现可运行 MVP：React / TypeScript / Three.js / React Flow 前端，FastAPI / PyTorch 训练服务。
+A locally-run workbench for building deep learning models and visualising them in 3D. It is a runnable MVP based on a supplied Gemini conversation: a React / TypeScript / Three.js / React Flow frontend with a FastAPI / PyTorch training service.
 
-## 在 Windows 上运行
+## Running on Windows
 
-需要 Node.js 20.19+（推荐 22/24）和 Python 3.10+（推荐 3.12/3.13）。
+Requires Node.js 20.19+ (22/24 recommended) and Python 3.10+ (3.12/3.13 recommended).
 
 ```powershell
-# 首次安装，包含真实训练
+# First-time install, including real training
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Training
 
-# 启动，自动打开浏览器并选择可用的本地端口
+# Start, opening the browser on a free local port
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-当前目录已经安装依赖并提供编译后的 `dist`，可直接双击 `start.cmd`。默认地址为 http://127.0.0.1:8765。默认只监听本机。关闭终端结束服务。
+Dependencies are already installed in the current directory and a compiled `dist` is present, so you can also just double-click `start.cmd`. The default address is http://127.0.0.1:8765, and it listens on localhost only. Closing the terminal stops the service.
 
-不需要真实训练时，只需 `npm install`、`npm run build`、`python run.py`。标准库服务器也可以提供三维视图、模型编辑、预警演示和导出。
+If you don't need real training, `npm install`, `npm run build` and `python run.py` are enough. The standard-library server still provides the 3D view, model editing, warning demos and export.
 
-## 开发、测试与打包
+## Development, testing and packaging
 
 ```powershell
-# 终端 1，真实训练后端
+# Terminal 1: real training backend
 .\.venv\Scripts\python.exe -m uvicorn backend.app:app --host 127.0.0.1 --port 8765
 
-# 终端 2，开发前端，代理 /api 到上述服务
+# Terminal 2: dev frontend, proxying /api to the service above
 npm run dev
 
 npm test
 .\.venv\Scripts\python.exe -m unittest backend.test_training
-# 启动 8765 服务后，使用已安装的 Microsoft Edge 跑浏览器流程测试
+# With the service running on 8765, run the browser flow tests using the installed Microsoft Edge
 npm run test:e2e
 npm run build
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-`build.ps1` 生成 `release/TensorLab-3D.zip`，包含源代码、编译结果、后端和启动脚本，不包含 `node_modules` 或虚拟环境。接收者需要 Python 才能运行，真实训练需要安装后端依赖；这不是无需运行时的 Windows EXE。
+`build.ps1` produces `release/TensorLab-3D.zip`, containing source, build output, the backend and the launch scripts, but not `node_modules` or the virtual environment. Recipients need Python to run it, and real training additionally needs the backend dependencies installed; this is not a runtime-free Windows EXE.
 
-## 工作台
+## The workbench
 
-- 内置 Compact CNN、Feature MLP、Residual CNN、Transformer Encoder、MQA、GQA、Cross-Attention 与空白模板。层库支持点击与拖入场景。新层连接到当前选中层，在最终输出前插入。
-- 三维视图根据张量空间维度和通道生成立体层；几何尺寸采用对数映射，避免极端尺寸遮挡。
-- 所有三维层点击后以该层为旋转和缩放中心；注意力头及其 QKV、权重矩阵、LN、FFN、汇流和相加模块也可以单独点击居中。Add 聚焦保留完整残差旁路，同时以 Add 节点为中心。
-- 通用 Add 残差与 Transformer Encoder 共用粉色外部旁路、方向箭头和 GPU 粒子样式。残差从源层输出处分流，绕过中间模块，从上方进入粉色“+”节点，与主支路相加后继续传递。相机聚焦和 PNG / SVG 导出包含完整旁路；拓扑图同步显示粉色外部曲线。根据图中的可达关系识别跳跃分支，独立并行分支保持普通连线。
-- 拓扑图支持拖动节点、从输出端口拉线至输入端口，Add / Concat 可接多条输入。点击连线后 Delete 删除，属性面板也可以移除连接。
-- 拓扑工具条可添加独立输入/输出对象、删除选中对象；属性面板“连接对象”可以选择上游/下游对象，分别添加或取消输入/输出连线。Q/K/V 对象有独立端口，可以分别配置输入源和输出目标。错误连接保留在图中并提示原因；循环、形状不匹配、非法多输入等会阻止训练和 Python 导出。计算图支持 1–8 个模型 Input 和一个 Output。
-- 层属性修改会重新推导张量形状，检查循环、四维/二维不匹配、残差形状、拼接维度、池化参数和资源限制。项目自动保存在本地浏览器，支持撤销/重做以及 JSON 导入导出。
-- 导出 PyTorch `nn.Module`，含可执行的随机输入测试，输出为 logits。不会执行浏览器上传的 Python 代码。
-- PNG 提供 1920 / 3840 / 7680 像素宽度、当前视角、可选透明背景；SVG 导出简化的三维几何投影与可编辑层标签。
+- Ships with Compact CNN, Feature MLP, Residual CNN, Transformer Encoder, MQA, GQA, Cross-Attention and a blank template. The layer library supports both clicking and dragging into the scene. New layers connect to the currently selected layer and are inserted before the final output.
+- The 3D view generates solid layers from each tensor's spatial dimensions and channels; geometric sizes use a logarithmic mapping so extreme sizes don't occlude each other.
+- Clicking any 3D layer centres rotation and zoom on that layer; attention heads and their QKV, weight matrices, LN, FFN, merge and add modules can each be clicked and centred individually. Add-focused framing keeps the full residual bypass intact while centring on the Add node.
+- The generic Add residual and the Transformer Encoder share the pink outer bypass, directional arrows and GPU particle styling. The residual branches off at the source layer's output, bypasses the intermediate modules, enters the pink "+" node from above, and continues after being summed with the main path. Camera focus and PNG / SVG export include the full bypass; the topology graph shows the pink outer curve as well. Skip branches are identified from reachability in the graph, while independent parallel branches keep ordinary edges.
+- The topology graph supports dragging nodes and pulling wires from an output port to an input port; Add / Concat accept multiple inputs. Press Delete after clicking an edge to remove it, or remove the connection from the properties panel.
+- The topology toolbar can add standalone input/output objects and delete the selected object; the properties panel's "connected objects" section lets you pick upstream/downstream objects and add or remove input/output connections individually. Q/K/V objects have their own ports, so input sources and output targets can be configured per vertex. Invalid connections stay in the graph with the reason shown; cycles, shape mismatches and illegal multi-inputs block training and Python export. Computation graphs support 1–8 model Inputs and one Output.
+- Editing layer properties re-derives tensor shapes and checks for cycles, rank-4/rank-2 mismatches, residual shapes, concatenation dimensions, pooling parameters and resource limits. Projects are saved automatically in local browser storage, with undo/redo and JSON import/export.
+- Exports a PyTorch `nn.Module`, including a runnable random-input test, with logits as output. Python code uploaded from the browser is never executed.
+- PNG offers 1920 / 3840 / 7680 pixel widths, the current viewpoint and an optional transparent background; SVG export produces a simplified projection of the 3D geometry with editable layer labels.
 
-### 注意力与 Transformer
+### Attention and Transformer
 
-`MultiHeadAttention` 与 `Transformer` 使用共享的 PyTorch `scaled_dot_product_attention` 运行时。`Transformer` 为 pre-norm 编码器层（LN → Attention → 残差 → LN → GELU FFN → 残差）。输入输出采用 `[B,S,E]`。`attention_type` 支持 `self`、`multi_query`（MQA）、`grouped_query`（GQA）、`cross` 和 `multi_branch`；`num_heads`（1–16）是 Q 数量，默认 1；`kv_heads` 是 K/V 组数；`branches`（1–8）是独立计算后取平均的分支数。Embedding 必须等于输入最后一维并能被 Q 数量整除，Q 数量也必须能被 K/V 组数整除。MQA 使用一个 K/V 组，标准自注意力使用每 Q 一组 K/V。Cross-Attention 用 Query 和 Context 两个输入，允许两者序列长度不同。各参数改变真实计算、参数统计和导出代码。
+`MultiHeadAttention` and `Transformer` use a shared PyTorch `scaled_dot_product_attention` runtime. `Transformer` is a pre-norm encoder layer (LN → Attention → residual → LN → GELU FFN → residual). Inputs and outputs use `[B,S,E]`. `attention_type` supports `self`, `multi_query` (MQA), `grouped_query` (GQA), `cross` and `multi_branch`; `num_heads` (1–16) is the number of queries and defaults to 1; `kv_heads` is the number of K/V groups; `branches` (1–8) is the number of independently computed branches that are then averaged. Embedding must equal the last input dimension and be divisible by the query count, and the query count must be divisible by the number of K/V groups. MQA uses a single K/V group, while standard self-attention uses one K/V group per query. Cross-Attention takes two inputs, Query and Context, and allows the two sequence lengths to differ. Every parameter changes the real computation, the parameter count and the exported code.
 
-每个共享 K/V 组绘制一个多边形，所有使用该 K/V 的 Q 顶点放在同一面内，K 与 V 各画一次，无额外悬浮共享层。边数自动等于本组 Q 数量 + 2：一个 Q 为三角形；MQA 的 4 个 Q 共用 K/V 为六边形；GQA 的 8 个 Q、2 个 K/V 组为两个六边形。`qkv_count` 已从参数面板移除，旧项目中的该字段会被忽略。各组沿数据流 X 轴同向叠放，注意力头并行计算；多分支按分支分开显示。每个 Q 有自己的 Softmax 和 V 加权路径，共享 K/V 直接连到这些计算节点。Transformer 继续显示 LN、FFN 和两条粉色残差路径。选中或悬停时停止转动；配置独立顶点连线后固定多边形朝向，保证外部粒子与顶点贴合。PNG / SVG 与场景共用同一几何和端口布局。
+One polygon is drawn per shared K/V group, with all Q vertices that use that K/V placed in the same face; K and V are each drawn once, with no extra floating shared layer. The number of sides equals the number of queries in the group plus 2: a single query gives a triangle; MQA's 4 queries sharing one K/V give a hexagon; GQA's 8 queries over 2 K/V groups give two hexagons. `qkv_count` has been removed from the parameters panel, and the field is ignored in older projects. Groups are stacked along the data-flow X axis in the same direction, with attention heads computing in parallel; multiple branches are displayed separately per branch. Each query has its own softmax and V-weighting path, and the shared K/V connect directly to those compute nodes. The Transformer continues to show LN, FFN and the two pink residual paths. Rotation stops on selection or hover; once per-vertex connections are configured, the polygon orientation is fixed so that external particles stay aligned with the vertices. PNG / SVG share the same geometry and port layout as the scene.
 
-点击三维 Q/K/V 立方体会居中并打开该对象的连接配置，也可在属性面板的“Q/K/V 对象”选择器中选择。每个顶点默认继承模型层输入（Cross-Attention 的 Q 继承 Query，K/V 继承 Context），指定上游对象后覆盖对应投影来源；删除覆盖连线后恢复默认来源。顶点输出为真实投影张量 `[B,S,E/num_heads]`，可连接其他模型层或其他 Q/K/V 的输入端口。所有顶点输入要求 `[B,S,E]`，Q 的序列长度须与本层 Query 一致，同分支所有 K/V 的序列长度须一致。Transformer 的 Q 和自注意力覆盖输入也经过 LN。每个投影端口最多一个指定输入，输出可扇出到多个对象。完整模型仍需要基础输入，Transformer 的残差来自基础 Query。
+Clicking a 3D Q/K/V cube centres it and opens that object's connection configuration, and it can also be selected from the "Q/K/V objects" selector in the properties panel. Each vertex inherits the model layer's inputs by default (for Cross-Attention, Q inherits Query and K/V inherit Context); specifying an upstream object overrides the corresponding projection source, and deleting the override connection restores the default source. A vertex outputs a real projected tensor `[B,S,E/num_heads]` and can connect to other model layers or to the input ports of other Q/K/V objects. All vertex inputs require `[B,S,E]`; a query's sequence length must match the layer's Query, and within a branch all K/V must share a sequence length. The Transformer's Q and self-attention overrides also pass through LN. Each projection port takes at most one specified input, while outputs can fan out to multiple objects. A complete model still needs a base input, and the Transformer's residual comes from the base Query.
 
-项目连线通过 `sourcePort` / `targetPort` 存储顶点端口，例如 `{"source":"memory","target":"attention","targetPort":"b0:k0"}` 指定第一分支 K1 的输入；`{"source":"attention","sourcePort":"b0:q0","target":"flatten"}` 将第一分支 Q1 的投影传到 Flatten。同一对模型层可通过不同端口多次连接。训练、形状校验和独立 Python 导出使用相同连接语义。
+Project connections store vertex ports via `sourcePort` / `targetPort`, for example `{"source":"memory","target":"attention","targetPort":"b0:k0"}` specifies the input of K1 in the first branch; `{"source":"attention","sourcePort":"b0:q0","target":"flatten"}` passes the projected Q1 of the first branch to Flatten. The same pair of model layers can be connected multiple times through different ports. Training, shape validation and standalone Python export all use the same connection semantics.
 
-三维权重矩阵的颜色与粒子目前仍是**模拟示意**，未采集真实 attention weights、Q/K/V 激活或 token 级梯度；属性面板标记“权重示意”。真实训练监控中的损失与逐层梯度来自实际 PyTorch 训练。示例输入为 token 特征向量，暂不包含文本 tokenizer、位置编码或 causal/padding mask。
+The colours and particles of the 3D weight matrices are still a **simulated illustration**; real attention weights, Q/K/V activations and token-level gradients are not collected, and the properties panel labels this "weight schematic". Loss and per-layer gradients in real training monitoring come from actual PyTorch training. The example input is a token feature vector; there is no text tokenizer, positional encoding or causal/padding mask yet.
 
-## GPU 动画与训练
+## GPU animation and training
 
-Three.js 使用 WebGL、GPU 实例化和自定义顶点着色器。每个粒子的贝塞尔路径在 GPU 上计算，CPU 每帧仅更新时间/方向 uniform，不逐粒子改写位置。普通连线前向青色、反向珊瑚色；残差旁路前后向均保留粉色，反向时箭头和粒子方向反转。支持暂停、速度调节、轨道旋转、缩放、平移和展开间距。动画表示模拟传播，不表示实际张量数值。
+Three.js uses WebGL, GPU instancing and custom vertex shaders. Each particle's Bézier path is computed on the GPU, and the CPU only updates the time/direction uniforms per frame rather than rewriting positions per particle. Ordinary connections are cyan forward and coral backward; residual bypasses stay pink in both directions, with arrows and particle direction reversed when running backward. Pause, speed adjustment, orbit rotation, zoom, pan and expanded spacing are supported. The animation represents simulated propagation, not actual tensor values.
 
-浏览器需要开启硬件加速。软件渲染器会显示“软件渲染”；应用不能强制浏览器或操作系统提供物理 GPU。WebGL GPU 加速与 PyTorch CUDA 训练是两套独立设备机制。
+The browser needs hardware acceleration enabled. A software renderer is reported as "software rendering"; the app cannot force a browser or operating system to provide a physical GPU. WebGL GPU acceleration and PyTorch CUDA training are two separate device mechanisms.
 
-真实训练使用 Adam + CrossEntropyLoss，可选择 CPU / CUDA / 自动；合成分类数据或本地 CSV。CSV 支持可选首行表头，最后一列为从 0 开始的整数类别，前面为数值特征；特征数必须等于输入张量除 batch 外的元素数，图像按 C/H/W 顺序展平。CSV 数值标准化后按模型输入形状重构。验证集固定随机切分。训练轮次、学习率、batch size、验证比例和早停窗口可配置。
+Real training uses Adam + CrossEntropyLoss, with CPU / CUDA / automatic selection, over synthetic classification data or a local CSV. CSVs support an optional header row, with the last column as a zero-based integer class and the preceding columns as numeric features; the feature count must equal the number of elements in the input tensor excluding batch, with images flattened in C/H/W order. CSV values are standardised and then reshaped to the model's input shape. The validation split is a fixed random split. Epochs, learning rate, batch size, validation fraction and the early-stopping window are configurable.
 
-训练通过 WebSocket 推送实测 train/val loss、准确率、全局/逐层梯度范数、ReLU 零激活比例。梯度裁剪阈值 100；早停按验证损失连续未改善窗口触发。每次只允许一个本地训练任务，断开页面或点击停止会在下一批次停止。输入、数据和激活有资源上限，复杂模型需在专业训练环境中运行。
+Training pushes measured train/val loss, accuracy, global and per-layer gradient norms, and the ReLU zero-activation fraction over WebSocket. Gradient clipping is at a threshold of 100; early stopping triggers on a run of unimproved validation loss windows. Only one local training job runs at a time, and disconnecting the page or pressing stop halts it on the next batch. Inputs, data and activations have resource limits, and complex models need to run in a professional training environment.
 
-默认 PyPI 的 PyTorch 可能是 CPU 版本。需要 CUDA 时，从 https://pytorch.org/get-started/locally/ 获取与你的 GPU 驱动匹配的安装命令，在本项目 `.venv` 中执行，重启服务后界面会显示 CUDA 设备。
+PyTorch from the default PyPI index may be a CPU build. If you need CUDA, get the install command matching your GPU driver from https://pytorch.org/get-started/locally/, run it in this project's `.venv`, and restart the service; the interface will then show the CUDA device.
 
-## 预警说明
+## About the warnings
 
-架构期：形状错误、循环、未连接层、空间下采样截断、隐藏线性层 >90% 信息骤缩、连续 8 个无残差参数层、单层占 >70% 参数。训练期：损失或梯度非有限、梯度爆炸/消失、逐层异常、ReLU 零激活 >90%、训练损失持续不改善、损失发散、训练/验证差距持续扩大。
+Architecture-time: shape errors, cycles, unconnected layers, spatial downsampling truncation, hidden linear layers losing more than 90% of their information at once, eight consecutive parameterised layers without a residual, and a single layer holding more than 70% of the parameters. Training-time: non-finite loss or gradients, exploding/vanishing gradients, per-layer anomalies, ReLU zero activation above 90%, training loss persistently failing to improve, diverging loss, and a persistently widening train/validation gap.
 
-这些是启发式风险提示，不能仅凭静态结构判定是否过拟合或保证收敛。过拟合需要验证集指标支持。演示场景明确标记为“演示数据”，与真实训练和导入指标区分。
+These are heuristic risk signals; overfitting cannot be determined from static structure alone, nor can convergence be guaranteed. Overfitting requires validation-set metrics. Demo scenarios are explicitly labelled "demo data" and are kept distinct from real training and imported metrics.
 
-可导入 JSON 指标数组，或 CSV 指标：
+JSON metric arrays or CSV metrics can be imported:
 
 ```csv
 epoch,trainLoss,valLoss,accuracy,gradNorm
@@ -87,19 +87,19 @@ epoch,trainLoss,valLoss,accuracy,gradNorm
 2,1.5,1.6,0.40,0.7
 ```
 
-## 目录
+## Directory
 
-`src/analysis.ts` 形状/预警规则；`src/Scene.tsx` GPU 三维场景与导出；`src/AttentionModule.tsx` 注意力多边形与内部结构；`src/Flow.tsx` GPU 粒子流；`src/Topology.tsx` 节点编辑；`src/Connections.tsx` 输入/输出连接对象；`src/export.ts` PyTorch 生成；`backend/graph.py` 分配前校验；`backend/training.py` 真实训练；`backend/app.py` HTTP/WebSocket；`run.py` 启动入口。
+`src/analysis.ts` shape/warning rules; `src/Scene.tsx` GPU 3D scene and export; `src/AttentionModule.tsx` attention polygons and internals; `src/Flow.tsx` GPU particle flows; `src/Topology.tsx` node editing; `src/Connections.tsx` input/output connection objects; `src/export.ts` PyTorch generation; `backend/graph.py` pre-allocation validation; `backend/training.py` real training; `backend/app.py` HTTP/WebSocket; `run.py` launch entry point.
 
-本版本支持基础 CNN/MLP/残差和 Transformer 编码器计算图。暂不支持 RNN、动态图 Python 双向同步、ONNX 导入、分布式训练或完整性能 profiler。
+This version supports basic CNN/MLP/residual and Transformer encoder computation graphs. RNNs, live bidirectional Python sync, ONNX import, distributed training and a full performance profiler are not supported yet.
 
-## 导入 PyTorch 代码自动建模
+## Building models from imported PyTorch code
 
-顶部工具栏的“导入 PyTorch 代码”支持粘贴 PyTorch 源码或选择本地 `.py` 文件。程序先选择模型对象和输入形状，再提交到本地服务进行静态 AST 解析；预览会显示节点、连接、参数量和诊断信息。确认后，Input、层、Add/Concat、Attention 的 Q/K/V 端口和 Output 会写入当前项目，可继续拖动、修改参数、训练、查看三维数据流和导出代码。
+"Import PyTorch code" in the top toolbar accepts pasted PyTorch source or a local `.py` file. You first choose the model object and input shapes, then submit to the local service for static AST parsing; the preview shows nodes, connections, parameter counts and diagnostics. On confirmation, the Input, layers, Add/Concat, the Q/K/V ports of Attention and the Output are written into the current project, where you can keep dragging, editing parameters, training, viewing the 3D data flow and exporting code.
 
-当前图编辑器和真实训练链路覆盖大部分常用 `torch.nn` 层：Conv/ConvTranspose 1D、2D、3D，Linear、Bilinear，BatchNorm/InstanceNorm/GroupNorm/LayerNorm，MaxPool/AvgPool/AdaptivePool，Flatten，Dropout 系列、Embedding、Upsample，ReLU/GELU/Sigmoid/Tanh/SiLU/LeakyReLU/ELU/SELU/Softplus/PReLU/Hardsigmoid/Hardswish/Mish/Softsign/Softmax/LogSoftmax/Identity，以及 MultiheadAttention、Transformer 和 TensorLab 的 MQA/GQA/Cross-Attention。每个层的参数会参与形状推导、参数统计、PyTorch 训练和 Python 导出。
+The current graph editor and real training path cover most common `torch.nn` layers: Conv/ConvTranspose 1D, 2D and 3D, Linear, Bilinear, BatchNorm/InstanceNorm/GroupNorm/LayerNorm, MaxPool/AvgPool/AdaptivePool, Flatten, the Dropout family, Embedding, Upsample, ReLU/GELU/Sigmoid/Tanh/SiLU/LeakyReLU/ELU/SELU/Softplus/PReLU/Hardsigmoid/Hardswish/Mish/Softsign/Softmax/LogSoftmax/Identity, plus MultiheadAttention, Transformer and TensorLab's MQA/GQA/Cross-Attention. Every layer's parameters take part in shape derivation, parameter counting, PyTorch training and Python export.
 
-示例请求：
+Example request:
 
 ```powershell
 $body = @{
@@ -111,8 +111,8 @@ $body = @{
 Invoke-RestMethod -Uri http://127.0.0.1:8765/api/import/pytorch -Method Post -ContentType 'application/json' -Body $body
 ```
 
-解析器只读取 Python AST，不执行上传代码，也不会导入源码中的模块或加载权重、优化器和训练脚本。支持静态 `nn.Module`、`nn.Sequential`、嵌套模块、`ModuleList`、`ModuleDict`、残差加法、`torch.cat`、`flatten/view/reshape`，以及上面列出的常用层、`MultiheadAttention`、`TransformerEncoderLayer`/`TransformerEncoder` 和 TensorLab Attention/Transformer。支持 Cross-Attention、MQA/GQA 的 Query/Context 与 Q/K/V 端口连接。
+The parser only reads the Python AST; it does not execute uploaded code, import modules from the source or load weights, optimizers or training scripts. It supports static `nn.Module`, `nn.Sequential`, nested modules, `ModuleList`, `ModuleDict`, residual addition, `torch.cat`, `flatten/view/reshape`, the common layers listed above, `MultiheadAttention`, `TransformerEncoderLayer`/`TransformerEncoder` and TensorLab Attention/Transformer. Query/Context and Q/K/V port connections for Cross-Attention and MQA/GQA are supported.
 
-导入的是模型结构和构造参数，不包含原始权重；导入后可在训练面板选择数据和 CPU/CUDA 设备。动态控制流、依赖运行时数据的循环、任意自定义算子、权重共享、复杂 mask 和无法静态推断的张量操作会报告错误或警告。源码限制为 512 KB、AST 节点最多 30,000 个、生成图最多 128 个节点和 512 条边；输入形状最多 8 个。缺少形状时会使用保守推断并给出 warning，可在窗口中修改后重新解析。
+What is imported is the model structure and its constructor arguments, not the original weights; after importing you can choose the data and the CPU/CUDA device in the training panel. Dynamic control flow, loops that depend on runtime data, arbitrary custom operators, weight sharing, complex masks and tensor operations that cannot be statically inferred are reported as errors or warnings. Source is limited to 512 KB, 30,000 AST nodes, and a generated graph of at most 128 nodes and 512 edges; up to 8 input shapes are allowed. When shapes are missing, conservative inference is used with a warning, and you can edit them in the window and re-parse.
 
-HTTP 接口为 `POST /api/import/pytorch`，请求字段为 `source`、可选 `model_name` 和 `input_shapes`。响应包含 `graph`、`models`、`model`、`inputs`、`diagnostics` 与 `analysis`，可用于集成到其他编辑器或自动化流程。
+The HTTP endpoint is `POST /api/import/pytorch`, with request fields `source`, optional `model_name` and `input_shapes`. The response contains `graph`, `models`, `model`, `inputs`, `diagnostics` and `analysis`, and can be integrated into other editors or automated pipelines.
