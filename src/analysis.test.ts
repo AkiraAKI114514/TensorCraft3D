@@ -11,10 +11,20 @@ describe('model contracts', () => {
     expect(analysis.layers[graph.nodes.at(-1)!.id].output).toEqual(preset === 'mlp' ? [1, 3] : [1, 10]);
     expect(analysis.parameters).toBeGreaterThan(0);
   });
-  it('rejects linear projection of an unflattened image', () => {
-    const graph = PRESETS.blank(); graph.nodes[1].op = 'Linear'; graph.nodes[1].params = { out_features: 3 };
-    expect(analyze(graph).diagnostics.some(d => d.code === 'SHAPE' && d.nodeId === 'layer_1')).toBe(true);
-    expect(() => generatePython(graph)).toThrow();
+  it.each([[2, 101], [64, 6, 101], [64, 6, 69], [2, 3, 4, 5], [2, 3, 4, 5, 6]])('projects the final dimension of Linear input %j', (...shape) => {
+    const graph = PRESETS.blank(); graph.nodes[0].params.shape = shape;
+    graph.nodes.splice(1, 0, { id: 'projection', name: 'Projection', op: 'Linear', params: { out_features: 64 }, position: { x: 100, y: 100 } });
+    graph.edges = [{ id: 'in', source: 'layer_0', target: 'projection' }, { id: 'out', source: 'projection', target: 'layer_1' }];
+    const analysis = analyze(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.layers.layer_1.output).toEqual([...shape.slice(0, -1), 64]);
+    expect(analysis.parameters).toBe((shape.at(-1)! + 1) * 64);
+    expect(generatePython(graph)).toContain(`nn.Linear(${shape.at(-1)}, 64)`);
+  });
+  it('diagnoses Linear bottlenecks by feature width rather than sequence length', () => {
+    const graph = PRESETS.mlp(); graph.nodes[0].params.shape = [2, 6, 256]; graph.nodes[1].params.out_features = 8;
+    expect(analyze(graph).valid).toBe(true);
+    expect(analyze(graph).diagnostics.some(d => d.code === 'BOTTLENECK' && d.nodeId === 'layer_1')).toBe(true);
   });
   it('rejects a residual branch with incompatible channels', () => {
     const graph = PRESETS.residual(); graph.nodes[3].params.out_channels = 32;

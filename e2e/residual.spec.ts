@@ -41,8 +41,8 @@ test('Pink residual bypass, addition, motion and matching image exports', async 
   };
   const inspectSvg = (svg: string) => page.evaluate(markup => {
     const doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
-    const edge = doc.querySelector('g[data-edge-id="skip"]')!, add = doc.querySelector('g[data-node-id="layer_5"]')!;
-    return { kind: edge.getAttribute('data-flow-kind'), path: edge.querySelector('path')?.getAttribute('d'), stroke: edge.querySelector('path')?.getAttribute('stroke'), arrows: Array.from(edge.querySelectorAll('polygon')).map(p => p.getAttribute('points')), plus: Array.from(add.querySelectorAll('text')).some(t => t.textContent === '+'), main: doc.querySelector('g[data-edge-id="edge_4"]')?.getAttribute('data-flow-kind') };
+    const edge = doc.querySelector('g[data-edge-id="skip"]')!;
+    return { kind: edge.getAttribute('data-flow-kind'), path: edge.querySelector('path')?.getAttribute('d'), stroke: edge.querySelector('path')?.getAttribute('stroke'), arrows: Array.from(edge.querySelectorAll('polygon')).map(p => p.getAttribute('points')), plus: Array.from(doc.querySelectorAll('g[data-label-id^="layer_5:"] text')).some(t => t.textContent === '+'), main: doc.querySelector('g[data-edge-id="edge_4"]')?.getAttribute('data-flow-kind') };
   }, svg);
   const forwardSvg = await inspectSvg(await exportSvg('artifacts/residual.svg'));
   expect(forwardSvg).toMatchObject({ kind: 'residual', stroke: '#d073a8', plus: true, main: 'main' });

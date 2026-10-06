@@ -96,27 +96,33 @@ class TensorLabAttention(nn.Module):
 
 
 class TensorLabTransformer(nn.Module):
-    def __init__(self, embed_dim, num_heads=1, kv_heads=None, ff_dim=128, dropout=0.1, attention_type="self", branches=1, norm_first=True):
+    def __init__(self, embed_dim, num_heads=1, kv_heads=None, ff_dim=128, dropout=0.1, attention_type="self", branches=1, norm_first=True, activation="gelu"):
         super().__init__()
-        if not norm_first:
-            raise ValueError("This encoder uses pre-norm residuals")
+        if activation not in ("relu", "gelu"):
+            raise ValueError("Encoder activation must be relu or gelu")
+        self.norm_first = bool(norm_first)
         self.attention = TensorLabAttention(embed_dim, num_heads, kv_heads, dropout, attention_type, branches)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
-        self.ffn = nn.Sequential(nn.Linear(embed_dim, ff_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(ff_dim, embed_dim), nn.Dropout(dropout))
+        self.ffn = nn.Sequential(nn.Linear(embed_dim, ff_dim), nn.ReLU() if activation == "relu" else nn.GELU(), nn.Dropout(dropout), nn.Linear(ff_dim, embed_dim), nn.Dropout(dropout))
 
     def forward(self, query, context=None):
         return self.forward_with_ports(query, context)[0]
 
     def forward_with_ports(self, query, context=None, overrides=None):
         # Q and self-attention overrides receive the same pre-norm as the base input.
-        overrides = {port: self.norm1(value) if ":q" in port or self.attention.attention_type != "cross" else value for port, value in (overrides or {}).items()}
-        attention, ports = self.attention.forward_with_ports(self.norm1(query), context, overrides)
+        overrides = {port: self.norm1(value) if self.norm_first and (":q" in port or self.attention.attention_type != "cross") else value for port, value in (overrides or {}).items()}
+        attention, ports = self.attention.forward_with_ports(self.norm1(query) if self.norm_first else query, context, overrides)
         x = query + self.dropout(attention)
-        return x + self.ffn(self.norm2(x)), ports
+        if self.norm_first:
+            return x + self.ffn(self.norm2(x)), ports
+        x = self.norm1(x)
+        return self.norm2(x + self.ffn(x)), ports
 
 
+
+_TENSORLAB_INPUT_SHAPES = {"layer_0":[1,16,64],"n_2508192b0d1f":[1,16,64]}
 
 class VisualModel(nn.Module):
     def __init__(self):
@@ -128,7 +134,7 @@ class VisualModel(nn.Module):
         })
 
     def forward(self, x):
-        input_ids = ["layer_0","n_db3c617b0171"]
+        input_ids = ["layer_0","n_2508192b0d1f"]
         if isinstance(x, dict):
             if set(x) != set(input_ids):
                 raise ValueError("Input dictionary must contain exactly the model's Input node IDs")
@@ -137,8 +143,8 @@ class VisualModel(nn.Module):
         values = {}
         ports = {}
         values["layer_0"] = x["layer_0"]
-        values["n_db3c617b0171"] = x["n_db3c617b0171"]
-        values["layer_1"], ports["layer_1"] = self.layers["layer_1"].forward_with_ports(values["layer_0"], None, overrides={"b0:q0": values["n_db3c617b0171"]})
+        values["n_2508192b0d1f"] = x["n_2508192b0d1f"]
+        values["layer_1"], ports["layer_1"] = self.layers["layer_1"].forward_with_ports(values["layer_0"], None, overrides={"b0:q0": values["n_2508192b0d1f"]})
         values["layer_2"] = self.layers["layer_2"](ports["layer_1"]["b0:q0"])
         values["layer_3"] = self.layers["layer_3"](values["layer_2"])
         values["layer_4"] = values["layer_3"]
@@ -149,7 +155,7 @@ if __name__ == "__main__":
     model = VisualModel().eval()
     sample = {
         "layer_0": torch.randn(1, 16, 64),
-        "n_db3c617b0171": torch.randn(1, 16, 64),
+        "n_2508192b0d1f": torch.randn(1, 16, 64),
     }
     with torch.no_grad():
         result = model(sample)

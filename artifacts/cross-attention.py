@@ -96,27 +96,33 @@ class TensorLabAttention(nn.Module):
 
 
 class TensorLabTransformer(nn.Module):
-    def __init__(self, embed_dim, num_heads=1, kv_heads=None, ff_dim=128, dropout=0.1, attention_type="self", branches=1, norm_first=True):
+    def __init__(self, embed_dim, num_heads=1, kv_heads=None, ff_dim=128, dropout=0.1, attention_type="self", branches=1, norm_first=True, activation="gelu"):
         super().__init__()
-        if not norm_first:
-            raise ValueError("This encoder uses pre-norm residuals")
+        if activation not in ("relu", "gelu"):
+            raise ValueError("Encoder activation must be relu or gelu")
+        self.norm_first = bool(norm_first)
         self.attention = TensorLabAttention(embed_dim, num_heads, kv_heads, dropout, attention_type, branches)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
-        self.ffn = nn.Sequential(nn.Linear(embed_dim, ff_dim), nn.GELU(), nn.Dropout(dropout), nn.Linear(ff_dim, embed_dim), nn.Dropout(dropout))
+        self.ffn = nn.Sequential(nn.Linear(embed_dim, ff_dim), nn.ReLU() if activation == "relu" else nn.GELU(), nn.Dropout(dropout), nn.Linear(ff_dim, embed_dim), nn.Dropout(dropout))
 
     def forward(self, query, context=None):
         return self.forward_with_ports(query, context)[0]
 
     def forward_with_ports(self, query, context=None, overrides=None):
         # Q and self-attention overrides receive the same pre-norm as the base input.
-        overrides = {port: self.norm1(value) if ":q" in port or self.attention.attention_type != "cross" else value for port, value in (overrides or {}).items()}
-        attention, ports = self.attention.forward_with_ports(self.norm1(query), context, overrides)
+        overrides = {port: self.norm1(value) if self.norm_first and (":q" in port or self.attention.attention_type != "cross") else value for port, value in (overrides or {}).items()}
+        attention, ports = self.attention.forward_with_ports(self.norm1(query) if self.norm_first else query, context, overrides)
         x = query + self.dropout(attention)
-        return x + self.ffn(self.norm2(x)), ports
+        if self.norm_first:
+            return x + self.ffn(self.norm2(x)), ports
+        x = self.norm1(x)
+        return self.norm2(x + self.ffn(x)), ports
 
 
+
+_TENSORLAB_INPUT_SHAPES = {"layer_0":[1,8,64],"context":[1,12,64]}
 
 class VisualModel(nn.Module):
     def __init__(self):

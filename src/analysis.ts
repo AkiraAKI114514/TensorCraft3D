@@ -116,8 +116,8 @@ export function analyze(graph: Graph): Analysis {
         }
       }
       else if (n.op === 'Linear') {
-        if (output.length !== 2) throw new Error('Linear 需要二维输入 [B,F]，请先添加 Flatten');
-        const features = integer('out_features', 10); count = (output[1] + 1) * features; output = [output[0], features];
+        if (output.length < 2) throw new Error('Linear 需要至少二维输入 [B,...,F]');
+        const features = integer('out_features', 10); count = (output.at(-1)! + 1) * features; output = [...output.slice(0, -1), features];
       } else if (n.op === 'Bilinear') {
         if (input.length !== 2 || input.some(s => s.length !== 2)) throw new Error('Bilinear 需要两个二维输入'); const features = integer('out_features', 10), in2 = integer('in2_features', input[1][1]); if (input[1][1] !== in2 || input[0][0] !== input[1][0]) throw new Error('Bilinear 输入 batch 与 in2_features 不匹配'); count = input[0][1] * in2 * features + features; output = [output[0], features];
       } else if (n.op === 'Embedding') {
@@ -181,7 +181,7 @@ export function analyze(graph: Graph): Analysis {
       }
       if (product(output) > 16e6 || count > 50e6) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
       layers[id] = { input, output, parameters: count }; parameters += count; activationBytes += product(output) * 4;
-      if (n.op === 'Linear' && n.id !== graph.edges.find(e => e.target === outputNode?.id)?.source && input[0][1] >= 128 && output[1] < input[0][1] * 0.1) add('BOTTLENECK', '隐藏层特征维度骤降超过 90%，可能丢失信息', id, 'warning');
+      if (n.op === 'Linear' && n.id !== graph.edges.find(e => e.target === outputNode?.id)?.source && input[0].at(-1)! >= 128 && output.at(-1)! < input[0].at(-1)! * 0.1) add('BOTTLENECK', '隐藏层特征维度骤降超过 90%，可能丢失信息', id, 'warning');
       depth[id] = ['Add', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + (['Conv2d', 'Linear'].includes(n.op) ? 1 : 0);
       if (depth[id] === 8) add('DEEP_NO_SKIP', '连续 8 个参数层缺少残差路径，存在梯度衰减风险', id, 'warning');
       if (outputNode && !ancestors.has(id)) add(n.op === 'Input' ? 'INPUT_UNUSED' : 'UNUSED', '此层未连接到模型输出', id, n.op === 'Input' ? 'error' : 'warning');

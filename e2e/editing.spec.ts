@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 
 async function exportSvg(page: Page) {
   await page.getByRole('button', { name: '导出图像', exact: true }).click();
+  await page.getByLabel('图像布局').selectOption('current');
   const event = page.waitForEvent('download');
   await page.getByRole('button', { name: 'SVG 矢量图', exact: true }).click();
   const stream = await (await event).createReadStream(), chunks: Buffer[] = [];

@@ -23,7 +23,7 @@ def build_model(graph):
                     cls = getattr(nn, op); module = cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 3)), int(p.get("stride", 1)), int(p.get("padding", 1)), groups=int(p.get("groups", 1)))
                 elif op in ("ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d"):
                     cls = getattr(nn, op); module = cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 4)), int(p.get("stride", 2)), int(p.get("padding", 1)), int(p.get("output_padding", 0)), groups=int(p.get("groups", 1)))
-                elif op == "Linear": module = nn.Linear(in_shape[1], int(p.get("out_features", 10)))
+                elif op == "Linear": module = nn.Linear(in_shape[-1], int(p.get("out_features", 10)))
                 elif op == "Bilinear": module = nn.Bilinear(in_shape[1], int(p.get("in2_features", in_shape[1])), int(p.get("out_features", 10)))
                 elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d"):
                     module = getattr(nn, op)(in_shape[1])

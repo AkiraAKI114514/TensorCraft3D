@@ -29,7 +29,7 @@ export function generatePython(graph: Graph) {
       case 'ConvTranspose1d':
       case 'ConvTranspose2d':
       case 'ConvTranspose3d': expr = `nn.${node.op}(${info.input[0][1]}, ${p.out_channels ?? 16}, kernel_size=${p.kernel_size ?? 4}, stride=${p.stride ?? 2}, padding=${p.padding ?? 1}, output_padding=${p.output_padding ?? 0}, groups=${p.groups ?? 1})`; break;
-      case 'Linear': expr = `nn.Linear(${info.input[0][1]}, ${p.out_features ?? 10})`; break;
+      case 'Linear': expr = `nn.Linear(${info.input[0].at(-1)}, ${p.out_features ?? 10})`; break;
       case 'Bilinear': expr = `nn.Bilinear(${info.input[0][1]}, ${p.in2_features ?? info.input[1]?.[1] ?? info.input[0][1]}, ${p.out_features ?? 10})`; break;
       case 'BatchNorm1d':
       case 'BatchNorm2d':

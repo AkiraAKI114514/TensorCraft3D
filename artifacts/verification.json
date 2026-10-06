@@ -2,14 +2,14 @@
   "desktopPixels": {
     "width": 958,
     "height": 543,
-    "colored": 33773,
-    "checksum": 32818717
+    "colored": 33756,
+    "checksum": 32943112
   },
   "mobilePixels": {
     "width": 390,
     "height": 420,
-    "colored": 4109,
-    "checksum": 1389386265
+    "colored": 4122,
+    "checksum": 1389387901
   },
   "pythonOutput": "VisualModel(\r\n  (layers): ModuleDict(\r\n    (layer_1): Conv2d(3, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))\r\n    (layer_2): BatchNorm2d(16, eps=1e-05, momentum=0.1, affine=True, bias=True, track_running_stats=True)\r\n    (layer_3): ReLU()\r\n    (layer_4): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)\r\n    (layer_5): Conv2d(16, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))\r\n    (layer_6): ReLU()\r\n    (layer_7): AdaptiveAvgPool2d(output_size=1)\r\n    (layer_8): Flatten(start_dim=1, end_dim=-1)\r\n    (layer_9): Linear(in_features=32, out_features=10, bias=True)\r\n  )\r\n)\r\nOutput shape: (1, 10)\r\nParameters: 5450\r\n",
   "runtimeErrors": []

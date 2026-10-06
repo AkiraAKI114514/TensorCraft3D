@@ -44,7 +44,7 @@ test('Coaxial attention slices, exports and measured training', async ({ page })
     const projected = await page.evaluate(svg => {
       const document = new DOMParser().parseFromString(svg, 'image/svg+xml');
       const root = document.documentElement, width = Number(root.getAttribute('width')), height = Number(root.getAttribute('height'));
-      return Array.from(document.querySelectorAll('g[data-node-id="layer_1"] text')).filter(t => /^H\d+$/.test(t.textContent || '')).map(t => ({ x: Number(t.getAttribute('x')), y: Number(t.getAttribute('y')), width, height }));
+      return Array.from(document.querySelectorAll('g[data-label-id^="layer_1:"] text')).filter(t => /^H\d+$/.test(t.textContent || '')).map(t => ({ x: Number(t.getAttribute('x')), y: Number(t.getAttribute('y')), width, height }));
     }, readFileSync(svgFile, 'utf8'));
     const visible = projected.filter(p => p.x >= 0 && p.x <= p.width && p.y >= 0 && p.y <= p.height);
     expect(visible).toHaveLength(count);

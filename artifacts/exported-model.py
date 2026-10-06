@@ -3,15 +3,17 @@ import torch
 from torch import nn
 
 
+_TENSORLAB_INPUT_SHAPES = {"layer_0":[1,3,32,32]}
+
 class VisualModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.layers = nn.ModuleDict({
-            "layer_1": nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
+            "layer_1": nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, groups=1),
             "layer_2": nn.BatchNorm2d(16),
             "layer_3": nn.ReLU(),
             "layer_4": nn.MaxPool2d(kernel_size=2, stride=2, padding=0),
-            "layer_5": nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            "layer_5": nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1, groups=1),
             "layer_6": nn.ReLU(),
             "layer_7": nn.AdaptiveAvgPool2d(1),
             "layer_8": nn.Flatten(start_dim=1),

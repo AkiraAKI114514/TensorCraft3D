@@ -32,6 +32,27 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(info["totalParameters"], sum(p.numel() for p in model.parameters()))
         self.assertEqual(tuple(model(torch.randn(5, 4)).shape), (5, 2))
 
+    def test_linear_preserves_leading_dimensions_and_matches_pytorch(self):
+        import torch
+        from torch import nn
+        for shape in ([2, 101], [64, 6, 101], [64, 6, 69], [2, 3, 4, 5], [2, 3, 4, 5, 6]):
+            with self.subTest(shape=shape):
+                graph = mlp_graph()
+                graph["nodes"][0]["params"]["shape"] = list(shape)
+                model, info = build_model(graph)
+                reference = nn.Sequential(nn.Linear(shape[-1], 8), nn.ReLU(), nn.Linear(8, 2))
+                reference[0].load_state_dict(model.layers["layer_1"].state_dict())
+                reference[2].load_state_dict(model.layers["layer_3"].state_dict())
+                x = torch.randn(*shape, requires_grad=True)
+                output = model(x)
+                self.assertEqual(list(output.shape), [*shape[:-1], 2])
+                self.assertEqual(info["shapes"]["layer_4"], list(output.shape))
+                self.assertEqual(info["totalParameters"], sum(p.numel() for p in model.parameters()))
+                torch.testing.assert_close(output, reference(x))
+                output.square().sum().backward()
+                self.assertTrue(torch.isfinite(x.grad).all())
+                self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
     def test_rejects_huge_model_before_allocation(self):
         graph = mlp_graph(); graph["nodes"][0]["params"]["shape"] = [1, 65536]; graph["nodes"][1]["params"]["out_features"] = 65536
         with self.assertRaises(ValueError): analyze_graph(graph)
