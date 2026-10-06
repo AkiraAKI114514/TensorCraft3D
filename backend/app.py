@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from .graph import analyze_graph
 
-app = FastAPI(title="TensorLab 3D", version="1.0.0")
+app = FastAPI(title="TensorLab 3D", version="1.0.1")
 training_lock = threading.Lock()
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,7 +41,7 @@ def health():
             device = torch.cuda.get_device_name(0) if cuda else "CPU"
         except Exception:
             available = False
-    return {"torch": available, "cuda": cuda, "device": device}
+    return {"torch": available, "cuda": cuda, "device": device, "apiVersion": "1.0.1", "pytorchImport": True}
 
 
 @app.post("/api/analyze")

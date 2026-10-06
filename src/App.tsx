@@ -42,7 +42,7 @@ export default function App() {
   const [view, setView] = useState<'3d' | 'graph'>('3d'), [playing, setPlaying] = useState(true), [direction, setDirection] = useState<'forward' | 'backward'>('forward'), [speed, setSpeed] = useState(1), [expanded, setExpanded] = useState(false);
   const [rotating, setRotating] = useState(true), [selectedHead, setSelectedHead] = useState<{ nodeId: string; index: number } | null>(null);
   const [selectedProjection, setSelectedProjection] = useState<{ nodeId: string; port: string } | null>(null);
-  const [gpu, setGpu] = useState('正在初始化 WebGL'), [backend, setBackend] = useState<{ online: boolean; torch: boolean; cuda: boolean; device?: string }>({ online: false, torch: false, cuda: false });
+  const [gpu, setGpu] = useState('正在初始化 WebGL'), [backend, setBackend] = useState<{ online: boolean; torch: boolean; cuda: boolean; device?: string; apiVersion?: string; pytorchImport?: boolean }>({ online: false, torch: false, cuda: false });
   const [sceneLoaded, setSceneLoaded] = useState(false);
   const [metrics, setMetrics] = useState<Metric[]>([]), [training, setTraining] = useState(false), [trainStatus, setTrainStatus] = useState('未开始'), [config, setConfig] = useState<TrainingConfig>(initialConfig);
   const [showPyTorchImport, setShowPyTorchImport] = useState(false);
