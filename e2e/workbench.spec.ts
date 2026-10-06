@@ -1,0 +1,56 @@
+import { test, expect } from '@playwright/test';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+test('3D rendering, GPU motion, diagnostics, editing, exports and real training', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/');
+  await expect(page.locator('canvas')).toBeVisible();
+  await expect(page.locator('.gpu-badge')).toContainText('WebGL');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  const pixels = () => page.locator('canvas').evaluate(canvas => new Promise<{ width: number; height: number; colored: number; checksum: number }>(resolve => requestAnimationFrame(() => {
+    const element = canvas as HTMLCanvasElement, gl = element.getContext('webgl2')!;
+    const buffer = new Uint8Array(element.width * element.height * 4);
+    gl.readPixels(0, 0, element.width, element.height, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+    let colored = 0, checksum = 0;
+    for (let i = 0; i < buffer.length; i += 4) { if (Math.max(buffer[i], buffer[i+1], buffer[i+2]) - Math.min(buffer[i], buffer[i+1], buffer[i+2]) > 30) colored++; checksum = (checksum + buffer[i] * ((i % 67) + 1) + buffer[i+1]) >>> 0; }
+    resolve({ width: element.width, height: element.height, colored, checksum });
+  })));
+  await expect.poll(async () => (await pixels()).colored, { timeout: 15000 }).toBeGreaterThan(1500);
+  const a = await pixels(); await page.waitForTimeout(450); const b = await pixels();
+  expect(a.colored).toBeGreaterThan(1500); expect(a.checksum).not.toBe(b.checksum);
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click(); await page.waitForTimeout(350);
+  const pausedA = await pixels(); await page.waitForTimeout(250); const pausedB = await pixels(); expect(Math.abs(pausedA.checksum - pausedB.checksum)).toBeLessThan(pausedA.checksum * 0.0001);
+  await page.getByRole('button', { name: '播放数据流', exact: true }).click();
+  await page.getByRole('button', { name: '反向', exact: true }).click(); await page.waitForTimeout(100); const c = await pixels(); expect(c.checksum).not.toBe(pausedB.checksum);
+  await page.getByRole('button', { name: '前向', exact: true }).click();
+  const canvas = await page.locator('canvas').boundingBox();
+  await page.mouse.move(canvas!.x + canvas!.width * .55, canvas!.y + canvas!.height * .5); await page.mouse.down(); await page.mouse.move(canvas!.x + canvas!.width * .55 + 60, canvas!.y + canvas!.height * .5 + 20, { steps: 8 }); await page.mouse.up();
+  await page.getByRole('button', { name: '重置视角', exact: true }).click();
+  mkdirSync('artifacts', { recursive: true });
+  await page.screenshot({ path: 'artifacts/workbench-desktop.png' });
+  await page.getByRole('button', { name: '演示', exact: true }).click(); await expect(page.locator('.inspector')).toContainText('OVERFIT');
+  await page.getByLabel('演示场景').selectOption('plateau'); await page.getByRole('button', { name: '演示', exact: true }).click(); await expect(page.locator('.inspector')).toContainText('NOT_CONVERGING');
+  await page.getByLabel('演示场景').selectOption('healthy'); await page.getByRole('button', { name: '演示', exact: true }).click(); await expect(page.locator('.inspector')).toContainText('当前窗口未检测到异常');
+  await page.getByRole('button', { name: '层属性', exact: true }).click();
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click(); await page.locator('.react-flow__node[data-id="layer_1"]').click(); await page.getByRole('button', { name: '三维视图', exact: true }).click();
+  await page.getByLabel('kernel_size', { exact: true }).fill('64'); await expect(page.locator('.validation-badge')).toContainText('结构错误'); await page.getByLabel('kernel_size', { exact: true }).fill('3'); await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await page.getByRole('button', { name: '导出代码', exact: true }).click();
+  const pyDownload = page.waitForEvent('download'); await page.getByRole('button', { name: '下载 .py' }).click(); const py = await pyDownload; await py.saveAs('artifacts/exported-model.py');
+  const output = execFileSync('.venv/Scripts/python.exe', ['artifacts/exported-model.py'], { encoding: 'utf8' }); expect(output).toContain('Output shape: (1, 10)');
+  await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
+  await page.getByRole('button', { name: '导出图像', exact: true }).click(); await page.getByLabel('PNG 分辨率').selectOption('3840'); await page.getByLabel('透明背景').check();
+  const pngDownload = page.waitForEvent('download'); await page.getByRole('button', { name: '导出 PNG', exact: true }).click(); const png = await pngDownload; await png.saveAs('artifacts/model-4k.png');
+  const bytes = readFileSync('artifacts/model-4k.png'); expect(bytes.readUInt32BE(16)).toBe(3840); expect(bytes.length).toBeGreaterThan(30000);
+  await page.getByRole('button', { name: '导出图像', exact: true }).click(); const svgDownload = page.waitForEvent('download'); await page.getByRole('button', { name: 'SVG 矢量图', exact: true }).click(); const svg = await svgDownload; await svg.saveAs('artifacts/model.svg'); expect(readFileSync('artifacts/model.svg','utf8')).toContain('<polygon');
+  await page.getByLabel('模型模板').selectOption('mlp'); await page.getByRole('button', { name: '训练', exact: true }).click();
+  await page.getByLabel('训练轮次', { exact: true }).fill('3'); await page.getByLabel('合成样本数', { exact: true }).fill('64'); await page.getByLabel('学习率', { exact: true }).fill('0.01');
+  await page.getByRole('button', { name: '开始真实训练', exact: true }).click(); await expect(page.locator('.train-status')).toContainText('训练完成', { timeout: 60000 }); await expect(page.locator('.source-badge')).toContainText('真实训练');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click(); await expect(page.locator('.flow-layer')).toHaveCount(8);
+  await page.getByRole('button', { name: '三维视图', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole('button', { name: '重置视角', exact: true }).click(); await page.waitForTimeout(300);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); expect((await pixels()).colored).toBeGreaterThan(500);
+  await page.screenshot({ path: 'artifacts/workbench-mobile.png', fullPage: true });
+  expect(errors).toEqual([]);
+  writeFileSync('artifacts/verification.json', JSON.stringify({ desktopPixels: a, mobilePixels: await pixels(), pythonOutput: output, runtimeErrors: errors }, null, 2));
+});

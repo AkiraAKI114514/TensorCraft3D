@@ -1,0 +1,5 @@
+fastapi==0.115.14
+uvicorn==0.34.3
+websockets==15.0.1
+pydantic>=2.10,<3
+numpy>=2.1,<3

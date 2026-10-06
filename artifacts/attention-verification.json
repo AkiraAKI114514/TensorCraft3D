@@ -1,0 +1,13 @@
+{
+  "desktop": {
+    "colored": 6042,
+    "checksum": 2150136358
+  },
+  "mobile": {
+    "colored": 6286,
+    "checksum": 666459125
+  },
+  "runtimeErrors": [],
+  "pythonOutput": "VisualModel(\r\n  (layers): ModuleDict(\r\n    (layer_1): TensorLabTransformer(\r\n      (attention): TensorLabAttention(\r\n        (branches): ModuleList(\r\n          (0): AttentionBranch(\r\n            (q_proj): Linear(in_features=64, out_features=64, bias=True)\r\n            (k_proj): Linear(in_features=64, out_features=64, bias=True)\r\n            (v_proj): Linear(in_features=64, out_features=64, bias=True)\r\n            (out_proj): Linear(in_features=64, out_features=64, bias=True)\r\n          )\r\n        )\r\n      )\r\n      (norm1): LayerNorm((64,), eps=1e-05, elementwise_affine=True, bias=True)\r\n      (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True, bias=True)\r\n      (dropout): Dropout(p=0.1, inplace=False)\r\n      (ffn): Sequential(\r\n        (0): Linear(in_features=64, out_features=128, bias=True)\r\n        (1): GELU(approximate='none')\r\n        (2): Dropout(p=0.1, inplace=False)\r\n        (3): Linear(in_features=128, out_features=64, bias=True)\r\n        (4): Dropout(p=0.1, inplace=False)\r\n      )\r\n    )\r\n    (layer_2): TensorLabTransformer(\r\n      (attention): TensorLabAttention(\r\n        (branches): ModuleList(\r\n          (0): AttentionBranch(\r\n            (q_proj): Linear(in_features=64, out_features=64, bias=True)\r\n            (k_proj): Linear(in_features=64, out_features=64, bias=True)\r\n            (v_proj): Linear(in_features=64, out_features=64, bias=True)\r\n            (out_proj): Linear(in_features=64, out_features=64, bias=True)\r\n          )\r\n        )\r\n      )\r\n      (norm1): LayerNorm((64,), eps=1e-05, elementwise_affine=True, bias=True)\r\n      (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True, bias=True)\r\n      (dropout): Dropout(p=0.1, inplace=False)\r\n      (ffn): Sequential(\r\n        (0): Linear(in_features=64, out_features=128, bias=True)\r\n        (1): GELU(approximate='none')\r\n        (2): Dropout(p=0.1, inplace=False)\r\n        (3): Linear(in_features=128, out_features=64, bias=True)\r\n        (4): Dropout(p=0.1, inplace=False)\r\n      )\r\n    )\r\n    (layer_3): Flatten(start_dim=1, end_dim=-1)\r\n    (layer_4): Linear(in_features=1024, out_features=10, bias=True)\r\n  )\r\n)\r\nOutput shape: (1, 10)\r\nParameters: 77194\r\n",
+  "measuredEpochs": 2
+}

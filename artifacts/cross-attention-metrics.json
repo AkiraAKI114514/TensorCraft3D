@@ -1,0 +1,30 @@
+[
+  {
+    "epoch": 1,
+    "trainLoss": 2.2922825813293457,
+    "valLoss": 2.280264377593994,
+    "accuracy": 0.16666666666666666,
+    "gradNorm": 0.6900919076384513,
+    "layerGradients": {
+      "layer_1": 0.27349777022590993,
+      "layer_2": 0,
+      "layer_3": 0.6333121444136198
+    },
+    "deadRelu": {},
+    "source": "training"
+  },
+  {
+    "epoch": 2,
+    "trainLoss": 2.2245758863595815,
+    "valLoss": 2.2212982177734375,
+    "accuracy": 0.25,
+    "gradNorm": 0.6453827715500768,
+    "layerGradients": {
+      "layer_1": 0.28396849362847243,
+      "layer_2": 0,
+      "layer_3": 0.579458236812811
+    },
+    "deadRelu": {},
+    "source": "training"
+  }
+]

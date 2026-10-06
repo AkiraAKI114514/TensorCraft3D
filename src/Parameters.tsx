@@ -1,0 +1,19 @@
+import { ATTENTION_TYPES, attentionConfig, isAttention } from './attentionConfig';
+import { DEFAULTS, type Layer } from './types';
+
+export default function Parameters({ node, disabled, onUpdate }: { node: Layer; disabled: boolean; onUpdate: (key: string, value: number | number[] | string) => void }) {
+  if (node.op === 'Input') return <label className="field-label">输入形状<input key={node.id} defaultValue={(node.params.shape as number[]).join(', ')} disabled={disabled} onBlur={e => onUpdate('shape', e.target.value.split(/[,×x\s]+/).filter(Boolean).map(Number))} /></label>;
+  const attention = isAttention(node.op), cfg = attentionConfig(node.params);
+  const params = { ...DEFAULTS[node.op], ...(node.op === 'Transformer' ? { norm_first: 1, activation: 'gelu' } : {}), ...node.params, ...(attention ? { kv_heads: cfg.kvHeads, branches: cfg.branches, attention_type: cfg.type } : {}) };
+  if (!Object.keys(params).length) return <p className="muted-text">此算子无可配置参数</p>;
+  return <>{Object.entries(params).filter(([key]) => key !== 'qkv_count').map(([key, value]) => key === 'attention_type' ?
+    <label className="field-label" key={key}>attention_type<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}>{Object.entries(ATTENTION_TYPES).map(([type, label]) => <option key={type} value={type}>{label}</option>)}</select></label> : key === 'activation' ?
+    <label className="field-label" key={key}>activation<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}><option value="gelu">GELU</option><option value="relu">ReLU</option></select></label> : key === 'norm_first' ?
+    <label className="field-label" key={key}>LayerNorm 位置<select aria-label={key} disabled={disabled} value={Number(value)} onChange={e => onUpdate(key, Number(e.target.value))}><option value={1}>Pre-Norm · 相加前</option><option value={0}>Post-Norm · 相加后</option></select></label> :
+    key === 'normalized_shape' || key === 'shape' || key === 'output_size' ?
+    <label className="parameter-field" key={key}><span title={key}>{key}</span><input type="text" aria-label={key} disabled={disabled} value={Array.isArray(value) ? value.join(', ') : String(value)} onChange={e => onUpdate(key, e.target.value)} onBlur={e => { const raw = e.target.value.split(/[,×x\s]+/).filter(Boolean).map(Number); onUpdate(key, raw.length > 1 ? raw : (raw[0] || 1)); }} /></label> :
+    key === 'mode' ? <label className="field-label" key={key}>mode<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}><option value="nearest">nearest</option><option value="linear">linear</option><option value="bilinear">bilinear</option><option value="trilinear">trilinear</option><option value="area">area</option></select></label> :
+    <label className="parameter-field" key={key}><span title={key}>{key === 'num_heads' ? 'num_heads · Q 数量' : key}</span><input type="number" aria-label={key} disabled={disabled || (key === 'kv_heads' && ['self', 'multi_query', 'multi_branch'].includes(cfg.type))} value={Number(value)} min={['padding', 'p', 'dropout', 'negative_slope', 'alpha'].includes(key) ? 0 : key === 'dim' ? -5 : key === 'branches' && cfg.type === 'multi_branch' ? 2 : 1} max={['p', 'dropout'].includes(key) ? 0.99 : ['num_heads', 'kv_heads'].includes(key) ? 16 : key === 'branches' ? 8 : 65536} step={['p', 'dropout', 'negative_slope', 'alpha'].includes(key) ? 0.05 : 1} onChange={e => onUpdate(key, Number(e.target.value))} /></label>)}
+    {attention && <p className="muted-text">num_heads / kv_heads / branches 改变真实模型。每个分支独立计算后取平均。{cfg.type === 'cross' ? 'Cross-Attention：Query → Q，Context → K/V；两个序列长度可不同，特征维度需一致。' : cfg.type === 'multi_query' ? 'MQA：所有 Q 头共享一个 K/V 头。' : cfg.type === 'grouped_query' ? 'GQA：每组 Q 头共享 K/V，num_heads 必须能被 kv_heads 整除。' : '每个 Q 头使用独立的 K/V 头。'}</p>}
+  </>;
+}
