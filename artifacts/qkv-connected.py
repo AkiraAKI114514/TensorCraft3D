@@ -122,7 +122,7 @@ class TensorLabTransformer(nn.Module):
 
 
 
-_TENSORLAB_INPUT_SHAPES = {"layer_0":[1,16,64],"n_866399407896":[1,16,64]}
+_TENSORLAB_INPUT_SHAPES = {"layer_0":[1,16,64],"n_dc0e4b1107af":[1,16,64]}
 
 class VisualModel(nn.Module):
     def __init__(self):
@@ -134,7 +134,7 @@ class VisualModel(nn.Module):
         })
 
     def forward(self, x):
-        input_ids = ["layer_0","n_866399407896"]
+        input_ids = ["layer_0","n_dc0e4b1107af"]
         if isinstance(x, dict):
             if set(x) != set(input_ids):
                 raise ValueError("Input dictionary must contain exactly the model's Input node IDs")
@@ -143,8 +143,8 @@ class VisualModel(nn.Module):
         values = {}
         ports = {}
         values["layer_0"] = x["layer_0"]
-        values["n_866399407896"] = x["n_866399407896"]
-        values["layer_1"], ports["layer_1"] = self.layers["layer_1"].forward_with_ports(values["layer_0"], None, overrides={"b0:q0": values["n_866399407896"]})
+        values["n_dc0e4b1107af"] = x["n_dc0e4b1107af"]
+        values["layer_1"], ports["layer_1"] = self.layers["layer_1"].forward_with_ports(values["layer_0"], None, overrides={"b0:q0": values["n_dc0e4b1107af"]})
         values["layer_2"] = self.layers["layer_2"](ports["layer_1"]["b0:q0"])
         values["layer_3"] = self.layers["layer_3"](values["layer_2"])
         values["layer_4"] = values["layer_3"]
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     model = VisualModel().eval()
     sample = {
         "layer_0": torch.randn(1, 16, 64),
-        "n_866399407896": torch.randn(1, 16, 64),
+        "n_dc0e4b1107af": torch.randn(1, 16, 64),
     }
     with torch.no_grad():
         result = model(sample)

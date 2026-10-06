@@ -5,6 +5,7 @@ import { residualEdges } from './graphRoutes';
 import { RESIDUAL_COLOR, type Point3 } from './flowGeometry';
 import { compactImageLayout, DEFAULT_IMAGE_OPTIONS, placeImageLabels, type ImageExportOptions, type ImageLabel, type LabelRequest, type Rect } from './imageLayout';
 import { shapeText } from './analysis';
+import { buildAttentionExport, exportStacks } from './attentionExport';
 import type { Analysis, Graph, Layer } from './types';
 
 interface ExportSource { scene: THREE.Scene; camera: THREE.OrthographicCamera; graph: Graph; analysis: Analysis; dimensions: Record<string, Point3>; expanded: boolean; viewport: { width: number; height: number }; direction?: () => string; }
@@ -28,24 +29,51 @@ function roundedRoute(points: THREE.Vector3[]) {
   return path;
 }
 
+// Drop repeated and collinear corners, which would otherwise give the rounded
+// route zero-length legs.
+function simplifyRoute(points: THREE.Vector3[]) {
+  const result = points.filter((point, i) => !i || point.distanceTo(points[i - 1]) > 1e-3);
+  for (let i = result.length - 2; i > 0; i--) {
+    const before = result[i].clone().sub(result[i - 1]).normalize(), after = result[i + 1].clone().sub(result[i]).normalize();
+    if (before.dot(after) > 0.9999) result.splice(i, 1);
+  }
+  return result;
+}
+
+// Ordinary layers are thin slabs beside the attention modules; enlarging them
+// in the compact export keeps them legible without widening the stages.
+const BLOCK_SCALE = 1.6;
+const scaled = (dimensions: Point3) => dimensions.map(value => value * BLOCK_SCALE) as Point3;
+const exportDimensions = (source: ExportSource) => Object.fromEntries(source.graph.nodes.map(node => [node.id, isAttention(node.op) ? attentionLayout(node, source.expanded, true, exportStacks(source.graph, node)).dimensions : scaled(source.dimensions[node.id])]));
+
 function prepareImage(source: ExportSource, width: number, options: ImageExportOptions): PreparedImage {
   const height = Math.round(width / (options.layout === 'current' ? source.viewport.width / source.viewport.height : options.aspect));
   const scene = source.scene.clone(true), camera = source.camera.clone(), allocated: (THREE.BufferGeometry | THREE.Material)[] = [];
   scene.background = new THREE.Color('#f5f8fa');
   const grid = scene.getObjectByName('export_grid'); if (grid) grid.visible = false;
-  const compact = options.layout === 'compact' ? compactImageLayout(source.graph, source.analysis.order, source.dimensions, options.aspect) : undefined;
-  const positions: Record<string, THREE.Vector3> = {};
+  const compact = options.layout === 'compact' ? compactImageLayout(source.graph, source.analysis.order, exportDimensions(source), options.aspect) : undefined;
+  const positions: Record<string, THREE.Vector3> = {}, attention: Record<string, ReturnType<typeof buildAttentionExport>> = {}, dimensions = { ...source.dimensions };
   source.graph.nodes.forEach(node => {
     const root = nodeRoot(scene, node);
     if (!root) return;
-    if (compact) root.position.set(...compact.positions[node.id]);
+    if (compact) {
+      root.position.set(...compact.positions[node.id]);
+      if (isAttention(node.op)) {
+        const built = buildAttentionExport(node, source.expanded, { error: source.analysis.diagnostics.some(d => d.nodeId === node.id && d.level === 'error'), overriddenPorts: source.graph.edges.filter(e => e.target === node.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!), stacks: exportStacks(source.graph, node) });
+        root.clear(); root.add(built.root); attention[node.id] = built; dimensions[node.id] = built.layout.dimensions;
+      } else { root.scale.setScalar(BLOCK_SCALE); dimensions[node.id] = scaled(source.dimensions[node.id]); }
+    }
     positions[node.id] = root.position.clone();
   });
   if (compact) {
-    const shortcuts = residualEdges(source.graph), lanes = new Map<string, number>();
+    const shortcuts = residualEdges(source.graph), lanes = new Map<string, number>(), v = (x: number, y: number) => new THREE.Vector3(x, y, 0.5);
+    const take = (key: string) => { const lane = lanes.get(key) ?? 0; lanes.set(key, lane + 1); return lane; };
+    // Corridors run in the clearance just above a band, never through its rows:
+    // a corridor on a row's centre line drew the wrap back over the main path.
+    const corridor = (band: number) => compact.bands[band].top + 0.3 + (take(`gap-${band}`) % 5) * 0.22;
     const port = (node: Layer, side: 'input' | 'output' | 'context', projection?: string) => {
-      const attention = isAttention(node.op) ? attentionLayout(node, source.expanded) : undefined;
-      const offset = attention ? (projection ? attention.projectionPositions[projection] : attention.ports[side]) : [(side === 'input' ? -1 : 1) * source.dimensions[node.id][0] / 2, 0, 0];
+      const layout = attention[node.id]?.layout;
+      const offset = layout ? (projection ? layout.projectionPositions[projection] : layout.ports[side]) : [(side === 'input' ? -1 : 1) * dimensions[node.id][0] / 2, 0, 0];
       return positions[node.id].clone().add(new THREE.Vector3(...offset as Point3));
     };
     for (const edge of source.graph.edges) {
@@ -53,21 +81,32 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
       const from = source.graph.nodes.find(n => n.id === edge.source)!, to = source.graph.nodes.find(n => n.id === edge.target)!;
       const start = port(from, 'output', edge.sourcePort);
       const side = !isProjectionPort(edge.targetPort) && isCrossAttention(to) && crossInputRole(source.graph, to, edge.id) === 'context' ? 'context' : 'input';
-      const end = port(to, side, isProjectionPort(edge.targetPort) ? edge.targetPort : undefined);
       const residual = shortcuts.has(edge.id), fromBand = compact.bandByNode[from.id], toBand = compact.bandByNode[to.id];
-      const key = `${fromBand}-${toBand}`, lane = lanes.get(key) ?? 0;
-      if (residual || fromBand !== toBand) lanes.set(key, lane + 1);
-      const offset = 0.55 + (lane % 6) * 0.18;
-      let curve: THREE.Curve<THREE.Vector3>;
+      // Shortcuts drop into their Add from above, as in the 3D view, unless
+      // another lane of the same stage sits over it.
+      const fromAbove = residual && compact.laneByNode[to.id] === 0;
+      const end = fromAbove ? positions[to.id].clone().add(new THREE.Vector3(0, dimensions[to.id][1] / 2, 0)) : port(to, side, isProjectionPort(edge.targetPort) ? edge.targetPort : undefined);
+      let route: THREE.Vector3[] | undefined;
       if (fromBand !== toBand) {
-        const right = Math.max(...compact.bands.slice(Math.min(fromBand, toBand), Math.max(fromBand, toBand) + 1).map(b => b.right)) + offset;
-        const left = Math.min(...compact.bands.slice(Math.min(fromBand, toBand), Math.max(fromBand, toBand) + 1).map(b => b.left)) - offset;
-        const corridor = compact.bands[toBand].top - 0.35 - (lane % 4) * 0.18;
-        curve = roundedRoute([start, new THREE.Vector3(right, start.y, 0.5), new THREE.Vector3(right, corridor, 0.5), new THREE.Vector3(left, corridor, 0.5), new THREE.Vector3(left, end.y, 0.5), end]);
+        // Leave through the gap after the source stage, turn into the gap above
+        // the target band, and enter through the gap before the target stage.
+        const exit = compact.columns[from.id][1] - 0.2 - (compact.laneByNode[from.id] % 3) * 0.15;
+        route = [start, v(exit, start.y)];
+        if (toBand > fromBand + 1) {
+          const below = corridor(fromBand + 1), outer = Math.max(...compact.bands.slice(fromBand, toBand + 1).map(b => b.right)) + 0.5 + (take('outer') % 4) * 0.2;
+          route.push(v(exit, below), v(outer, below));
+        }
+        const y = corridor(toBand), approach = compact.columns[to.id][0] + 0.2 + (take(`approach-${to.id}`) % 3) * 0.15;
+        route.push(v(route.at(-1)!.x, y), ...(fromAbove ? [v(end.x, y), end] : [v(approach, y), v(approach, end.y), end]));
       } else if (residual) {
-        const corridor = compact.bands[fromBand].top - 0.35 - (lane % 4) * 0.18;
-        curve = roundedRoute([start, new THREE.Vector3(start.x + 0.45, start.y, 0.5), new THREE.Vector3(start.x + 0.45, corridor, 0.5), new THREE.Vector3(end.x - 0.5, corridor, 0.5), new THREE.Vector3(end.x - 0.5, end.y, 0.5), end]);
-      } else {
+        // Within a band, hop just over the blocks the shortcut skips.
+        const spanned = source.graph.nodes.filter(n => compact.bandByNode[n.id] === fromBand && positions[n.id].x > start.x && positions[n.id].x < end.x);
+        const over = Math.max(start.y, end.y, ...spanned.map(n => positions[n.id].y + dimensions[n.id][1] / 2)) + 0.35 + (take(`skip-${fromBand}`) % 4) * 0.2;
+        route = [start, v(start.x + 0.3, start.y), v(start.x + 0.3, over), ...(fromAbove ? [v(end.x, over), end] : [v(end.x - 0.3, over), v(end.x - 0.3, end.y), end])];
+      }
+      let curve: THREE.Curve<THREE.Vector3>;
+      if (route) curve = roundedRoute(simplifyRoute(route));
+      else {
         const dx = end.x - start.x;
         curve = new THREE.CubicBezierCurve3(start, start.clone().add(new THREE.Vector3(dx * 0.4, 0, 0)), end.clone().sub(new THREE.Vector3(dx * 0.4, 0, 0)), end);
       }
@@ -77,8 +116,10 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
       allocated.push(geometry, material);
       const line = new THREE.Mesh(geometry, material); line.userData.exportPolyline = curve.getPoints(100).map(p => p.toArray()); line.userData.exportColor = color; group.add(line);
       const arrowGeometry = new THREE.ConeGeometry(0.09, 0.23, 8), arrowMaterial = new THREE.MeshBasicMaterial({ color }); allocated.push(arrowGeometry, arrowMaterial);
-      const backward = source.direction?.() === 'backward', t = backward ? 0.14 : 0.86;
-      const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial); arrow.position.copy(curve.getPoint(t)); arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), curve.getTangent(t).multiplyScalar(backward ? -1 : 1).normalize()); arrow.userData.exportMesh = true; arrow.userData.exportPart = 'flow-arrow'; group.add(arrow);
+      // Routed edges carry the arrow on their final leg, measured by arc length,
+      // so it points into the target rather than along a corridor.
+      const backward = source.direction?.() === 'backward', u = route ? Math.max(0.5, 1 - 0.25 / curve.getLength()) : 0.86, t = backward ? 1 - u : u;
+      const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial); arrow.position.copy(curve.getPointAt(t)); arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), curve.getTangentAt(t).multiplyScalar(backward ? -1 : 1).normalize()); arrow.userData.exportMesh = true; arrow.userData.exportPart = 'flow-arrow'; group.add(arrow);
       scene.add(group);
     }
   }
@@ -134,7 +175,7 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
         curve.getPoints(24).forEach(p => box.expandByPoint(p.applyMatrix4(object.matrixWorld)));
       }
     });
-    if (box.isEmpty()) box.setFromCenterAndSize(positions[node.id], new THREE.Vector3(...source.dimensions[node.id]));
+    if (box.isEmpty()) box.setFromCenterAndSize(positions[node.id], new THREE.Vector3(...dimensions[node.id]));
     const points = corners(box).map(project), xs = points.map(p => p[0]), ys = points.map(p => p[1]);
     const rect = { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) }; obstacles.push(rect);
     requests.push({ id: node.id, text: node.name, x: rect.x + rect.width / 2, y: rect.y + rect.height + 8 * scale, maxWidth: 145 * scale, fontSize: baseSize, secondary: shapeText(source.analysis.layers[node.id]?.output), color: '#334f5b' });
@@ -155,7 +196,7 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
   // Captions avoid the model boxes; internal labels belong inside their module.
   const internal = labels.filter(label => !label.secondary);
   const captions = placeImageLabels(requests.filter(label => Boolean(label.secondary)), [...obstacles, ...internal], width, height, (text, size) => { measuringContext.font = `${size}px ${fontFamily}`; return measuringContext.measureText(text).width; });
-  return { scene, camera, labels: [...internal, ...captions], width, height, bands: compact?.bands.length ?? 1, dispose: () => allocated.forEach(resource => resource.dispose()) };
+  return { scene, camera, labels: [...internal, ...captions], width, height, bands: compact?.bands.length ?? 1, dispose: () => { allocated.forEach(resource => resource.dispose()); Object.values(attention).forEach(built => built.dispose()); } };
 }
 
 function drawLabels(context: CanvasRenderingContext2D, image: PreparedImage, title: string) {
@@ -206,12 +247,16 @@ export function exportSceneSvg(source: ExportSource, width: number, options = DE
   const project = (point: THREE.Vector3) => { const p = point.clone().project(image.camera); return [(p.x * 0.5 + 0.5) * image.width, (-p.y * 0.5 + 0.5) * image.height]; };
   const geometry = (root?: THREE.Object3D) => {
     if (!root) return '';
-    const polygons: { depth: number; text: string }[] = [], paths: string[] = [];
+    const polygons: { depth: number; text: string }[] = [];
     root.traverse(object => {
-      if (object.userData.exportCurve || object.userData.exportPolyline) {
+      if (object.userData.exportCurve || object.userData.exportPolyline || object.userData.exportOutline) {
         const route = object.userData.exportCurve;
-        const points: Point3[] = object.userData.exportPolyline ?? new THREE.CubicBezierCurve3(...[route.start, route.control1, route.control2, route.end].map(p => new THREE.Vector3(...p as Point3)) as [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]).getPoints(60).map(p => p.toArray());
-        paths.push(`<path d="${points.map((p, i) => `${i ? 'L' : 'M'}${project(new THREE.Vector3(...p).applyMatrix4(object.matrixWorld)).join(',')}`).join(' ')}" fill="none" stroke="${route?.color ?? object.userData.exportColor}" stroke-width="${Math.max(0.8, image.width / 1920)}" stroke-opacity="0.8"/>`);
+        const points: Point3[] = object.userData.exportPolyline ?? object.userData.exportOutline ?? new THREE.CubicBezierCurve3(...[route.start, route.control1, route.control2, route.end].map(p => new THREE.Vector3(...p as Point3)) as [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3]).getPoints(60).map(p => p.toArray());
+        const world = points.map(p => new THREE.Vector3(...p).applyMatrix4(object.matrixWorld));
+        // Paths join the depth sort so an opaque stack card covers the routes
+        // and outlines of the faces behind it, as in the PNG.
+        const depth = world.reduce((sum, p) => sum + p.clone().applyMatrix4(image.camera.matrixWorldInverse).z, 0) / world.length;
+        polygons.push({ depth, text: `<path d="${world.map((p, i) => `${i ? 'L' : 'M'}${project(p).join(',')}`).join(' ')}" fill="none" stroke="${route?.color ?? object.userData.exportColor}" stroke-width="${Math.max(0.8, image.width / 1920)}" stroke-opacity="0.8"/>` });
       }
       if (object.userData.exportMesh && object instanceof THREE.Mesh) {
         const positions = object.geometry.getAttribute('position'), indices = object.geometry.index, material = object.material as THREE.MeshStandardMaterial;
@@ -224,7 +269,7 @@ export function exportSceneSvg(source: ExportSource, width: number, options = DE
         }
       }
     });
-    return paths.join('') + polygons.sort((a, b) => a.depth - b.depth).map(p => p.text).join('');
+    return polygons.sort((a, b) => a.depth - b.depth).map(p => p.text).join('');
   };
   try {
     const shortcuts = residualEdges(source.graph);

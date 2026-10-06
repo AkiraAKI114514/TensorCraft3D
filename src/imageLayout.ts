@@ -4,7 +4,9 @@ import type { Point3 } from './flowGeometry';
 export interface ImageExportOptions { layout: 'compact' | 'current'; aspect: number; fontSize: number; }
 export const DEFAULT_IMAGE_OPTIONS: ImageExportOptions = { layout: 'compact', aspect: 16 / 9, fontSize: 11 };
 export interface ImageBand { left: number; right: number; top: number; bottom: number; }
-export interface CompactLayout { positions: Record<string, Point3>; bands: ImageBand[]; bandByNode: Record<string, number>; height: number; }
+// `columns` is the x-range of a node's stage and `laneByNode` its row inside the
+// band; edge routing uses the gaps between stages and bands as free corridors.
+export interface CompactLayout { positions: Record<string, Point3>; bands: ImageBand[]; bandByNode: Record<string, number>; laneByNode: Record<string, number>; columns: Record<string, [number, number]>; clearance: number; height: number; }
 
 // Keep each topological stage intact, so parallel inputs stay next to each other.
 // Every band flows left-to-right; wrapping never reverses the module ports.
@@ -28,12 +30,15 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
     stage.sort((a, b) => barycenter(a) - barycenter(b) || order_[a] - order_[b]);
     stage.forEach((id, index) => { lane[id] = index; });
   });
-  if (!stages.length) return { positions: {}, bands: [], bandByNode: {}, height: 0 };
-  const widths = stages.map(stage => Math.max(3.8, ...stage.map(id => dimensions[id][0] + 1.8)));
+  if (!stages.length) return { positions: {}, bands: [], bandByNode: {}, laneByNode: {}, columns: {}, clearance: 0, height: 0 };
+  // A stage only reserves its widest block plus a gap for routes and captions;
+  // a fixed wide minimum left thin layers floating in empty columns.
+  const widths = stages.map(stage => Math.max(2.5, ...stage.map(id => dimensions[id][0] + 1.4)));
   // Rows inside a band and bands themselves use the same clearance, and a band
   // is only as tall as its own lanes: reserving the tallest lane's pitch for a
   // row of activations is what left the frame half empty.
-  const clearance = Math.max(1.2, Math.max(...graph.nodes.map(node => dimensions[node.id][1])) * 0.16);
+  // Bands also leave room for the corridors that carry cross-band edges.
+  const clearance = Math.max(1.5, Math.max(...graph.nodes.map(node => dimensions[node.id][1])) * 0.16);
   const measure = (from: number, to: number) => {
     const lanes = Math.max(...stages.slice(from, to).map(stage => stage.length)), used: number[] = [];
     for (let row = 0; row < lanes; row++) used.push(Math.max(0, ...stages.slice(from, to).map(stage => stage[row]).filter(Boolean).map(id => dimensions[id][1])));
@@ -64,7 +69,7 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
     const score = Math.abs(Math.log((w / h) / aspect)) + (1 - occupancy) * 0.5 + ranges.length * 0.01 + cuts * 0.006;
     if (!best || score < best.score) best = { ranges, score };
   }
-  const positions: Record<string, Point3> = {}, bandByNode: Record<string, number> = {}, bands: ImageBand[] = [];
+  const positions: Record<string, Point3> = {}, bandByNode: Record<string, number> = {}, laneByNode: Record<string, number> = {}, columns: Record<string, [number, number]> = {}, bands: ImageBand[] = [];
   let top = 0;
   best!.ranges.forEach(([from, to], band) => {
     const size = measure(from, to), left = -size.width / 2;
@@ -72,14 +77,14 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
     for (let index = from; index < to; index++) {
       stages[index].forEach((id, row) => {
         positions[id] = [x + widths[index] / 2, top - size.centers[row], 0];
-        bandByNode[id] = band;
+        bandByNode[id] = band; laneByNode[id] = row; columns[id] = [x, x + widths[index]];
       });
       x += widths[index];
     }
     bands.push({ left, right: left + size.width, top, bottom: top - size.height });
     top -= size.height + clearance;
   });
-  return { positions, bands, bandByNode, height: -bands.at(-1)!.bottom };
+  return { positions, bands, bandByNode, laneByNode, columns, clearance, height: -bands.at(-1)!.bottom };
 }
 
 export interface Rect { x: number; y: number; width: number; height: number; }
@@ -90,7 +95,13 @@ export interface ImageLabel extends Rect { id: string; text: string; lines: stri
 export function wrapImageText(text: string, width: number, measure: (text: string) => number, maxLines = 3) {
   const lines: string[] = []; let line = '';
   for (const char of text) {
-    if (line && measure(line + char) > width) { lines.push(line); line = ''; }
+    if (line && measure(line + char) > width) {
+      // Prefer breaking after a separator so `self.fusion_ffn.0` splits into
+      // name parts rather than mid-word; fall back to a hard break.
+      const cut = Math.max(...['.', '_', ' ', '/', '-'].map(separator => line.lastIndexOf(separator))) + 1;
+      if (cut > line.length / 3) { lines.push(line.slice(0, cut)); line = line.slice(cut); }
+      else { lines.push(line); line = ''; }
+    }
     line += char;
   }
   if (line) lines.push(line);

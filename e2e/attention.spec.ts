@@ -44,16 +44,14 @@ test('Coaxial attention slices, exports and measured training', async ({ page })
     const projected = await page.evaluate(svg => {
       const document = new DOMParser().parseFromString(svg, 'image/svg+xml');
       const root = document.documentElement, width = Number(root.getAttribute('width')), height = Number(root.getAttribute('height'));
-      return Array.from(document.querySelectorAll('g[data-label-id^="layer_1:"] text')).filter(t => /^H\d+$/.test(t.textContent || '')).map(t => ({ x: Number(t.getAttribute('x')), y: Number(t.getAttribute('y')), width, height }));
+      return { cards: document.querySelectorAll('g[data-node-id="layer_1"] polygon[data-part="stack-card"]').length, texts: Array.from(document.querySelectorAll('g[data-label-id^="layer_1:"] text')).map(t => ({ text: t.textContent || '', x: Number(t.getAttribute('x')), y: Number(t.getAttribute('y')), width, height })) };
     }, readFileSync(svgFile, 'utf8'));
-    const visible = projected.filter(p => p.x >= 0 && p.x <= p.width && p.y >= 0 && p.y <= p.height);
-    expect(visible).toHaveLength(count);
-    const sorted = visible.sort((a, b) => a.x - b.x);
-    sorted.slice(1).forEach((p, i) => expect(Math.hypot(p.x - sorted[i].x, p.y - sorted[i].y)).toBeGreaterThan(12));
-    if (sorted.length > 2) {
-      const dx = sorted.at(-1)!.x - sorted[0].x, dy = sorted.at(-1)!.y - sorted[0].y;
-      sorted.forEach(p => expect(Math.abs((p.x - sorted[0].x) * dy - (p.y - sorted[0].y) * dx) / Math.hypot(dx, dy)).toBeLessThan(0.01));
-    }
+    const visible = projected.texts.filter(p => p.x >= 0 && p.x <= p.width && p.y >= 0 && p.y <= p.height);
+    // Heads that split one input are exported as a single stepped stack: the
+    // front face names the head range and the back layers carry the count.
+    expect(visible.filter(p => /^H\d+/.test(p.text)).map(p => p.text)).toEqual([count === 1 ? 'H1' : `H1–H${count}`]);
+    expect(visible.filter(p => /^×\d+$/.test(p.text)).map(p => p.text)).toEqual(count === 1 ? [] : [`×${count}`]);
+    expect(projected.cards > 0).toBe(count > 1);
   }
   await page.getByLabel('num_heads', { exact: true }).fill('4');
   await page.getByRole('button', { name: '展开层间距', exact: true }).click();

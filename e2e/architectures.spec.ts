@@ -31,7 +31,9 @@ test('MQA/GQA parameters, shared KV visualization and real exported branches', a
   await page.getByRole('button', { name: '三维视图', exact: true }).click();
   await page.getByRole('button', { name: '聚焦选中层', exact: true }).click();
   const svg = await exportedSvg(page);
-  expect(svg).toContain('data-part="b0:k0"'); expect(svg).toContain('data-part="b1:k1"'); expect(svg).toContain('Branch Mean');
+  // Each branch's two KV groups export as one stack: the front group keeps its
+  // Q/K/V cubes, the group behind it shows as a stepped layer.
+  expect(svg).toContain('data-part="b0:k0"'); expect(svg).toContain('data-part="b1:k0"'); expect(svg).toContain('data-part="stack-layer"'); expect(svg).toContain('Branch Mean');
   expect(svg).not.toContain('shared-K'); expect(svg).toContain('data-sides="6"');
   await page.getByRole('button', { name: 'B2 · H8', exact: true }).click();
   mkdirSync('artifacts', { recursive: true });
