@@ -33,6 +33,26 @@ test('exports a compact dual-branch model with readable labels and a fixed aspec
   const pngEvent = page.waitForEvent('download'); await page.getByRole('button', { name: '导出 PNG', exact: true }).click();
   await (await pngEvent).saveAs('artifacts/compact-model-1920.png');
   const bytes = readFileSync('artifacts/compact-model-1920.png'); expect(bytes.readUInt32BE(16)).toBe(1920); expect(bytes.readUInt32BE(20)).toBe(1080);
+  // The compact layout must fill the frame: measure the ink bounding box so a
+  // layout that shrinks the model into a corner fails here. Horizontal slack is
+  // expected when cross-band routes need room, so it is bounded more loosely.
+  const fill = await page.evaluate(async url => {
+    const image = new Image(); image.src = url; await image.decode();
+    const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let left = canvas.width, right = 0, top = canvas.height, bottom = 0;
+    for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
+      const i = (y * canvas.width + x) * 4;
+      if (Math.abs(pixels[i] - 245) + Math.abs(pixels[i + 1] - 248) + Math.abs(pixels[i + 2] - 250) < 12) continue;
+      if (x < left) left = x; if (x > right) right = x; if (y < top) top = y; if (y > bottom) bottom = y;
+    }
+    return { left, right, top, bottom, width: canvas.width, height: canvas.height };
+  }, `data:image/png;base64,${bytes.toString('base64')}`);
+  expect(fill.bottom - fill.top).toBeGreaterThan(fill.height * 0.85);
+  expect(fill.right - fill.left).toBeGreaterThan(fill.width * 0.8);
+  expect(fill.left).toBeLessThan(fill.width * 0.05);
+  expect(fill.top).toBeLessThan(fill.height * 0.05);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('tensorlab-project')!))).toEqual(graph);
   await page.getByRole('button', { name: '导出图像', exact: true }).click();
   await page.getByLabel('画幅比例').selectOption('1'); await page.getByLabel('标注字号').fill('9'); await page.getByLabel('透明背景').check();

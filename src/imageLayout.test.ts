@@ -11,16 +11,34 @@ describe('image export layout', () => {
     const dimensions = Object.fromEntries(graph.nodes.map(n => [n.id, isAttention(n.op) ? attentionLayout(n).dimensions : [0.55, 2, 0.8] as Point3]));
     const layout = compactImageLayout(graph, analysis.order, dimensions, aspect);
     expect(layout.bands.length).toBeGreaterThan(1);
-    expect(layout.positions.climate[0]).toBe(layout.positions.canopy[0]);
+    expect(layout.positions.import_0[0]).toBe(layout.positions.import_1[0]);
     graph.edges.forEach(edge => {
       const a = layout.bandByNode[edge.source], b = layout.bandByNode[edge.target];
       expect(b).toBeGreaterThanOrEqual(a);
       if (a === b) expect(layout.positions[edge.target][0]).toBeGreaterThan(layout.positions[edge.source][0]);
     });
-    const width = Math.max(...layout.bands.map(b => b.right - b.left)), height = -layout.bands.at(-1)!.bottom;
-    expect(width / height).toBeGreaterThan(aspect * 0.65);
-    expect(width / height).toBeLessThan(aspect * 1.65);
+    const width = Math.max(...layout.bands.map(b => b.right - b.left));
+    expect(width / layout.height).toBeGreaterThan(aspect * 0.65);
+    expect(width / layout.height).toBeLessThan(aspect * 1.65);
     expect(graph.nodes.every(n => layout.positions[n.id].every(Number.isFinite))).toBe(true);
+  });
+  it('sizes each band from its own lanes instead of reserving the lane pitch per row', () => {
+    const graph = imageTestGraph();
+    const dimensions: Record<string, Point3> = Object.fromEntries(graph.nodes.map(n => [n.id, [0.55, 2, 0.8] as Point3]));
+    dimensions.import_4 = [3, 12.6, 6];
+    const layout = compactImageLayout(graph, analyze(graph).order, dimensions, 16 / 9);
+    const band = layout.bandByNode.import_4, box = layout.bands[band];
+    // Lane 0 sits half its own height below the band top, and lanes below it are
+    // spaced by their own heights rather than the tallest node's pitch.
+    expect(box.top - layout.positions.import_4[1]).toBeCloseTo(12.6 / 2, 5);
+    expect(box.top - box.bottom).toBeLessThan(2 * (12.6 + 1.2));
+    expect(box.top - box.bottom).toBeGreaterThan(12.6);
+    const shorter = compactImageLayout(graph, analyze(graph).order, { ...dimensions, import_4: [3, 4, 6] }, 16 / 9);
+    expect(shorter.bands[shorter.bandByNode.import_4].top - shorter.bands[shorter.bandByNode.import_4].bottom).toBeLessThan(box.top - box.bottom);
+    const stacked = layout.bands.reduce((sum, current) => sum + (current.top - current.bottom), 0);
+    expect(layout.height).toBeGreaterThan(stacked);
+    expect(layout.height).toBeLessThan(stacked + layout.bands.length * 3);
+    expect(layout.positions.import_0[1]).toBeGreaterThan(layout.positions.import_1[1]);
   });
   it('wraps long names without squeezing the font and retains a bounded line count', () => {
     const measure = (text: string) => text.length * 6;

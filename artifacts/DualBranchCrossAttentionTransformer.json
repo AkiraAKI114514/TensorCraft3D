@@ -1,0 +1,451 @@
+{
+  "version": 1,
+  "name": "DualBranchCrossAttentionTransformer",
+  "nodes": [
+    {
+      "id": "import_0",
+      "name": "climate",
+      "op": "Input",
+      "params": {
+        "shape": [
+          64,
+          6,
+          101
+        ]
+      },
+      "position": {
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_1",
+      "name": "canopy",
+      "op": "Input",
+      "params": {
+        "shape": [
+          64,
+          6,
+          69
+        ]
+      },
+      "position": {
+        "x": 0,
+        "y": 270
+      }
+    },
+    {
+      "id": "import_2",
+      "name": "self.climate_projection.0",
+      "op": "Linear",
+      "params": {
+        "out_features": 64
+      },
+      "position": {
+        "x": 210,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_3",
+      "name": "self.climate_projection.1",
+      "op": "LayerNorm",
+      "params": {
+        "normalized_shape": 64,
+        "eps": 0.00001,
+        "elementwise_affine": 1
+      },
+      "position": {
+        "x": 420,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_4",
+      "name": "self.climate_encoder.0",
+      "op": "Transformer",
+      "params": {
+        "ff_dim": 128,
+        "norm_first": 1,
+        "activation": "gelu",
+        "embed_dim": 64,
+        "num_heads": 4,
+        "kv_heads": 4,
+        "attention_type": "self",
+        "branches": 1,
+        "dropout": 0.1
+      },
+      "position": {
+        "x": 630,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_5",
+      "name": "self.climate_encoder.1",
+      "op": "Transformer",
+      "params": {
+        "ff_dim": 128,
+        "norm_first": 1,
+        "activation": "gelu",
+        "embed_dim": 64,
+        "num_heads": 4,
+        "kv_heads": 4,
+        "attention_type": "self",
+        "branches": 1,
+        "dropout": 0.1
+      },
+      "position": {
+        "x": 840,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_6",
+      "name": "self.canopy_projection.0",
+      "op": "Linear",
+      "params": {
+        "out_features": 64
+      },
+      "position": {
+        "x": 210,
+        "y": 270
+      }
+    },
+    {
+      "id": "import_7",
+      "name": "self.canopy_projection.1",
+      "op": "LayerNorm",
+      "params": {
+        "normalized_shape": 64,
+        "eps": 0.00001,
+        "elementwise_affine": 1
+      },
+      "position": {
+        "x": 420,
+        "y": 270
+      }
+    },
+    {
+      "id": "import_8",
+      "name": "self.canopy_encoder.0",
+      "op": "Transformer",
+      "params": {
+        "ff_dim": 128,
+        "norm_first": 1,
+        "activation": "gelu",
+        "embed_dim": 64,
+        "num_heads": 4,
+        "kv_heads": 4,
+        "attention_type": "self",
+        "branches": 1,
+        "dropout": 0.1
+      },
+      "position": {
+        "x": 630,
+        "y": 270
+      }
+    },
+    {
+      "id": "import_9",
+      "name": "self.canopy_encoder.1",
+      "op": "Transformer",
+      "params": {
+        "ff_dim": 128,
+        "norm_first": 1,
+        "activation": "gelu",
+        "embed_dim": 64,
+        "num_heads": 4,
+        "kv_heads": 4,
+        "attention_type": "self",
+        "branches": 1,
+        "dropout": 0.1
+      },
+      "position": {
+        "x": 840,
+        "y": 270
+      }
+    },
+    {
+      "id": "import_10",
+      "name": "self.cross_attention",
+      "op": "MultiHeadAttention",
+      "params": {
+        "embed_dim": 64,
+        "num_heads": 4,
+        "kv_heads": 4,
+        "attention_type": "cross",
+        "branches": 1,
+        "dropout": 0.1
+      },
+      "position": {
+        "x": 1050,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_11",
+      "name": "残差相加",
+      "op": "Add",
+      "params": {},
+      "position": {
+        "x": 1260,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_12",
+      "name": "self.cross_norm",
+      "op": "LayerNorm",
+      "params": {
+        "normalized_shape": 64,
+        "eps": 0.00001,
+        "elementwise_affine": 1
+      },
+      "position": {
+        "x": 1470,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_13",
+      "name": "self.fusion_ffn.0",
+      "op": "Linear",
+      "params": {
+        "out_features": 128
+      },
+      "position": {
+        "x": 1680,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_14",
+      "name": "self.fusion_ffn.1",
+      "op": "GELU",
+      "params": {},
+      "position": {
+        "x": 1890,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_15",
+      "name": "self.fusion_ffn.2",
+      "op": "Dropout",
+      "params": {
+        "p": 0.1
+      },
+      "position": {
+        "x": 2100,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_16",
+      "name": "self.fusion_ffn.3",
+      "op": "Linear",
+      "params": {
+        "out_features": 64
+      },
+      "position": {
+        "x": 2310,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_17",
+      "name": "残差相加",
+      "op": "Add",
+      "params": {},
+      "position": {
+        "x": 2520,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_18",
+      "name": "self.fusion_norm",
+      "op": "LayerNorm",
+      "params": {
+        "normalized_shape": 64,
+        "eps": 0.00001,
+        "elementwise_affine": 1
+      },
+      "position": {
+        "x": 2730,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_19",
+      "name": "self.regression_head.0",
+      "op": "Dropout",
+      "params": {
+        "p": 0.1
+      },
+      "position": {
+        "x": 2940,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_20",
+      "name": "self.regression_head.1",
+      "op": "Linear",
+      "params": {
+        "out_features": 1
+      },
+      "position": {
+        "x": 3150,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_21",
+      "name": "Squeeze",
+      "op": "Squeeze",
+      "params": {
+        "dim": -1
+      },
+      "position": {
+        "x": 3360,
+        "y": 100
+      }
+    },
+    {
+      "id": "import_22",
+      "name": "输出",
+      "op": "Output",
+      "params": {},
+      "position": {
+        "x": 3570,
+        "y": 100
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_0",
+      "source": "import_0",
+      "target": "import_2"
+    },
+    {
+      "id": "edge_1",
+      "source": "import_2",
+      "target": "import_3"
+    },
+    {
+      "id": "edge_2",
+      "source": "import_3",
+      "target": "import_4"
+    },
+    {
+      "id": "edge_3",
+      "source": "import_4",
+      "target": "import_5"
+    },
+    {
+      "id": "edge_4",
+      "source": "import_1",
+      "target": "import_6"
+    },
+    {
+      "id": "edge_5",
+      "source": "import_6",
+      "target": "import_7"
+    },
+    {
+      "id": "edge_6",
+      "source": "import_7",
+      "target": "import_8"
+    },
+    {
+      "id": "edge_7",
+      "source": "import_8",
+      "target": "import_9"
+    },
+    {
+      "id": "edge_8",
+      "source": "import_5",
+      "target": "import_10",
+      "targetPort": "query"
+    },
+    {
+      "id": "edge_9",
+      "source": "import_9",
+      "target": "import_10",
+      "targetPort": "context"
+    },
+    {
+      "id": "edge_10",
+      "source": "import_5",
+      "target": "import_11"
+    },
+    {
+      "id": "edge_11",
+      "source": "import_10",
+      "target": "import_11"
+    },
+    {
+      "id": "edge_12",
+      "source": "import_11",
+      "target": "import_12"
+    },
+    {
+      "id": "edge_13",
+      "source": "import_12",
+      "target": "import_13"
+    },
+    {
+      "id": "edge_14",
+      "source": "import_13",
+      "target": "import_14"
+    },
+    {
+      "id": "edge_15",
+      "source": "import_14",
+      "target": "import_15"
+    },
+    {
+      "id": "edge_16",
+      "source": "import_15",
+      "target": "import_16"
+    },
+    {
+      "id": "edge_17",
+      "source": "import_12",
+      "target": "import_17"
+    },
+    {
+      "id": "edge_18",
+      "source": "import_16",
+      "target": "import_17"
+    },
+    {
+      "id": "edge_19",
+      "source": "import_17",
+      "target": "import_18"
+    },
+    {
+      "id": "edge_20",
+      "source": "import_18",
+      "target": "import_19"
+    },
+    {
+      "id": "edge_21",
+      "source": "import_19",
+      "target": "import_20"
+    },
+    {
+      "id": "edge_22",
+      "source": "import_20",
+      "target": "import_21"
+    },
+    {
+      "id": "edge_23",
+      "source": "import_21",
+      "target": "import_22"
+    }
+  ]
+}

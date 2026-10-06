@@ -4,7 +4,7 @@ import type { Point3 } from './flowGeometry';
 export interface ImageExportOptions { layout: 'compact' | 'current'; aspect: number; fontSize: number; }
 export const DEFAULT_IMAGE_OPTIONS: ImageExportOptions = { layout: 'compact', aspect: 16 / 9, fontSize: 11 };
 export interface ImageBand { left: number; right: number; top: number; bottom: number; }
-export interface CompactLayout { positions: Record<string, Point3>; bands: ImageBand[]; bandByNode: Record<string, number>; }
+export interface CompactLayout { positions: Record<string, Point3>; bands: ImageBand[]; bandByNode: Record<string, number>; height: number; }
 
 // Keep each topological stage intact, so parallel inputs stay next to each other.
 // Every band flows left-to-right; wrapping never reverses the module ports.
@@ -16,20 +16,32 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
     (stages[rank[id]] ??= []).push(id);
   }
   const lane: Record<string, number> = {};
+  const order_: Record<string, number> = {};
+  graph.nodes.forEach((node, index) => { order_[node.id] = index; });
   stages.forEach(stage => {
     const barycenter = (id: string) => {
       const parents = graph.edges.filter(e => e.target === id).map(e => lane[e.source]).filter(v => v !== undefined);
-      return parents.length ? parents.reduce((a, b) => a + b, 0) / parents.length : graph.nodes.findIndex(n => n.id === id);
+      return parents.length ? parents.reduce((a, b) => a + b, 0) / parents.length : order_[id];
     };
-    stage.sort((a, b) => barycenter(a) - barycenter(b) || a.localeCompare(b));
+    // Ties keep the graph's own order, so parallel inputs stay in the order the
+    // model declares them instead of being reordered by name.
+    stage.sort((a, b) => barycenter(a) - barycenter(b) || order_[a] - order_[b]);
     stage.forEach((id, index) => { lane[id] = index; });
   });
-  if (!stages.length) return { positions: {}, bands: [], bandByNode: {} };
+  if (!stages.length) return { positions: {}, bands: [], bandByNode: {}, height: 0 };
   const widths = stages.map(stage => Math.max(3.8, ...stage.map(id => dimensions[id][0] + 1.8)));
+  // Rows inside a band and bands themselves use the same clearance, and a band
+  // is only as tall as its own lanes: reserving the tallest lane's pitch for a
+  // row of activations is what left the frame half empty.
+  const clearance = Math.max(1.2, Math.max(...graph.nodes.map(node => dimensions[node.id][1])) * 0.16);
   const measure = (from: number, to: number) => {
-    const ids = stages.slice(from, to).flat(), lanes = Math.max(...stages.slice(from, to).map(stage => stage.length));
-    const pitch = Math.max(3.4, ...ids.map(id => dimensions[id][1] + 2));
-    return { width: widths.slice(from, to).reduce((a, b) => a + b, 0), height: lanes * pitch + 1.8, pitch, lanes };
+    const lanes = Math.max(...stages.slice(from, to).map(stage => stage.length)), used: number[] = [];
+    for (let row = 0; row < lanes; row++) used.push(Math.max(0, ...stages.slice(from, to).map(stage => stage[row]).filter(Boolean).map(id => dimensions[id][1])));
+    // Lane 0 sits half its own height below the band top, so the band's order on
+    // screen matches the lane order instead of being shifted up by a taller lane.
+    const centers: number[] = [];
+    used.forEach((height, row) => centers.push(row ? centers[row - 1] + used[row - 1] / 2 + clearance + height / 2 : used[0] / 2));
+    return { width: widths.slice(from, to).reduce((a, b) => a + b, 0), height: centers.length ? centers.at(-1)! + used.at(-1)! / 2 : 0, centers, lanes, used };
   };
   const total = widths.reduce((a, b) => a + b, 0), minimum = Math.max(...widths);
   let best: { ranges: [number, number][]; score: number } | undefined;
@@ -44,9 +56,12 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
     });
     ranges.push([from, stages.length]);
     const sizes = ranges.map(([from, to]) => measure(from, to));
-    const w = Math.max(...sizes.map(s => s.width)), h = sizes.reduce((sum, s) => sum + s.height, 0);
+    const w = Math.max(...sizes.map(s => s.width)), h = sizes.reduce((sum, s) => sum + s.height, 0) + clearance * (ranges.length - 1);
     const cuts = graph.edges.filter(e => ranges.some(([from, to]) => rank[e.source] < to && rank[e.target] >= to && to < stages.length)).length;
-    const score = Math.abs(Math.log((w / h) / aspect)) + ranges.length * 0.035 + cuts * 0.008;
+    // Match the frame ratio first, then prefer the split that actually fills it:
+    // a short trailing row surrounded by empty space costs more than one band.
+    const occupancy = sizes.reduce((sum, s) => sum + s.width * s.height, 0) / (w * h);
+    const score = Math.abs(Math.log((w / h) / aspect)) + (1 - occupancy) * 0.5 + ranges.length * 0.01 + cuts * 0.006;
     if (!best || score < best.score) best = { ranges, score };
   }
   const positions: Record<string, Point3> = {}, bandByNode: Record<string, number> = {}, bands: ImageBand[] = [];
@@ -56,15 +71,15 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
     let x = left;
     for (let index = from; index < to; index++) {
       stages[index].forEach((id, row) => {
-        positions[id] = [x + widths[index] / 2, top - 1 - size.pitch * (row + 0.5), 0];
+        positions[id] = [x + widths[index] / 2, top - size.centers[row], 0];
         bandByNode[id] = band;
       });
       x += widths[index];
     }
     bands.push({ left, right: left + size.width, top, bottom: top - size.height });
-    top -= size.height;
+    top -= size.height + clearance;
   });
-  return { positions, bands, bandByNode };
+  return { positions, bands, bandByNode, height: -bands.at(-1)!.bottom };
 }
 
 export interface Rect { x: number; y: number; width: number; height: number; }

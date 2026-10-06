@@ -85,22 +85,35 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
   scene.updateMatrixWorld(true);
   camera.left = -width / 2; camera.right = width / 2; camera.top = height / 2; camera.bottom = -height / 2;
   if (compact) {
+    // Measure the drawn geometry itself. Attention blocks fan labels out past
+    // their nominal cube and can sit off-centre, so fitting the nominal boxes
+    // leaves the model small inside a mostly empty frame.
     const bounds = new THREE.Box3();
     source.graph.nodes.forEach(node => {
-      const box = new THREE.Box3().setFromCenterAndSize(positions[node.id], new THREE.Vector3(...source.dimensions[node.id]));
-      box.min.y -= 1.5; box.expandByScalar(0.25); bounds.union(box);
+      const root = nodeRoot(scene, node);
+      if (!root) return;
+      root.traverse(object => {
+        if (object instanceof THREE.Mesh && object.userData.exportMesh && object.geometry.getAttribute('position')) {
+          object.geometry.computeBoundingBox(); bounds.union(object.geometry.boundingBox!.clone().applyMatrix4(object.matrixWorld));
+        }
+        if (object.userData.exportText) { const point = object.getWorldPosition(new THREE.Vector3()); bounds.expandByPoint(point.clone().setY(point.y + 0.7)); bounds.expandByPoint(point.setY(point.y - 2.1)); }
+      });
     });
     scene.traverse(object => {
       if (object.userData.exportPolyline) object.userData.exportPolyline.forEach((p: Point3) => bounds.expandByPoint(new THREE.Vector3(...p)));
     });
     if (bounds.isEmpty()) bounds.set(new THREE.Vector3(-3, -2, -1), new THREE.Vector3(3, 2, 1));
-    const center = bounds.getCenter(new THREE.Vector3()), distance = Math.max(80, bounds.getSize(new THREE.Vector3()).length() * 1.5);
+    const center = bounds.getCenter(new THREE.Vector3()), span = bounds.getSize(new THREE.Vector3()), distance = Math.max(80, span.length() * 1.5);
     camera.near = 0.1; camera.far = distance * 3 + 100;
-    camera.position.copy(center).add(new THREE.Vector3(20, 8, 50).normalize().multiplyScalar(distance)); camera.lookAt(center); camera.updateMatrixWorld(true);
+    // A straight-on view keeps the frame's aspect equal to the layout's: a
+    // three-quarter angle folds module depth into the projected height and
+    // leaves the sides empty even when the rows themselves are wide.
+    camera.position.copy(center).add(new THREE.Vector3(0, 0, distance * 2)); camera.up.set(0, 1, 0); camera.lookAt(center); camera.updateMatrixWorld(true);
     const view = new THREE.Box3().setFromPoints(corners(bounds).map(p => p.applyMatrix4(camera.matrixWorldInverse)));
-    const size = view.getSize(new THREE.Vector3());
-    camera.zoom = Math.min(width * 0.91 / Math.max(1, size.x), height * 0.8 / Math.max(1, size.y));
-    // Center the projected bounds, including wraparound routes and labels.
+    const size = view.getSize(new THREE.Vector3()), margin = 0.97;
+    // One uniform margin keeps the model filling the frame in both directions.
+    camera.zoom = Math.min(width * margin / Math.max(1, size.x), height * margin / Math.max(1, size.y));
+    // Center the projected bounds, including wraparound routes.
     const viewCenter = view.getCenter(new THREE.Vector3());
     camera.position.add(new THREE.Vector3(viewCenter.x, viewCenter.y, 0).applyQuaternion(camera.quaternion)); camera.updateMatrixWorld(true);
   } else camera.zoom = source.camera.zoom * width / source.viewport.width;
