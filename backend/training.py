@@ -39,7 +39,7 @@ def build_model(graph):
                 elif op in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d"):
                     size = p.get("output_size", 1); size = tuple(size) if isinstance(size, list) else size; module = getattr(nn, op)(size)
                 elif op == "Flatten": module = nn.Flatten(1)
-                elif op == "Unsqueeze": module = None
+                elif op in ("Unsqueeze", "Squeeze"): continue
                 elif op in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): module = getattr(nn, op)(float(p.get("p", 0.3)))
                 elif op == "Embedding": module = nn.Embedding(int(p.get("num_embeddings", 100)), int(p.get("embedding_dim", 32)))
                 elif op == "Upsample":
@@ -71,6 +71,9 @@ def build_model(graph):
                 elif op == "Add": values[key] = sum(args)
                 elif op == "Concat": values[key] = torch.cat(args, dim=int(node["params"].get("dim", 1)))
                 elif op == "Unsqueeze": values[key] = torch.unsqueeze(args[0], int(node["params"].get("dim", 0)))
+                elif op == "Squeeze":
+                    dim = node["params"].get("dim", "all")
+                    values[key] = torch.squeeze(args[0]) if dim == "all" else torch.squeeze(args[0], dim=tuple(dim) if isinstance(dim, list) else dim)
                 elif op in ("Transformer", "MultiHeadAttention"):
                     overrides = {e["targetPort"]: edge_value(e) for e in info["overrideEdges"][key]}
                     values[key], ports[key] = self.layers[key].forward_with_ports(args[0], args[1] if len(args) > 1 else None, overrides)

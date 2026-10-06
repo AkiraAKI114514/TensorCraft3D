@@ -104,6 +104,17 @@ export function analyze(graph: Graph): Analysis {
         if (sizes.length !== rank - 2 || !sizes.every(v => Number.isInteger(v) && v > 0 && v <= 256)) throw new Error('自适应池化 output_size 无效'); output = [output[0], output[1], ...sizes];
       } else if (n.op === 'Flatten') output = [output[0], product(output.slice(1))];
       else if (n.op === 'Unsqueeze') { const dim = integer('dim', 0, -output.length - 1, output.length); const index = dim < 0 ? dim + output.length + 1 : dim; output = [...output.slice(0, index), 1, ...output.slice(index)]; }
+      else if (n.op === 'Squeeze') {
+        const raw = n.params.dim ?? 'all';
+        if (raw === 'all') output = output.filter(size => size !== 1);
+        else {
+          const dims = Array.isArray(raw) ? raw : [raw], rank = Math.max(output.length, 1);
+          if (!dims.every(dim => typeof dim === 'number' && Number.isInteger(dim) && dim >= -rank && dim < rank)) throw new Error(`squeeze dim 需要在 [${-rank}, ${rank - 1}] 范围内的整数`);
+          const indices = (dims as number[]).map(dim => (dim + rank) % rank);
+          if (new Set(indices).size !== indices.length) throw new Error('squeeze dim 不能重复指定同一维度');
+          output = output.filter((size, index) => !indices.includes(index) || size !== 1);
+        }
+      }
       else if (n.op === 'Linear') {
         if (output.length !== 2) throw new Error('Linear 需要二维输入 [B,F]，请先添加 Flatten');
         const features = integer('out_features', 10); count = (output[1] + 1) * features; output = [output[0], features];

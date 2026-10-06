@@ -7,7 +7,7 @@ OPS = {
     "ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity",
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
-    "Flatten", "Unsqueeze", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
+    "Flatten", "Unsqueeze", "Squeeze", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
     "Add", "Concat", "MultiHeadAttention", "Transformer"
 }
 
@@ -172,6 +172,17 @@ def analyze_graph(graph):
                 dim = integer("dim", 0, minimum=-len(shape) - 1, maximum=len(shape))
                 if dim < 0: dim += len(shape) + 1
                 shape = [*shape[:dim], 1, *shape[dim:]]
+            elif op == "Squeeze":
+                raw = p.get("dim", "all")
+                if raw == "all": shape = [size for size in shape if size != 1]
+                else:
+                    dims = raw if isinstance(raw, list) else [raw]
+                    rank = max(len(shape), 1)
+                    if any(type(dim) is not int or not -rank <= dim < rank for dim in dims):
+                        raise ValueError(f"{key}: squeeze dim must be an integer in [{-rank}, {rank - 1}]")
+                    indices = [dim % rank for dim in dims]
+                    if len(set(indices)) != len(indices): raise ValueError(f"{key}: duplicate squeeze dimensions")
+                    shape = [size for index, size in enumerate(shape) if index not in indices or size != 1]
             elif op == "Bilinear":
                 if len(shape) != 2: raise ValueError(f"{key}: Bilinear requires [B,F1]")
                 other = integer("in2_features", shape[1]); features = integer("out_features", 10)

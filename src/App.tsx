@@ -21,7 +21,7 @@ const layerGroups: { label: string; ops: Op[] }[] = [
   { label: '输入与输出', ops: ['Input', 'Output'] },
   { label: '序列与注意力', ops: ['MultiHeadAttention', 'Transformer', 'Embedding'] },
   { label: '卷积与全连接', ops: ['Conv1d', 'Conv2d', 'Conv3d', 'ConvTranspose1d', 'ConvTranspose2d', 'ConvTranspose3d', 'Linear', 'Bilinear'] },
-  { label: '池化与形状', ops: ['MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d', 'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d', 'AdaptiveMaxPool1d', 'AdaptiveMaxPool2d', 'AdaptiveMaxPool3d', 'Flatten', 'Unsqueeze', 'Upsample'] },
+  { label: '池化与形状', ops: ['MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d', 'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d', 'AdaptiveMaxPool1d', 'AdaptiveMaxPool2d', 'AdaptiveMaxPool3d', 'Flatten', 'Unsqueeze', 'Squeeze', 'Upsample'] },
   { label: '归一化与正则化', ops: ['BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'LayerNorm', 'GroupNorm', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d', 'Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout'] },
   { label: '激活函数', ops: ['ReLU', 'GELU', 'Sigmoid', 'Tanh', 'SiLU', 'LeakyReLU', 'ELU', 'SELU', 'Softplus', 'Softmax', 'LogSoftmax', 'PReLU', 'Hardsigmoid', 'Hardswish', 'Mish', 'Softsign', 'Identity'] },
   { label: '分支融合', ops: ['Add', 'Concat'] }
@@ -32,7 +32,7 @@ const descriptions: Record<Op, string> = {
   AdaptiveAvgPool1d: '自适应平均池化', AdaptiveAvgPool2d: '自适应平均池化', AdaptiveAvgPool3d: '自适应平均池化', AdaptiveMaxPool1d: '自适应最大池化', AdaptiveMaxPool2d: '自适应最大池化', AdaptiveMaxPool3d: '自适应最大池化', Flatten: '张量展平',
   BatchNorm1d: '一维批归一化', BatchNorm2d: '二维批归一化', BatchNorm3d: '三维批归一化', LayerNorm: '层归一化', GroupNorm: '组归一化', InstanceNorm1d: '一维实例归一化', InstanceNorm2d: '二维实例归一化', InstanceNorm3d: '三维实例归一化',
   ReLU: '整流激活', GELU: '高斯激活', Sigmoid: 'Sigmoid 激活', Tanh: '双曲正切', SiLU: 'SiLU / Swish', LeakyReLU: '带泄漏整流', ELU: '指数线性单元', SELU: '缩放指数单元', Softplus: '平滑 ReLU', Softmax: '概率归一化', LogSoftmax: '对数概率归一化', PReLU: '可学习斜率激活', Hardsigmoid: '硬 Sigmoid', Hardswish: '硬 Swish', Mish: 'Mish 激活', Softsign: 'Softsign 激活', Identity: '恒等映射',
-  Dropout: '随机失活', Dropout1d: '通道失活 1D', Dropout2d: '通道失活 2D', Dropout3d: '通道失活 3D', AlphaDropout: 'Alpha 随机失活', Embedding: '离散词嵌入', Upsample: '上采样', Unsqueeze: '增加张量维度', MultiHeadAttention: '多头自注意力', Transformer: '编码器层 · Attention + FFN', Add: '残差相加', Concat: '张量拼接'
+  Dropout: '随机失活', Dropout1d: '通道失活 1D', Dropout2d: '通道失活 2D', Dropout3d: '通道失活 3D', AlphaDropout: 'Alpha 随机失活', Embedding: '离散词嵌入', Upsample: '上采样', Unsqueeze: '增加张量维度', Squeeze: '移除大小为 1 的维度', MultiHeadAttention: '多头自注意力', Transformer: '编码器层 · Attention + FFN', Add: '残差相加', Concat: '张量拼接'
 };
 function loadInitial() { try { const s = localStorage.getItem('tensorlab-project'); if (s) return validateGraph(JSON.parse(s)); } catch { /* Invalid saved projects fall back to a valid preset. */ } return PRESETS.cnn(); }
 function IconButton({ title, children, onClick, disabled = false, active = false }: { title: string; children: React.ReactNode; onClick: () => void; disabled?: boolean; active?: boolean }) { return <button type="button" className={`icon-button ${active ? 'active' : ''}`} title={title} aria-label={title} onClick={onClick} disabled={disabled}>{children}</button>; }

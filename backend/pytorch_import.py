@@ -63,6 +63,7 @@ class Parser:
         self.input_shapes = input_shapes
         self.graph = {"version": 1, "name": "Imported PyTorch", "nodes": [], "edges": []}
         self.inputs = []
+        self.node_sources = {}
         # Keep functional-operation descriptors alive too; object IDs can be reused.
         self.used_modules = {}
         self.constraints = []
@@ -324,6 +325,7 @@ class Parser:
     def add(self, kind, params, sources, name, node=None):
         if len(self.graph["nodes"]) >= 128: raise ImportIssue("导入模型超过 128 个节点", node, "LIMIT")
         key = f"import_{len(self.graph['nodes'])}"
+        self.node_sources[key] = node
         self.graph["nodes"].append({"id": key, "name": name[:120], "op": kind, "params": params.copy(), "position": {"x": 0, "y": 0}})
         for source, target_port in sources:
             if not isinstance(source, Tensor): raise ImportIssue("此处需要张量", node)
@@ -422,6 +424,29 @@ class Parser:
             return result, ports
         return result
 
+    def shape_operation(self, call, env, attrs, method=False):
+        kind = call.func.attr if method else self.path(call.func).split(".")[-1]
+        names = ["dim"] if method else ["input", "dim"]
+        if len(call.args) > len(names) or any(isinstance(arg, ast.Starred) for arg in call.args):
+            raise ImportIssue(f"{kind} 参数数量无效或包含展开参数", call)
+        arguments = dict(zip(names, call.args))
+        for keyword in call.keywords:
+            if keyword.arg not in names or keyword.arg in arguments:
+                raise ImportIssue(f"{kind} 不支持或重复的参数：{keyword.arg}", keyword.value)
+            arguments[keyword.arg] = keyword.value
+        if not method and "input" not in arguments:
+            raise ImportIssue(f"{kind} 缺少输入张量", call)
+        if kind == "unsqueeze" and "dim" not in arguments:
+            raise ImportIssue("unsqueeze 缺少 dim 参数", call)
+        dim = self.literal(arguments["dim"], env) if "dim" in arguments else "all"
+        if kind == "unsqueeze":
+            if type(dim) is not int: raise ImportIssue("unsqueeze 的 dim 必须是整数常量", arguments["dim"])
+        elif "dim" in arguments and not (type(dim) is int or isinstance(dim, list) and all(type(value) is int for value in dim)):
+            raise ImportIssue("squeeze 的 dim 必须是整数或整数元组/列表", arguments["dim"])
+        source = self.expr(call.func.value if method else arguments["input"], env, attrs)
+        op = "Unsqueeze" if kind == "unsqueeze" else "Squeeze"
+        return self.add(op, {"dim": dim}, [(source, None)], op, call)
+
     def expr(self, expression, env, attrs):
         if isinstance(expression, ast.Name) and expression.id in env: return env[expression.id]
         if isinstance(expression, ast.Constant): return self.literal(expression, env)
@@ -460,12 +485,8 @@ class Parser:
                 "torch.nn.functional.relu": "ReLU", "torch.nn.functional.gelu": "GELU", "torch.nn.functional.silu": "SiLU", "torch.nn.functional.sigmoid": "Sigmoid", "torch.nn.functional.tanh": "Tanh", "torch.nn.functional.hardsigmoid": "Hardsigmoid", "torch.nn.functional.hardswish": "Hardswish", "torch.nn.functional.mish": "Mish", "torch.nn.functional.softsign": "Softsign", "torch.nn.functional.leaky_relu": "LeakyReLU", "torch.nn.functional.elu": "ELU", "torch.nn.functional.selu": "SELU", "torch.nn.functional.softplus": "Softplus", "torch.nn.functional.softmax": "Softmax", "torch.nn.functional.log_softmax": "LogSoftmax",
                 "torch.nn.functional.dropout": "Dropout", "torch.nn.functional.max_pool1d": "MaxPool1d", "torch.nn.functional.max_pool2d": "MaxPool2d", "torch.nn.functional.max_pool3d": "MaxPool3d", "torch.nn.functional.avg_pool1d": "AvgPool1d", "torch.nn.functional.avg_pool2d": "AvgPool2d", "torch.nn.functional.avg_pool3d": "AvgPool3d", "torch.nn.functional.adaptive_avg_pool1d": "AdaptiveAvgPool1d", "torch.nn.functional.adaptive_avg_pool2d": "AdaptiveAvgPool2d", "torch.nn.functional.adaptive_avg_pool3d": "AdaptiveAvgPool3d", "torch.nn.functional.adaptive_max_pool1d": "AdaptiveMaxPool1d", "torch.nn.functional.adaptive_max_pool2d": "AdaptiveMaxPool2d", "torch.nn.functional.adaptive_max_pool3d": "AdaptiveMaxPool3d",
             }
-            if path == "torch.unsqueeze":
-                if len(expression.args) != 2 or expression.keywords: raise ImportIssue("torch.unsqueeze 需要输入张量和 dim", expression)
-                source = self.expr(expression.args[0], env, attrs)
-                dim = self.literal(expression.args[1], env)
-                if not isinstance(dim, int): raise ImportIssue("unsqueeze 的 dim 必须是整数常量", expression.args[1])
-                return self.add("Unsqueeze", {"dim": dim}, [(source, None)], "Unsqueeze", expression)
+            if path in ("torch.unsqueeze", "torch.squeeze"):
+                return self.shape_operation(expression, env, attrs)
             if path in functional_paths:
                 if not expression.args: raise ImportIssue("函数缺少输入", expression)
                 source = self.expr(expression.args[0], env, attrs)
@@ -487,12 +508,8 @@ class Parser:
                 # Tensor.flatten starts at dimension zero by default.
                 if not fake.args and not any(k.arg == "start_dim" for k in fake.keywords): raise ImportIssue("请使用 flatten(1)，保留批次维度", expression)
                 return self.apply(self.module(fake, env), [source], {}, "Flatten", expression)
-            if isinstance(function, ast.Attribute) and function.attr == "unsqueeze":
-                if len(expression.args) != 1 or expression.keywords: raise ImportIssue("unsqueeze 需要一个 dim 参数", expression)
-                source = self.expr(function.value, env, attrs)
-                dim = self.literal(expression.args[0], env)
-                if not isinstance(dim, int): raise ImportIssue("unsqueeze 的 dim 必须是整数常量", expression.args[0])
-                return self.add("Unsqueeze", {"dim": dim}, [(source, None)], "Unsqueeze", expression)
+            if isinstance(function, ast.Attribute) and function.attr in ("unsqueeze", "squeeze"):
+                return self.shape_operation(expression, env, attrs, method=True)
             if isinstance(function, ast.Attribute) and function.attr in ("view", "reshape"):
                 # A very common flatten spelling; arbitrary reshapes require a new op.
                 dimensions = expression.args
@@ -602,7 +619,9 @@ class Parser:
             if input_info["inferred"]:
                 self.warnings.append({"level": "warning", "code": "INFERRED_SHAPE", "message": f"输入 {input_info['name']} 使用推断形状 {input_info['shape']}，请确认批次、序列长度或图像尺寸。"})
         try: analysis = analyze_graph(self.graph)
-        except (ValueError, TypeError, KeyError, OverflowError) as error: raise ImportIssue(f"结构或输入形状错误：{error}。请修改输入形状后重新解析。", code="STRUCTURE") from error
+        except (ValueError, TypeError, KeyError, OverflowError) as error:
+            source = self.node_sources.get(str(error).split(":", 1)[0])
+            raise ImportIssue(f"结构或输入形状错误：{error}。请修改输入形状后重新解析。", source, code="STRUCTURE") from error
         for key, expected, kind, source in self.constraints:
             edge = analysis["baseEdges"][key][0]
             shape = analysis["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else analysis["shapes"][edge["source"]]

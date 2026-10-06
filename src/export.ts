@@ -53,6 +53,10 @@ export function generatePython(graph: Graph) {
       case 'AdaptiveMaxPool3d': expr = `nn.${node.op}(${Array.isArray(p.output_size) ? `(${p.output_size.join(', ')})` : p.output_size ?? 1})`; break;
       case 'Flatten': expr = 'nn.Flatten(start_dim=1)'; break;
       case 'Unsqueeze': forward.push(`        values[${key}] = torch.unsqueeze(${inputs[0]}, dim=${p.dim ?? 0})`); continue;
+      case 'Squeeze': {
+        const dim = p.dim ?? 'all', argument = dim === 'all' ? '' : `, dim=${Array.isArray(dim) ? `(${dim.join(', ')}${dim.length === 1 ? ',' : ''})` : dim}`;
+        forward.push(`        values[${key}] = torch.squeeze(${inputs[0]}${argument})`); continue;
+      }
       case 'Dropout':
       case 'Dropout1d':
       case 'Dropout2d':

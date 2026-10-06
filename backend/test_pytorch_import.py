@@ -153,6 +153,23 @@ model = Net(width=8)
         self.reject("#" * 512001, "LIMIT")
         self.reject(module_source("self.conv = nn.Conv2d(3, 16, (3, 5))", "return self.conv(x)"), "UNSUPPORTED")
 
+    def test_unsqueeze_and_squeeze_functional_keyword_and_method(self):
+        source = module_source(
+            "",
+            "x = torch.unsqueeze(x, dim=1)\n"
+            "x = torch.squeeze(x, dim=1)\n"
+            "x = x.squeeze(dim=1)\n"
+            "x = torch.squeeze(x, dim=(0, 1))\n"
+            "return x",
+        )
+        result, model = self.parsed(source, input_shapes={"x": [2, 4]})
+        self.assertEqual(
+            [n["op"] for n in result["graph"]["nodes"]],
+            ["Input", "Unsqueeze", "Squeeze", "Squeeze", "Squeeze", "Output"],
+        )
+        output = model(torch.randn(2, 4))
+        self.assertEqual(list(output.shape), [2, 4])
+
     def test_input_shapes_remain_available_after_failure(self):
         source = module_source("self.fc = nn.Linear(32, 2)", "x = torch.flatten(x, 1)\nreturn self.fc(x)")
         result = self.reject(source, "SHAPE_MISMATCH", input_shapes={"x": [1, 3, 32, 32]})
