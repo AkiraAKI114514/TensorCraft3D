@@ -170,6 +170,18 @@ model = Net(width=8)
         output = model(torch.randn(2, 4))
         self.assertEqual(list(output.shape), [2, 4])
 
+    def test_unsqueeze_aliases_and_tensor_class_form(self):
+        cases = [
+            ("from torch import unsqueeze", "x = unsqueeze(x, dim=1)\nreturn x"),
+            ("import torch.functional", "x = torch.functional.unsqueeze(x, dim=1)\nreturn x"),
+            ("import torch", "x = torch.Tensor.unsqueeze(x, dim=1)\nreturn x"),
+        ]
+        for imports, body in cases:
+            with self.subTest(imports=imports):
+                result, model = self.parsed(module_source("", body).replace("import torch\n", imports + "\n", 1), input_shapes={"x": [2, 4]})
+                self.assertEqual(result["graph"]["nodes"][1]["op"], "Unsqueeze")
+                self.assertEqual(list(model(torch.randn(2, 4)).shape), [2, 1, 4])
+
     def test_input_shapes_remain_available_after_failure(self):
         source = module_source("self.fc = nn.Linear(32, 2)", "x = torch.flatten(x, 1)\nreturn self.fc(x)")
         result = self.reject(source, "SHAPE_MISMATCH", input_shapes={"x": [1, 3, 32, 32]})
