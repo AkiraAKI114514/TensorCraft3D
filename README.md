@@ -1,6 +1,6 @@
 # TensorLab 3D
 
-A locally-run workbench for building deep learning models and visualising them in 3D. It is a runnable MVP based on a supplied Gemini conversation: a React / TypeScript / Three.js / React Flow frontend with a FastAPI / PyTorch training service.
+A locally-run workbench for building deep learning models and visualising them in 3D. It is a runnable MVP: a React / TypeScript / Three.js / React Flow frontend with a FastAPI / PyTorch training service.
 
 ## Running on Windows
 
