@@ -194,4 +194,47 @@ model = Net(width=8)
         self.assertTrue(any(d["code"] == "UNUSED_MODULES" for d in result["diagnostics"]))
 
 
+    def test_static_positional_encoding_unsqueeze_and_cross_attention(self):
+        source = '''import math
+import torch
+import torch.nn as nn
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len):
+        super().__init__()
+        position = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float32) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term[: pe[0, :, 1::2].shape[-1]])
+        self.register_buffer("pe", pe, persistent=False)
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
+
+def _encoder(d_model, nhead, num_layers, dim_feedforward, dropout):
+    layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, batch_first=True, norm_first=True, activation="gelu")
+    return nn.TransformerEncoder(layer, num_layers=num_layers)
+
+class Net(nn.Module):
+    def __init__(self, width=8):
+        super().__init__()
+        self.left = nn.Sequential(nn.Linear(4, width), PositionalEncoding(width, 6))
+        self.right = nn.Sequential(nn.Linear(5, width), PositionalEncoding(width, 6))
+        self.left_encoder = _encoder(width, 2, 1, 16, 0.1)
+        self.right_encoder = _encoder(width, 2, 1, 16, 0.1)
+        self.attn = nn.MultiheadAttention(width, 2, batch_first=True)
+        self.head = nn.Linear(width, 1)
+    def forward(self, left, right):
+        left = self.left_encoder(self.left(left))
+        right = self.right_encoder(self.right(right))
+        attended, _ = self.attn(query=left, key=right, value=right, need_weights=False)
+        return self.head((left + attended)[:, -1]).squeeze(-1)
+'''
+        result = import_pytorch(source, input_shapes={"left": [2, 6, 4], "right": [2, 6, 5]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        self.assertFalse(any(d["code"] == "UNSUPPORTED" and "unsqueeze" in d["message"] for d in result["diagnostics"]))
+        self.assertEqual(sum(n["op"] == "MultiHeadAttention" for n in result["graph"]["nodes"]), 1)
+        self.assertGreaterEqual(sum(n["op"] == "Transformer" for n in result["graph"]["nodes"]), 1)
+
+
 if __name__ == "__main__": unittest.main()

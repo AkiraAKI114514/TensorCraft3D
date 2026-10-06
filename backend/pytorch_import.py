@@ -36,6 +36,12 @@ class Tensor:
     port: str | None = None
 
 
+@dataclass(frozen=True)
+class StaticTensor:
+    """A compile-time buffer used by positional encodings and similar helpers."""
+    name: str = "static"
+
+
 class Parser:
     def __init__(self, tree, input_shapes):
         self.tree = tree
@@ -49,6 +55,7 @@ class Parser:
                     self.aliases[name.asname or name.name] = f"{statement.module}.{name.name}"
         self.classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)
                         and any(self.path(b) in ("torch.nn.Module", "nn.Module") for b in n.bases)}
+        self.functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         # The embedded runtime in TensorLab exports is provided by our backend.
         for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer"):
             self.classes.pop(name, None)
@@ -139,6 +146,31 @@ class Parser:
         if not isinstance(expression, ast.Call): raise ImportIssue("需要 PyTorch 层构造表达式", expression)
         path = self.path(expression.func)
         kind = path.split(".")[-1]
+        if path in self.functions:
+            function = self.functions[path]
+            if function.args.vararg or function.args.kwarg or function.args.kwonlyargs:
+                raise ImportIssue("辅助函数暂不支持可变或仅关键字参数", function)
+            names = [a.arg for a in function.args.args]
+            defaults = {key: self.literal(value, env) for key, value in zip(names[len(names)-len(function.args.defaults):], function.args.defaults)}
+            local = {**env, **self.arguments(expression, names, defaults, env)}
+            for statement in function.body:
+                if isinstance(statement, (ast.Pass, ast.Expr)) and (isinstance(statement, ast.Pass) or isinstance(statement.value, ast.Constant)):
+                    continue
+                if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                    try:
+                        value = self.expr(statement.value, local, attrs)
+                    except ImportIssue:
+                        value = self.module(statement.value, local, attrs, depth + 1)
+                    for target in targets:
+                        if not isinstance(target, ast.Name): raise ImportIssue("辅助函数只支持局部变量赋值", target)
+                        local[target.id] = value
+                    continue
+                if isinstance(statement, ast.Return):
+                    if statement.value is None: raise ImportIssue("辅助函数必须返回模块", statement)
+                    return self.module(statement.value, local, attrs, depth + 1)
+                raise ImportIssue("辅助函数只支持静态层赋值和 return", statement)
+            raise ImportIssue("辅助函数缺少 return", function)
         if path in self.classes:
             cls = self.classes[path]
             init = next((n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
@@ -153,6 +185,17 @@ class Parser:
                 if isinstance(statement, (ast.Pass, ast.Expr)):
                     if isinstance(statement, ast.Pass) or isinstance(statement.value, ast.Constant): continue
                     call = statement.value
+                    if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "register_buffer":
+                        if not isinstance(call.func.value, ast.Name) or call.func.value.id != "self" or len(call.args) not in (2, 3) or any(k.arg not in ("persistent",) for k in call.keywords):
+                            raise ImportIssue("register_buffer 只支持 self、名称、静态缓冲区和 persistent", statement)
+                        name = self.literal(call.args[0], local)
+                        if not isinstance(name, str) or not name or any(k.arg == "persistent" for k in call.keywords) and len(call.args) > 2:
+                            raise ImportIssue("register_buffer 名称或 persistent 参数无效", statement)
+                        value = self.expr(call.args[1], local, module.attrs)
+                        if not isinstance(value, StaticTensor): raise ImportIssue("register_buffer 需要静态缓冲区", call.args[1])
+                        module.attrs[f"self.{name}"] = StaticTensor(name)
+                        local[f"self.{name}"] = module.attrs[f"self.{name}"]
+                        continue
                     if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "__init__":
                         base = call.func.value
                         if isinstance(base, ast.Call) and self.path(base.func) == "super" and not base.args and not base.keywords and not call.args and not call.keywords: continue
@@ -161,9 +204,15 @@ class Parser:
                 if not isinstance(statement, (ast.Assign, ast.AnnAssign)): raise ImportIssue("构造函数仅支持静态层和常量赋值", statement)
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 for target in targets:
+                    if isinstance(target, ast.Subscript):
+                        base = self.expr(target.value, local, module.attrs)
+                        if isinstance(base, StaticTensor): continue
+                        raise ImportIssue("只支持对静态缓冲区做索引赋值", target)
                     key = self.path(target)
                     try: value = self.literal(statement.value, local)
-                    except ImportIssue: value = self.module(statement.value, local, module.attrs, depth + 1)
+                    except ImportIssue:
+                        try: value = self.expr(statement.value, local, module.attrs)
+                        except ImportIssue: value = self.module(statement.value, local, module.attrs, depth + 1)
                     if key.startswith("self."):
                         module.attrs[key] = value
                         if not isinstance(value, Module): local[key] = value
@@ -444,24 +493,59 @@ class Parser:
         elif "dim" in arguments and not (type(dim) is int or isinstance(dim, list) and all(type(value) is int for value in dim)):
             raise ImportIssue("squeeze 的 dim 必须是整数或整数元组/列表", arguments["dim"])
         source = self.expr(call.func.value if method else arguments["input"], env, attrs)
+        # Shape operations on compile-time buffers stay compile-time.  They are
+        # intentionally omitted from the graph because no runtime tensor flows
+        # through the model at this point.
+        if isinstance(source, StaticTensor):
+            return source
         op = "Unsqueeze" if kind == "unsqueeze" else "Squeeze"
         return self.add(op, {"dim": dim}, [(source, None)], op, call)
 
     def expr(self, expression, env, attrs):
         if isinstance(expression, ast.Name) and expression.id in env: return env[expression.id]
+        if isinstance(expression, ast.Attribute):
+            path = self.path(expression)
+            if path in attrs: return attrs[path]
+            # Shape metadata of a compile-time buffer is also compile-time.
+            if isinstance(self.expr(expression.value, env, attrs), StaticTensor): return StaticTensor(path or "static")
         if isinstance(expression, ast.Constant): return self.literal(expression, env)
         if isinstance(expression, (ast.List, ast.Tuple)): return [self.expr(n, env, attrs) for n in expression.elts]
         if isinstance(expression, ast.Dict):
             if any(k is None for k in expression.keys): raise ImportIssue("不支持字典展开", expression)
             return {self.literal(k, env): self.expr(v, env, attrs) for k, v in zip(expression.keys, expression.values)}
         if isinstance(expression, ast.Subscript):
-            parent = self.expr(expression.value, env, attrs); key = self.literal(expression.slice, env)
+            parent = self.expr(expression.value, env, attrs)
+            if isinstance(parent, StaticTensor): return parent
+            # Dynamic tensor indexing is represented as a shape-preserving view;
+            # keep the data-flow edge and avoid evaluating user expressions.
+            if isinstance(parent, Tensor): return parent
+            key = self.literal(expression.slice, env)
             try: value = parent[key]
             except (TypeError, KeyError, IndexError) as error: raise ImportIssue("不支持张量切片或未知索引", expression) from error
             if value == "attention_weights_unsupported": raise ImportIssue("注意力权重输出暂不支持", expression)
             return value
-        if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Add):
-            return self.add("Add", {}, [(self.expr(expression.left, env, attrs), None), (self.expr(expression.right, env, attrs), None)], "残差相加", expression)
+        if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, (ast.USub, ast.UAdd)):
+            value = self.expr(expression.operand, env, attrs)
+            if isinstance(value, StaticTensor): return value
+            if type(value) in (int, float): return -value if isinstance(expression.op, ast.USub) else value
+            raise ImportIssue("静态一元运算需要数值或缓冲区", expression)
+        if isinstance(expression, ast.BinOp):
+            left, right = self.expr(expression.left, env, attrs), self.expr(expression.right, env, attrs)
+            if isinstance(left, StaticTensor) and isinstance(right, StaticTensor): return StaticTensor()
+            if type(left) in (int, float) and type(right) in (int, float):
+                try:
+                    value = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.FloorDiv: operator.floordiv, ast.Div: operator.truediv}[type(expression.op)](left, right)
+                    if not math.isfinite(value) or abs(value) > 1e9: raise ValueError
+                    return value
+                except (KeyError, ZeroDivisionError, OverflowError, ValueError) as error:
+                    raise ImportIssue("静态参数运算无效", expression) from error
+            if isinstance(expression.op, ast.Add):
+                if isinstance(left, StaticTensor): return right
+                if isinstance(right, StaticTensor): return left
+                return self.add("Add", {}, [(left, None), (right, None)], "残差相加", expression)
+            if isinstance(left, StaticTensor) or isinstance(right, StaticTensor):
+                if isinstance(expression.op, (ast.Mult, ast.Div, ast.FloorDiv, ast.Sub)): return StaticTensor()
+            raise ImportIssue("不支持此张量运算", expression)
         if isinstance(expression, ast.Call):
             function = expression.func
             module_expression = function.value if isinstance(function, ast.Attribute) and function.attr in ("forward", "forward_with_ports") else function
@@ -473,6 +557,23 @@ class Parser:
                 keywords = {k.arg: self.expr(k.value, env, attrs) for k in expression.keywords}
                 return self.apply(module, args, keywords, ast.unparse(module_expression), expression)
             path = self.path(function)
+            if path in {"math.log", "math.exp", "math.sqrt", "math.sin", "math.cos"}:
+                # Only evaluate the small math whitelist locally; never execute
+                # an uploaded function or module.
+                values = [self.literal(arg, env) for arg in expression.args]
+                if expression.keywords or len(values) != 1: raise ImportIssue("math 函数参数不受支持", expression)
+                return {"math.log": math.log, "math.exp": math.exp, "math.sqrt": math.sqrt, "math.sin": math.sin, "math.cos": math.cos}[path](values[0])
+            if path in {"torch.arange", "torch.zeros", "torch.ones", "torch.empty", "torch.exp", "torch.sin", "torch.cos", "torch.sqrt", "torch.abs"}:
+                # Static constructors/elementwise functions describe buffers used
+                # during __init__; they do not create runtime graph nodes.
+                for arg in expression.args:
+                    try: self.literal(arg, env)
+                    except ImportIssue: self.expr(arg, env, attrs)
+                for keyword in expression.keywords:
+                    if keyword.arg != "dtype":
+                        try: self.literal(keyword.value, env)
+                        except ImportIssue: self.expr(keyword.value, env, attrs)
+                return StaticTensor(path)
             if path in ("torch.cat", "torch.concat"):
                 if not expression.args: raise ImportIssue("cat 缺少张量列表", expression)
                 tensors = self.expr(expression.args[0], env, attrs)
@@ -627,7 +728,7 @@ class Parser:
         for key, expected, kind, source in self.constraints:
             edge = analysis["baseEdges"][key][0]
             shape = analysis["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else analysis["shapes"][edge["source"]]
-            actual = shape[-1] if kind in ("Transformer", "MultiHeadAttention", "LayerNorm") else shape[1]
+            actual = shape[-1] if kind in ("Transformer", "MultiHeadAttention", "LayerNorm", "Linear", "Bilinear") else shape[1]
             if actual != expected: raise ImportIssue(f"{kind} 声明输入维度 {expected}，实际为 {actual}；请检查输入形状或代码", source, "SHAPE_MISMATCH")
         depths, rows = {}, {}
         for key in analysis["order"]:

@@ -141,9 +141,11 @@ def analyze_graph(graph):
                 if min(spatial) < 1: raise ValueError(f"{key}: pooling output is empty")
                 shape = [shape[0], shape[1], *spatial]
             elif op == "Linear":
-                if len(shape) != 2: raise ValueError(f"{key}: Linear requires [B,F]; insert Flatten")
+                # PyTorch Linear applies to the final dimension and preserves
+                # leading batch/sequence dimensions (e.g. [B,S,F] -> [B,S,O]).
+                if len(shape) < 2: raise ValueError(f"{key}: Linear requires at least [B,F]")
                 features = integer("out_features", 10)
-                count = (shape[1] + 1) * features; shape = [shape[0], features]
+                count = (shape[-1] + 1) * features; shape = [*shape[:-1], features]
             elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d"):
                 expected_rank = int(op[-2]) + 2
                 if len(shape) != expected_rank: raise ValueError(f"{key}: {op} requires {expected_rank}D channel input")
