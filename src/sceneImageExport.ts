@@ -3,7 +3,7 @@ import { attentionLayout } from './attentionLayout';
 import { crossInputRole, isAttention, isCrossAttention, isProjectionPort } from './attentionConfig';
 import { residualEdges } from './graphRoutes';
 import { RESIDUAL_COLOR, type Point3 } from './flowGeometry';
-import { compactImageLayout, DEFAULT_IMAGE_OPTIONS, placeImageLabels, type ImageExportOptions, type ImageLabel, type LabelRequest, type Rect } from './imageLayout';
+import { compactImageLayout, DEFAULT_IMAGE_OPTIONS, imageNodeScale, placeImageLabels, type ImageExportOptions, type ImageLabel, type LabelRequest, type Rect } from './imageLayout';
 import { shapeText } from './analysis';
 import { buildAttentionExport, exportStacks } from './attentionExport';
 import type { Analysis, Graph, Layer } from './types';
@@ -40,19 +40,22 @@ function simplifyRoute(points: THREE.Vector3[]) {
   return result;
 }
 
-// Ordinary layers are thin slabs beside the attention modules; enlarging them
-// in the compact export keeps them legible without widening the stages.
-const BLOCK_SCALE = 1.6;
-const scaled = (dimensions: Point3) => dimensions.map(value => value * BLOCK_SCALE) as Point3;
-const exportDimensions = (source: ExportSource) => Object.fromEntries(source.graph.nodes.map(node => [node.id, isAttention(node.op) ? attentionLayout(node, source.expanded, true, exportStacks(source.graph, node)).dimensions : scaled(source.dimensions[node.id])]));
+// Keep the original layout footprint: larger drawing sizes must not change
+// the stage widths, lanes or wrap points.
+const BLOCK_LAYOUT_SCALE = 1.6;
+const BLOCK_SCALE = 2;
+const ATTENTION_SCALE = 1.12;
+const scaled = (dimensions: Point3, scale = BLOCK_SCALE) => dimensions.map(value => value * scale) as Point3;
+const layoutDimensions = (source: ExportSource) => Object.fromEntries(source.graph.nodes.map(node => [node.id, isAttention(node.op) ? attentionLayout(node, source.expanded, true, exportStacks(source.graph, node)).dimensions : scaled(source.dimensions[node.id], BLOCK_LAYOUT_SCALE)]));
 
 function prepareImage(source: ExportSource, width: number, options: ImageExportOptions): PreparedImage {
   const height = Math.round(width / (options.layout === 'current' ? source.viewport.width / source.viewport.height : options.aspect));
   const scene = source.scene.clone(true), camera = source.camera.clone(), allocated: (THREE.BufferGeometry | THREE.Material)[] = [];
   scene.background = new THREE.Color('#f5f8fa');
   const grid = scene.getObjectByName('export_grid'); if (grid) grid.visible = false;
-  const compact = options.layout === 'compact' ? compactImageLayout(source.graph, source.analysis.order, exportDimensions(source), options.aspect) : undefined;
-  const positions: Record<string, THREE.Vector3> = {}, attention: Record<string, ReturnType<typeof buildAttentionExport>> = {}, dimensions = { ...source.dimensions };
+  const placementDimensions = options.layout === 'compact' ? layoutDimensions(source) : source.dimensions;
+  const compact = options.layout === 'compact' ? compactImageLayout(source.graph, source.analysis.order, placementDimensions, options.aspect) : undefined;
+  const positions: Record<string, THREE.Vector3> = {}, renderScale: Record<string, number> = {}, attention: Record<string, ReturnType<typeof buildAttentionExport>> = {}, dimensions = { ...source.dimensions };
   source.graph.nodes.forEach(node => {
     const root = nodeRoot(scene, node);
     if (!root) return;
@@ -60,8 +63,14 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
       root.position.set(...compact.positions[node.id]);
       if (isAttention(node.op)) {
         const built = buildAttentionExport(node, source.expanded, { error: source.analysis.diagnostics.some(d => d.nodeId === node.id && d.level === 'error'), overriddenPorts: source.graph.edges.filter(e => e.target === node.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!), stacks: exportStacks(source.graph, node) });
-        root.clear(); root.add(built.root); attention[node.id] = built; dimensions[node.id] = built.layout.dimensions;
-      } else { root.scale.setScalar(BLOCK_SCALE); dimensions[node.id] = scaled(source.dimensions[node.id]); }
+        const bounds = new THREE.Box3().setFromObject(built.root);
+        const drawn: Point3 = [Math.max(Math.abs(bounds.min.x), Math.abs(bounds.max.x)) * 2, Math.max(Math.abs(bounds.min.y), Math.abs(bounds.max.y)) * 2, built.layout.dimensions[2]];
+        const scale = imageNodeScale(compact, placementDimensions, node.id, drawn, ATTENTION_SCALE);
+        root.clear(); root.add(built.root); root.scale.setScalar(scale); renderScale[node.id] = scale; attention[node.id] = built; dimensions[node.id] = scaled(built.layout.dimensions, scale);
+      } else {
+        const scale = imageNodeScale(compact, placementDimensions, node.id, source.dimensions[node.id], BLOCK_SCALE);
+        root.scale.setScalar(scale); dimensions[node.id] = scaled(source.dimensions[node.id], scale);
+      }
     }
     positions[node.id] = root.position.clone();
   });
@@ -74,7 +83,7 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
     const port = (node: Layer, side: 'input' | 'output' | 'context', projection?: string) => {
       const layout = attention[node.id]?.layout;
       const offset = layout ? (projection ? layout.projectionPositions[projection] : layout.ports[side]) : [(side === 'input' ? -1 : 1) * dimensions[node.id][0] / 2, 0, 0];
-      return positions[node.id].clone().add(new THREE.Vector3(...offset as Point3));
+      return positions[node.id].clone().add(new THREE.Vector3(...offset as Point3).multiplyScalar(layout ? renderScale[node.id] : 1));
     };
     for (const edge of source.graph.edges) {
       const old = scene.getObjectByName(`edge_${edge.id}`); old?.removeFromParent();
@@ -90,13 +99,13 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
       if (fromBand !== toBand) {
         // Leave through the gap after the source stage, turn into the gap above
         // the target band, and enter through the gap before the target stage.
-        const exit = compact.columns[from.id][1] - 0.2 - (compact.laneByNode[from.id] % 3) * 0.15;
+        const exit = Math.max(compact.columns[from.id][1] - 0.2 - (compact.laneByNode[from.id] % 3) * 0.15, positions[from.id].x + dimensions[from.id][0] / 2 + 0.1);
         route = [start, v(exit, start.y)];
         if (toBand > fromBand + 1) {
           const below = corridor(fromBand + 1), outer = Math.max(...compact.bands.slice(fromBand, toBand + 1).map(b => b.right)) + 0.5 + (take('outer') % 4) * 0.2;
           route.push(v(exit, below), v(outer, below));
         }
-        const y = corridor(toBand), approach = compact.columns[to.id][0] + 0.2 + (take(`approach-${to.id}`) % 3) * 0.15;
+        const y = corridor(toBand), approach = Math.min(compact.columns[to.id][0] + 0.2 + (take(`approach-${to.id}`) % 3) * 0.15, positions[to.id].x - dimensions[to.id][0] / 2 - 0.1);
         route.push(v(route.at(-1)!.x, y), ...(fromAbove ? [v(end.x, y), end] : [v(approach, y), v(approach, end.y), end]));
       } else if (residual) {
         // Within a band, hop just over the blocks the shortcut skips.

@@ -87,6 +87,20 @@ export function compactImageLayout(graph: Graph, order: string[], dimensions: Re
   return { positions, bands, bandByNode, laneByNode, columns, clearance, height: -bands.at(-1)!.bottom };
 }
 
+// Enlarge inside the existing lanes and columns without changing placement.
+export function imageNodeScale(layout: CompactLayout, dimensions: Record<string, Point3>, id: string, drawn: Point3, requested: number) {
+  const bandIndex = layout.bandByNode[id], row = layout.laneByNode[id], band = layout.bands[bandIndex];
+  const peers = Object.keys(layout.positions).filter(other => layout.bandByNode[other] === bandIndex);
+  const laneHeight = Math.max(...peers.filter(other => layout.laneByNode[other] === row).map(other => dimensions[other][1]));
+  const lastRow = Math.max(...peers.map(other => layout.laneByNode[other])), y = layout.positions[id][1];
+  // Band-edge routes start 0.3 above the next band; keep growth short of them.
+  const margin = layout.clearance / 2 - 0.1;
+  const above = row === 0 ? band.top - y + (bandIndex ? 0.2 : margin) : laneHeight / 2 + margin;
+  const below = row === lastRow ? y - band.bottom + margin : laneHeight / 2 + margin;
+  const column = layout.columns[id], width = column[1] - column[0] - 0.4;
+  return Math.max(1, Math.min(requested, width / drawn[0], 2 * Math.min(above, below) / drawn[1]));
+}
+
 export interface Rect { x: number; y: number; width: number; height: number; }
 export const overlaps = (a: Rect, b: Rect, gap = 3) => a.x < b.x + b.width + gap && a.x + a.width + gap > b.x && a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
 export interface LabelRequest { id: string; text: string; x: number; y: number; fontSize: number; maxWidth: number; secondary?: string; color: string; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compactImageLayout, overlaps, placeImageLabels, wrapImageText } from './imageLayout';
+import { compactImageLayout, imageNodeScale, overlaps, placeImageLabels, wrapImageText } from './imageLayout';
 import { attentionLayout, isAttention, type Point3 } from './attentionLayout';
 import { analyze } from './analysis';
 import { imageTestGraph } from '../e2e/imageGraph';
@@ -39,6 +39,37 @@ describe('image export layout', () => {
     expect(layout.height).toBeGreaterThan(stacked);
     expect(layout.height).toBeLessThan(stacked + layout.bands.length * 3);
     expect(layout.positions.import_0[1]).toBeGreaterThan(layout.positions.import_1[1]);
+  });
+  it('enlarges small blocks without changing the legacy placement', () => {
+    const graph = imageTestGraph(), analysis = analyze(graph);
+    const dimensions = Object.fromEntries(graph.nodes.map(n => [n.id, [0.88, 3.2, 1.28] as Point3]));
+    const layout = compactImageLayout(graph, analysis.order, dimensions, 16 / 9), before = structuredClone(layout);
+    expect(imageNodeScale(layout, dimensions, 'import_2', [0.55, 2, 0.8], 2)).toBe(2);
+    expect(layout).toEqual(before);
+  });
+  it('caps wide blocks inside their original columns', () => {
+    const graph = imageTestGraph(), analysis = analyze(graph);
+    const dimensions = Object.fromEntries(graph.nodes.map(n => [n.id, [9.6, 3.2, 1.28] as Point3]));
+    const layout = compactImageLayout(graph, analysis.order, dimensions, 16 / 9), before = structuredClone(layout);
+    for (const node of graph.nodes) {
+      const scale = imageNodeScale(layout, dimensions, node.id, [6, 2, 0.8], 2), x = layout.positions[node.id][0], column = layout.columns[node.id];
+      expect(scale).toBeGreaterThan(1.6); expect(scale).toBeLessThan(2);
+      expect(x - 6 * scale / 2).toBeGreaterThanOrEqual(column[0] + 0.19);
+      expect(x + 6 * scale / 2).toBeLessThanOrEqual(column[1] - 0.19);
+    }
+    expect(layout).toEqual(before);
+  });
+  it('keeps large parallel blocks separate and leaves the wrap corridors clear', () => {
+    const graph = imageTestGraph(), analysis = analyze(graph);
+    const dimensions = Object.fromEntries(graph.nodes.map(n => [n.id, [0.88, 16, 1.28] as Point3]));
+    const layout = compactImageLayout(graph, analysis.order, dimensions, 16 / 9);
+    const boxes = graph.nodes.map(node => {
+      const scale = imageNodeScale(layout, dimensions, node.id, [0.55, 10, 0.8], 2), [x, y] = layout.positions[node.id], band = layout.bandByNode[node.id];
+      expect(scale).toBeGreaterThanOrEqual(1.6); expect(scale).toBeLessThan(2);
+      if (band > 0) expect(y + 10 * scale / 2).toBeLessThan(layout.bands[band].top + 0.3);
+      return { id: node.id, x: x - 0.55 * scale / 2, y: y - 10 * scale / 2, width: 0.55 * scale, height: 10 * scale };
+    });
+    boxes.forEach((box, i) => boxes.slice(i + 1).forEach(other => expect(overlaps(box, other, 0), `${box.id} overlaps ${other.id}`).toBe(false)));
   });
   it('wraps long names without squeezing the font and retains a bounded line count', () => {
     const measure = (text: string) => text.length * 6;
