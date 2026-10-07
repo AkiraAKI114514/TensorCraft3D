@@ -151,6 +151,7 @@ class TrainingTests(unittest.TestCase):
 
     def test_architectures_forward_backward_and_exact_parameters(self):
         import torch
+        torch.manual_seed(0)
         for op in ("Transformer", "MultiHeadAttention"):
             for kind, heads, kv_heads, branches in (("self", 4, 4, 1), ("multi_query", 4, 1, 1), ("grouped_query", 4, 2, 3), ("multi_branch", 4, 4, 2)):
                 with self.subTest(op=op, kind=kind):

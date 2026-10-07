@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Set up Python for executable export tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-training.txt
+      - name: Install Python test dependencies
+        run: python -m pip install -r backend/requirements-training.txt
+      - name: Provide the project Python path used by source tests
+        shell: bash
+        run: mkdir -p .venv/Scripts && ln -s "$(command -v python)" .venv/Scripts/python.exe
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm exec --no -- tsc --noEmit
+      - name: Run source tests
+        run: npm test
+      - name: Build frontend
+        run: npm run build
+
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-training.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements-training.txt
+      - name: Run backend tests
+        run: python -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment backend.test_graph_contracts

@@ -9,5 +9,18 @@ test-results/
 *.log
 tsconfig.tsbuildinfo
 playwright-report/
-conversation-2026-10-07-233905.txt
+# Local development tools and working notes
+/.claude/
+/.vscode/
 CLAUDE.md
+conversation-*.txt
+/docs/research/
+
+# Browser/e2e outputs; inputs belong in tests/fixtures/
+/artifacts/
+
+# Local environment configuration; keep reusable templates
+.env
+.env.*
+!.env.example
+!.env.*.example
