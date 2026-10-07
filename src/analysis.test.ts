@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { analyze, diagnoseMetrics, validateGraph } from './analysis';
 import { PRESETS } from './presets';
 import { generatePython } from './export';
-import type { Metric } from './types';
+import { DEFAULTS, type Metric, type Params } from './types';
 
 describe('model contracts', () => {
   it.each(['cnn', 'mlp', 'residual'])('infers a valid %s model', preset => {
@@ -73,6 +73,34 @@ describe('model contracts', () => {
       graph.nodes[1].params.qkv_count = count;
       expect(analyze(graph).valid).toBe(true);
     }
+  });
+  it.each([
+    [DEFAULTS.Bilinear, 16],
+    [{ out_features: 10 }, 16],
+    [{ in2_features: 7, out_features: 10 }, 7],
+  ] as [Params, number][])('builds Bilinear with parameters %j and a second input width of %i', (params, width) => {
+    const graph = PRESETS.blank();
+    graph.nodes[0].params.shape = [4, 8];
+    graph.nodes.splice(1, 0, { id: 'bilinear', name: 'Bilinear', op: 'Bilinear', params: { ...params }, position: { x: 100, y: 100 } });
+    graph.nodes.push({ id: 'second', name: 'Second', op: 'Input', params: { shape: [4, width] }, position: { x: 0, y: 320 } });
+    graph.edges = [{ id: 'first', source: 'layer_0', target: 'bilinear' }, { id: 'second', source: 'second', target: 'bilinear' }, { id: 'out', source: 'bilinear', target: 'layer_1' }];
+    const analysis = analyze(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.layers.bilinear.output).toEqual([4, 10]);
+    expect(analysis.layers.bilinear.parameters).toBe(8 * width * 10 + 10);
+    expect(generatePython(graph)).toContain(`nn.Bilinear(8, ${width}, 10)`);
+    graph.nodes.find(n => n.id === 'bilinear')!.params.in2_features = 8;
+    expect(analyze(graph).valid).toBe(false);
+    expect(analyze(graph).diagnostics.some(d => d.nodeId === 'bilinear' && d.message.includes('in2_features'))).toBe(true);
+    expect(() => generatePython(graph)).toThrow();
+    delete graph.nodes.find(n => n.id === 'bilinear')!.params.in2_features;
+    graph.nodes.find(n => n.id === 'second')!.params.shape = [4, 8];
+    expect(analyze(graph).valid).toBe(false);
+    expect(() => generatePython(graph)).toThrow();
+    graph.nodes.find(n => n.id === 'second')!.params.shape = [5, 16];
+    expect(analyze(graph).diagnostics.some(d => d.nodeId === 'bilinear' && d.message.includes('batch'))).toBe(true);
+    graph.nodes.find(n => n.id === 'second')!.params.shape = [4, 2, 16];
+    expect(analyze(graph).diagnostics.some(d => d.nodeId === 'bilinear' && d.message.includes('二维'))).toBe(true);
   });
   it('rejects illegal input/output connections and ordinary multi-input layers', () => {
     const graph = PRESETS.mlp();

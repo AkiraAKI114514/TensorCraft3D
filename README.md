@@ -1,4 +1,8 @@
-# TensorLab 3D
+# TensorCraft3D
+
+### Build and Explore Neural Networks in 3D
+
+神经网络三维构建与探索工作台
 
 A locally-run workbench for building deep learning models and visualising them in 3D. It is a runnable MVP: a React / TypeScript / Three.js / React Flow frontend with a FastAPI / PyTorch training service.
 
@@ -28,17 +32,22 @@ If you don't need real training, `npm install`, `npm run build` and `python run.
 npm run dev
 
 npm test
-.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment
+.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment backend.test_graph_contracts
+# Focused shape/parameter/resource contracts: both sides read the same JSON, no PyTorch required
+npm exec --no -- vitest run src/analysisContracts.test.ts
+.\.venv\Scripts\python.exe -m unittest backend.test_graph_contracts
 # With the service running on 8765, run the browser flow tests using the installed Microsoft Edge
 npm run test:e2e
 # If run.py selected another port, point browser tests at that server
 $env:TENSORLAB_TEST_URL = 'http://127.0.0.1:8766'
 npm run test:e2e -- e2e/runtime.spec.ts
+# Focused crash recovery: saved-project backup, reload and storage failures
+npm run test:e2e -- e2e/errorBoundary.spec.ts
 npm run build
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-`build.ps1` produces `release/TensorLab-3D.zip`, containing source, build output, the backend and the launch scripts, but not `node_modules` or the virtual environment. Recipients need Python to run it, and real training additionally needs the backend dependencies installed; this is not a runtime-free Windows EXE.
+`build.ps1` produces `release/TensorCraft3D.zip`, containing source, build output, the backend and the launch scripts, but not `node_modules` or the virtual environment. Recipients need Python to run it, and real training additionally needs the backend dependencies installed; this is not a runtime-free Windows EXE.
 
 ## The workbench
 
@@ -126,7 +135,7 @@ This version supports basic CNN/MLP/residual and Transformer encoder computation
 
 "Import PyTorch code" in the top toolbar accepts pasted PyTorch source or a local `.py` file. You first choose the model object and input shapes, then submit to the local service for static AST parsing; the preview shows nodes, connections, parameter counts and diagnostics. On confirmation, the Input, layers, Add/Concat, the Q/K/V ports of Attention and the Output are written into the current project, where you can keep dragging, editing parameters, training, viewing the 3D data flow and exporting code.
 
-The current graph editor and real training path cover most common `torch.nn` layers: Conv/ConvTranspose 1D, 2D and 3D, Linear, Bilinear, BatchNorm/InstanceNorm/GroupNorm/LayerNorm, MaxPool/AvgPool/AdaptivePool, Flatten, the Dropout family, Embedding, Upsample, ReLU/GELU/Sigmoid/Tanh/SiLU/LeakyReLU/ELU/SELU/Softplus/PReLU/Hardsigmoid/Hardswish/Mish/Softsign/Softmax/LogSoftmax/Identity, plus MultiheadAttention, Transformer and TensorLab's MQA/GQA/Cross-Attention. Every layer's parameters take part in shape derivation, parameter counting, PyTorch training and Python export.
+The current graph editor and real training path cover most common `torch.nn` layers: Conv/ConvTranspose 1D, 2D and 3D, Linear, Bilinear, BatchNorm/InstanceNorm/GroupNorm/LayerNorm, MaxPool/AvgPool/AdaptivePool, Flatten, the Dropout family, Embedding, Upsample, ReLU/GELU/Sigmoid/Tanh/SiLU/LeakyReLU/ELU/SELU/Softplus/PReLU/Hardsigmoid/Hardswish/Mish/Softsign/Softmax/LogSoftmax/Identity, plus MultiheadAttention, Transformer and custom MQA/GQA/Cross-Attention layers. Every layer's parameters take part in shape derivation, parameter counting, PyTorch training and Python export.
 
 Example request:
 
@@ -140,7 +149,7 @@ $body = @{
 Invoke-RestMethod -Uri http://127.0.0.1:8765/api/import/pytorch -Method Post -ContentType 'application/json' -Body $body
 ```
 
-The parser only reads the Python AST; it does not execute uploaded code, import modules from the source or load weights, optimizers or training scripts. It supports static `nn.Module`, `nn.Sequential`, nested modules, `ModuleList`, `ModuleDict`, residual addition, `torch.cat`, `flatten/view/reshape`, the common layers listed above, `unsqueeze/squeeze`, bounded tensor indexing, `MultiheadAttention`, `TransformerEncoderLayer`/`TransformerEncoder` and TensorLab Attention/Transformer/ConstantAdd. Query/Context and Q/K/V port connections for Cross-Attention and MQA/GQA are supported.
+The parser only reads the Python AST; it does not execute uploaded code, import modules from the source or load weights, optimizers or training scripts. It supports static `nn.Module`, `nn.Sequential`, nested modules, `ModuleList`, `ModuleDict`, residual addition, `torch.cat`, `flatten/view/reshape`, the common layers listed above, `unsqueeze/squeeze`, bounded tensor indexing, `MultiheadAttention`, `TransformerEncoderLayer`/`TransformerEncoder` and the custom Attention/Transformer/ConstantAdd classes. Query/Context and Q/K/V port connections for Cross-Attention and MQA/GQA are supported.
 
 Static float32 buffers used in addition are evaluated by a bounded, torch-free interpreter and saved as `ConstantAdd` parameters, not dropped as passthrough operations. Supported construction includes `torch.zeros/ones/arange`, static arithmetic, selected `math` functions, and elementwise `exp/sin/cos/sqrt/abs`. Supported indexing includes integer selection, positive-step slices, negative bounds/indices, one ellipsis and inserted singleton axes. Examples such as `x + self.pe[:, :x.size(1)]` retain the buffer's real values and use the current input sequence length, within the stored capacity; `x[:, -1]` becomes `Select`. Batch-axis indexing, advanced/boolean indexing, negative steps, unsupported dynamic bounds, uninitialized `torch.empty` buffers and non-float32 buffers are rejected with diagnostics. Static tensors have at most 5 dimensions and 65,536 elements, evaluation is limited to 1,000,000 charged work units, and graph constant buffers total at most 65,536 elements. The supported operations are available in editing, shape analysis, backend execution and standalone Python export; float32 transcendental values are compared with numerical tolerances, not a bitwise equivalence guarantee.
 

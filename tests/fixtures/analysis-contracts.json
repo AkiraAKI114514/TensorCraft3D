@@ -1,0 +1,404 @@
+{
+  "cases": [
+    {
+      "id": "mlp",
+      "graph": {
+        "version": 1, "name": "MLP",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Hidden", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "ReLU", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Head", "op": "Linear", "params": { "out_features": 2 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "Output", "op": "Output", "params": {}, "position": { "x": 400, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 2], "parameters": 58 }
+    },
+    {
+      "id": "sequence_linear",
+      "graph": {
+        "version": 1, "name": "Sequence Linear",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 3, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Projection", "op": "Linear", "params": { "out_features": 5 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 3, 5], "parameters": 25 }
+    },
+    {
+      "id": "cnn",
+      "graph": {
+        "version": 1, "name": "CNN",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 3, 8, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Conv2d", "op": "Conv2d", "params": { "out_channels": 4, "kernel_size": 3, "stride": 1, "padding": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "BatchNorm2d", "op": "BatchNorm2d", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "ReLU", "op": "ReLU", "params": {}, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "MaxPool2d", "op": "MaxPool2d", "params": { "kernel_size": 2, "stride": 2, "padding": 0 }, "position": { "x": 400, "y": 0 } },
+          { "id": "n5", "name": "Flatten", "op": "Flatten", "params": {}, "position": { "x": 500, "y": 0 } },
+          { "id": "n6", "name": "Head", "op": "Linear", "params": { "out_features": 3 }, "position": { "x": 600, "y": 0 } },
+          { "id": "n7", "name": "Output", "op": "Output", "params": {}, "position": { "x": 700, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }, { "id": "e3", "source": "n3", "target": "n4" },
+          { "id": "e4", "source": "n4", "target": "n5" }, { "id": "e5", "source": "n5", "target": "n6" },
+          { "id": "e6", "source": "n6", "target": "n7" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 3], "parameters": 315 }
+    },
+    {
+      "id": "residual",
+      "graph": {
+        "version": 1, "name": "Residual CNN",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 3, 8, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Stem", "op": "Conv2d", "params": { "out_channels": 4, "kernel_size": 3, "stride": 1, "padding": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "ReLU", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Block", "op": "Conv2d", "params": { "out_channels": 4, "kernel_size": 3, "stride": 1, "padding": 1 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "BatchNorm2d", "op": "BatchNorm2d", "params": {}, "position": { "x": 400, "y": 0 } },
+          { "id": "n5", "name": "Add", "op": "Add", "params": {}, "position": { "x": 500, "y": 0 } },
+          { "id": "n6", "name": "Pool", "op": "AdaptiveAvgPool2d", "params": { "output_size": 1 }, "position": { "x": 600, "y": 0 } },
+          { "id": "n7", "name": "Flatten", "op": "Flatten", "params": {}, "position": { "x": 700, "y": 0 } },
+          { "id": "n8", "name": "Head", "op": "Linear", "params": { "out_features": 3 }, "position": { "x": 800, "y": 0 } },
+          { "id": "n9", "name": "Output", "op": "Output", "params": {}, "position": { "x": 900, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }, { "id": "e3", "source": "n3", "target": "n4" },
+          { "id": "e4", "source": "n4", "target": "n5" }, { "id": "skip", "source": "n2", "target": "n5" },
+          { "id": "e5", "source": "n5", "target": "n6" }, { "id": "e6", "source": "n6", "target": "n7" },
+          { "id": "e7", "source": "n7", "target": "n8" }, { "id": "e8", "source": "n8", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 3], "parameters": 283 }
+    },
+    {
+      "id": "bilinear_explicit_width",
+      "graph": {
+        "version": 1, "name": "Bilinear explicit width",
+        "nodes": [
+          { "id": "n0", "name": "First", "op": "Input", "params": { "shape": [4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Bilinear", "op": "Bilinear", "params": { "in2_features": 7, "out_features": 10 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "other", "name": "Second", "op": "Input", "params": { "shape": [4, 7] }, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "other", "target": "n1" }, { "id": "e2", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [4, 10], "parameters": 570 }
+    },
+    {
+      "id": "bilinear_default_width",
+      "graph": {
+        "version": 1, "name": "Bilinear default width",
+        "nodes": [
+          { "id": "n0", "name": "First", "op": "Input", "params": { "shape": [4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Bilinear", "op": "Bilinear", "params": { "out_features": 10 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "other", "name": "Second", "op": "Input", "params": { "shape": [4, 16] }, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "other", "target": "n1" }, { "id": "e2", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [4, 10], "parameters": 1290 }
+    },
+    {
+      "id": "transformer_legacy_kv_default",
+      "graph": {
+        "version": 1, "name": "Transformer legacy KV default",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Transformer", "op": "Transformer", "params": { "embed_dim": 8, "num_heads": 2, "ff_dim": 16, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 8], "parameters": 600 }
+    },
+    {
+      "id": "multi_query_kv_default",
+      "graph": {
+        "version": 1, "name": "Multi-query KV default",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Attention", "op": "MultiHeadAttention", "params": { "attention_type": "multi_query", "embed_dim": 8, "num_heads": 4, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 8], "parameters": 180 }
+    },
+    {
+      "id": "grouped_query",
+      "graph": {
+        "version": 1, "name": "Grouped-query attention",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Attention", "op": "MultiHeadAttention", "params": { "attention_type": "grouped_query", "embed_dim": 8, "num_heads": 4, "kv_heads": 2, "branches": 1, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 8], "parameters": 216 }
+    },
+    {
+      "id": "cross_attention_context_first_two_branches",
+      "graph": {
+        "version": 1, "name": "Cross-attention with context edge first",
+        "nodes": [
+          { "id": "n0", "name": "Query", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Attention", "op": "MultiHeadAttention", "params": { "attention_type": "cross", "embed_dim": 8, "num_heads": 4, "kv_heads": 2, "branches": 2, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "context", "name": "Context", "op": "Input", "params": { "shape": [2, 7, 8] }, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "context", "target": "n1", "targetPort": "context" },
+          { "id": "e1", "source": "n0", "target": "n1", "targetPort": "query" },
+          { "id": "e2", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 8], "parameters": 432 }
+    },
+    {
+      "id": "constant_buffer_slice_select",
+      "graph": {
+        "version": 1, "name": "Constant buffer and sequence indexing",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 6, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Position", "op": "ConstantAdd", "params": { "shape": [1, 8, 4], "values": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "sequence_dim": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Slice", "op": "Slice", "params": { "dim": 1, "start": 1, "end": "none", "step": 2 }, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Select", "op": "Select", "params": { "dim": 1, "index": -1 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "Head", "op": "Linear", "params": { "out_features": 2 }, "position": { "x": 400, "y": 0 } },
+          { "id": "n5", "name": "Output", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }, { "id": "e3", "source": "n3", "target": "n4" },
+          { "id": "e4", "source": "n4", "target": "n5" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 2], "parameters": 10 }
+    },
+    {
+      "id": "fractional_out_features",
+      "graph": {
+        "version": 1, "name": "Fractional Linear width",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Linear", "op": "Linear", "params": { "out_features": 1.5 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "residual_shape_mismatch",
+      "graph": {
+        "version": 1, "name": "Residual channel mismatch",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 3, 8, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Stem", "op": "Conv2d", "params": { "out_channels": 4, "kernel_size": 3, "stride": 1, "padding": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "ReLU", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Block", "op": "Conv2d", "params": { "out_channels": 5, "kernel_size": 3, "stride": 1, "padding": 1 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "BatchNorm2d", "op": "BatchNorm2d", "params": {}, "position": { "x": 400, "y": 0 } },
+          { "id": "n5", "name": "Add", "op": "Add", "params": {}, "position": { "x": 500, "y": 0 } },
+          { "id": "n6", "name": "Output", "op": "Output", "params": {}, "position": { "x": 600, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }, { "id": "e3", "source": "n3", "target": "n4" },
+          { "id": "e4", "source": "n4", "target": "n5" }, { "id": "skip", "source": "n2", "target": "n5" },
+          { "id": "e5", "source": "n5", "target": "n6" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "bilinear_width_mismatch",
+      "graph": {
+        "version": 1, "name": "Bilinear width mismatch",
+        "nodes": [
+          { "id": "n0", "name": "First", "op": "Input", "params": { "shape": [4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Bilinear", "op": "Bilinear", "params": { "in2_features": 8, "out_features": 10 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "other", "name": "Second", "op": "Input", "params": { "shape": [4, 7] }, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "other", "target": "n1" }, { "id": "e2", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "input_elements_at_limit",
+      "graph": {
+        "version": 1, "name": "Input at 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 4000, 4000] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Output", "op": "Output", "params": {}, "position": { "x": 100, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }]
+      },
+      "expected": { "valid": true, "outputShape": [1, 4000, 4000], "parameters": 0 }
+    },
+    {
+      "id": "input_elements_over_limit",
+      "graph": {
+        "version": 1, "name": "Input over 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 4000, 4001] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Output", "op": "Output", "params": {}, "position": { "x": 100, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "layer_elements_at_limit",
+      "graph": {
+        "version": 1, "name": "Layer output at 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 4000, 1] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Linear", "op": "Linear", "params": { "out_features": 4000 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [1, 4000, 4000], "parameters": 8000 }
+    },
+    {
+      "id": "layer_elements_over_limit",
+      "graph": {
+        "version": 1, "name": "Layer output over 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 4000, 1] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Linear", "op": "Linear", "params": { "out_features": 4001 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "attention_matrix_at_limit",
+      "graph": {
+        "version": 1, "name": "Attention matrix at 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 2000, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Attention", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 4, "kv_heads": 4, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [1, 2000, 8], "parameters": 288 }
+    },
+    {
+      "id": "attention_matrix_over_limit",
+      "graph": {
+        "version": 1, "name": "Attention matrix over 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 2001, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Attention", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 4, "kv_heads": 4, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "ffn_activation_at_limit",
+      "graph": {
+        "version": 1, "name": "FFN activation at 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1000, 16, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Transformer", "op": "Transformer", "params": { "embed_dim": 8, "num_heads": 1, "kv_heads": 1, "ff_dim": 1000, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [1000, 16, 8], "parameters": 17328 }
+    },
+    {
+      "id": "ffn_activation_over_limit",
+      "graph": {
+        "version": 1, "name": "FFN activation over 16M elements",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1000, 16, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Transformer", "op": "Transformer", "params": { "embed_dim": 8, "num_heads": 1, "kv_heads": 1, "ff_dim": 1001, "dropout": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "layer_parameters_at_limit",
+      "graph": {
+        "version": 1, "name": "Layer at 50M parameters",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 2] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Embedding", "op": "Embedding", "params": { "num_embeddings": 1000000, "embedding_dim": 50 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [1, 2, 50], "parameters": 50000000 }
+    },
+    {
+      "id": "layer_parameters_over_limit",
+      "graph": {
+        "version": 1, "name": "Layer over 50M parameters",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 2] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Embedding", "op": "Embedding", "params": { "num_embeddings": 1000000, "embedding_dim": 51 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "total_parameters_at_limit",
+      "graph": {
+        "version": 1, "name": "Model at exactly 50M parameters",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 2, 48999] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "First projection", "op": "Linear", "params": { "out_features": 1000 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Second projection", "op": "Linear", "params": { "out_features": 999 }, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "PReLU", "op": "PReLU", "params": { "num_parameters": 1, "init": 0.25 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "Output", "op": "Output", "params": {}, "position": { "x": 400, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }, { "id": "e3", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 2, 999], "parameters": 50000000 }
+    },
+    {
+      "id": "total_parameters_one_over_limit",
+      "graph": {
+        "version": 1, "name": "Model at exactly 50M plus one parameter",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [1, 2, 48999] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "First projection", "op": "Linear", "params": { "out_features": 1000 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Second projection", "op": "Linear", "params": { "out_features": 999 }, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "PReLU", "op": "PReLU", "params": { "num_parameters": 2, "init": 0.25 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "Output", "op": "Output", "params": {}, "position": { "x": 400, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }, { "id": "e3", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": false }
+    }
+  ]
+}

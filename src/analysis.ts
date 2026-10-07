@@ -7,7 +7,7 @@ export const formatNumber = (value: number) => value >= 1e6 ? `${(value / 1e6).t
 
 export function validateGraph(value: unknown): Graph {
   const g = value as Graph;
-  if (!g || g.version !== 1 || typeof g.name !== 'string' || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) throw new Error('不是有效的 TensorLab v1 项目');
+  if (!g || g.version !== 1 || typeof g.name !== 'string' || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) throw new Error('不是有效的 TensorCraft3D v1 项目');
   if (g.name.length > 120 || g.nodes.length > 128 || g.edges.length > 512) throw new Error('项目超过限制（128 层 / 512 连线）');
   const ids = new Set<string>();
   g.nodes.forEach(n => {
@@ -139,7 +139,9 @@ export function analyze(graph: Graph): Analysis {
         if (output.length < 2) throw new Error('Linear 需要至少二维输入 [B,...,F]');
         const features = integer('out_features', 10); count = (output.at(-1)! + 1) * features; output = [...output.slice(0, -1), features];
       } else if (n.op === 'Bilinear') {
-        if (input.length !== 2 || input.some(s => s.length !== 2)) throw new Error('Bilinear 需要两个二维输入'); const features = integer('out_features', 10), in2 = integer('in2_features', input[1][1]); if (input[1][1] !== in2 || input[0][0] !== input[1][0]) throw new Error('Bilinear 输入 batch 与 in2_features 不匹配'); count = input[0][1] * in2 * features + features; output = [output[0], features];
+        // in2_features 是权重形状，必须与第二个输入的末维一致：它既是参数计数，
+        // 也是 nn.Bilinear 的构造参数，两侧任何一方独自推断都会造成形状与参数漂移。
+        if (input.length !== 2 || input.some(s => s.length !== 2)) throw new Error('Bilinear 需要两个二维输入'); const features = integer('out_features', 10), in2 = integer('in2_features', 16); if (input[1][1] !== in2) throw new Error(`Bilinear in2_features 必须等于第二输入的末维 ${input[1][1]}`); if (input[0][0] !== input[1][0]) throw new Error('Bilinear 两个输入的 batch 维度必须一致'); count = input[0][1] * in2 * features + features; output = [output[0], features];
       } else if (n.op === 'Embedding') {
         if (output.length < 2) throw new Error('Embedding 需要索引序列输入');
         if (graph.nodes.find(node => node.id === parents[0])?.op !== 'Input') throw new Error('Embedding 输入必须直接来自 Input 层');

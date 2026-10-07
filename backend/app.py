@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from .graph import analyze_graph
 from .cuda_environment import inspect_environment
 
-app = FastAPI(title="TensorLab 3D", version="1.0.1")
+app = FastAPI(title="TensorCraft3D · Build and Explore Neural Networks in 3D", version="1.0.1")
 training_lock = threading.Lock()
 ROOT = Path(__file__).resolve().parent.parent
 

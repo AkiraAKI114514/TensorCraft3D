@@ -25,7 +25,43 @@ def cross_graph(op="MultiHeadAttention"):
     return graph
 
 
+def bilinear_graph(in2_features=16, second_shape=(4, 16)):
+    params = {"out_features": 10}
+    if in2_features is not None: params["in2_features"] = in2_features
+    specs = [("Input", {"shape": [4, 8]}), ("Bilinear", params), ("Output", {})]
+    nodes = [{"id": f"layer_{i}", "op": op, "params": params} for i, (op, params) in enumerate(specs)]
+    nodes.append({"id": "second", "op": "Input", "params": {"shape": list(second_shape)}})
+    return {"version": 1, "nodes": nodes, "edges": [{"source": "layer_0", "target": "layer_1"}, {"source": "second", "target": "layer_1"}, {"source": "layer_1", "target": "layer_2"}]}
+
+
 class TrainingTests(unittest.TestCase):
+    def test_bilinear_uses_in2_features_for_shape_and_the_real_module(self):
+        import torch
+        for in2_features, width in ((16, 16), (None, 16), (7, 7)):
+            with self.subTest(in2_features=in2_features, width=width):
+                graph = bilinear_graph(in2_features, second_shape=(4, width))
+                info = analyze_graph(graph)
+                model, _ = build_model(graph)
+                self.assertEqual(info["shapes"]["layer_1"], [4, 10])
+                self.assertEqual(model.layers["layer_1"].in2_features, width)
+                self.assertEqual(info["totalParameters"], sum(p.numel() for p in model.parameters()))
+                self.assertEqual(info["totalParameters"], 8 * width * 10 + 10)
+                output = model({"layer_0": torch.randn(4, 8), "second": torch.randn(4, width)})
+                self.assertEqual(tuple(output.shape), (4, 10))
+
+    def test_bilinear_rejects_in2_features_mismatch(self):
+        for graph in (bilinear_graph(in2_features=8), bilinear_graph(in2_features=None, second_shape=(4, 8))):
+            with self.subTest(params=graph["nodes"][1]["params"]):
+                with self.assertRaisesRegex(ValueError, "in2_features"): analyze_graph(graph)
+                with self.assertRaisesRegex(ValueError, "in2_features"): build_model(graph)
+
+    def test_bilinear_rejects_batch_and_rank_mismatch(self):
+        for shape, message in (((5, 16), "batch"), ((4, 2, 16), "2D")):
+            with self.subTest(shape=shape):
+                graph = bilinear_graph(second_shape=shape)
+                with self.assertRaisesRegex(ValueError, message): analyze_graph(graph)
+                with self.assertRaisesRegex(ValueError, message): build_model(graph)
+
     def test_shape_and_parameter_contract(self):
         import torch
         model, info = build_model(mlp_graph())

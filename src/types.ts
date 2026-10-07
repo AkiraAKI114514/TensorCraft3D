@@ -33,7 +33,7 @@ export const COLORS: Record<Op, string> = {
 export const DEFAULTS: Record<Op, Params> = {
   Input: { shape: [1, 3, 32, 32] }, Output: {},
   Conv1d: { out_channels: 16, kernel_size: 3, stride: 1, padding: 1 }, Conv2d: { out_channels: 16, kernel_size: 3, stride: 1, padding: 1 }, Conv3d: { out_channels: 16, kernel_size: 3, stride: 1, padding: 1 }, ConvTranspose1d: { out_channels: 16, kernel_size: 4, stride: 2, padding: 1 }, ConvTranspose2d: { out_channels: 16, kernel_size: 4, stride: 2, padding: 1 }, ConvTranspose3d: { out_channels: 16, kernel_size: 4, stride: 2, padding: 1 },
-  Linear: { out_features: 10 }, Bilinear: { out_features: 10 },
+  Linear: { out_features: 10 }, Bilinear: { in2_features: 16, out_features: 10 },
   BatchNorm1d: {}, BatchNorm2d: {}, BatchNorm3d: {}, LayerNorm: { normalized_shape: 64, eps: 1e-5, elementwise_affine: 1 }, GroupNorm: { num_groups: 1 }, InstanceNorm1d: {}, InstanceNorm2d: {}, InstanceNorm3d: {},
   ReLU: {}, GELU: {}, Sigmoid: {}, Tanh: {}, SiLU: {}, LeakyReLU: { negative_slope: 0.01 }, ELU: { alpha: 1 }, SELU: {}, Softplus: { beta: 1, threshold: 20 }, Softmax: { dim: -1 }, LogSoftmax: { dim: -1 }, PReLU: { num_parameters: 1, init: 0.25 }, Hardsigmoid: {}, Hardswish: {}, Mish: {}, Softsign: {}, Identity: {},
   MaxPool1d: pool1d, MaxPool2d: { ...pool1d }, MaxPool3d: { ...pool1d }, AvgPool1d: pool1d, AvgPool2d: { ...pool1d }, AvgPool3d: { ...pool1d },

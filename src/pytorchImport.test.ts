@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { analyze, validateGraph } from './analysis';
 import { generatePython } from './export';
 import { PRESETS } from './presets';
-import type { Graph } from './types';
+import { DEFAULTS, type Graph, type Params } from './types';
 
 function roundtrip(graph: Graph) {
   const script = `import json,sys,ast,torch\nfrom backend.pytorch_import import import_pytorch\nfrom backend.training import build_model\np=json.load(sys.stdin)\nr=import_pytorch(p["code"])\nassert r["graph"] is not None,r["diagnostics"]\na,ia=build_model(p["graph"]);b,ib=build_model(r["graph"])\nfor n in r["graph"]["nodes"]:\n if n["id"] in b.layers:\n  original_id=ast.literal_eval(n["name"].split("self.layers",1)[1][1:-1])\n  b.layers[n["id"]].load_state_dict(a.layers[original_id].state_dict())\na.eval();b.eval()\nx={k:torch.randn(*ia["shapes"][k]) for k in ia["inputs"]}\ny={i["id"]:x[i["name"]] for i in r["inputs"]}\nassert ia["totalParameters"]==ib["totalParameters"]\nassert torch.equal(a(x),b(y)),"Roundtrip changed computation"\nprint(json.dumps(r["graph"]))\n`;
@@ -17,6 +17,42 @@ describe('PyTorch code imports', () => {
     expect(analyze(imported).valid).toBe(true);
     expect(analyze(imported).parameters).toBe(analyze(original).parameters);
   }, 30000);
+
+  it.each([
+    [DEFAULTS.Bilinear, 16],
+    [{ out_features: 10 }, 16],
+    [{ in2_features: 7, out_features: 10 }, 7],
+  ] as [Params, number][])('runs and reimports Bilinear with parameters %j and second input width %i', (params, width) => {
+    const graph = PRESETS.blank();
+    graph.nodes[0].params.shape = [4, 8];
+    graph.nodes.splice(1, 0, { id: 'bilinear', name: 'Bilinear', op: 'Bilinear', params: { ...params }, position: { x: 100, y: 100 } });
+    graph.nodes.push({ id: 'second', name: 'Second', op: 'Input', params: { shape: [4, width] }, position: { x: 0, y: 320 } });
+    graph.edges = [{ id: 'first', source: 'layer_0', target: 'bilinear' }, { id: 'second', source: 'second', target: 'bilinear' }, { id: 'out', source: 'bilinear', target: 'layer_1' }];
+    const analysis = analyze(graph), code = generatePython(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.parameters).toBe(8 * width * 10 + 10);
+    const script = `import json, sys, torch
+from backend.training import build_model
+p = json.load(sys.stdin)
+backend, info = build_model(p["graph"])
+namespace = {"__name__": "export_test"}
+exec(p["code"], namespace)
+exported = namespace["VisualModel"]()
+exported.load_state_dict(backend.state_dict())
+x = {key: torch.randn(*info["shapes"][key]) for key in info["inputs"]}
+a, b = backend(x), exported(x)
+assert list(a.shape) == [4, 10]
+assert torch.equal(a, b)
+assert info["totalParameters"] == p["parameters"] == sum(v.numel() for v in exported.parameters())
+print("matched")
+`;
+    expect(execFileSync('.venv/Scripts/python.exe', ['-c', script], { input: JSON.stringify({ graph, code, parameters: analysis.parameters }), encoding: 'utf8', timeout: 30000 })).toContain('matched');
+    const imported = roundtrip(graph);
+    expect(validateGraph(imported)).toEqual(imported);
+    expect(analyze(imported).valid).toBe(true);
+    expect(analyze(imported).parameters).toBe(analysis.parameters);
+    expect(imported.nodes.find(n => n.op === 'Bilinear')!.params.in2_features).toBe(width);
+  }, 60000);
 
   it('preserves Q/K/V overrides and projection outputs', () => {
     const graph = PRESETS.mqa();

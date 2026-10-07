@@ -9,3 +9,5 @@ test-results/
 *.log
 tsconfig.tsbuildinfo
 playwright-report/
+conversation-2026-10-07-233905.txt
+CLAUDE.md

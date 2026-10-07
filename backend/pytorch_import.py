@@ -471,7 +471,8 @@ class Parser:
         else:
             required = 2 if module.kind == "Bilinear" else 1
             if len(args) != required or keywords: raise ImportIssue(f"{module.kind} 需要 {required} 个张量输入", call)
-            for tensor in args: self.hint(tensor, module)
+            for i, tensor in enumerate(args):
+                self.hint(tensor, Module("Bilinear", expected=params["in2_features"]) if module.kind == "Bilinear" and i == 1 else module)
             sources = [(tensor, None) for tensor in args]
         result = self.add(module.kind, params, sources, name, call)
         if module.expected is not None: self.constraints.append((result.node, module.expected, module.kind, call))

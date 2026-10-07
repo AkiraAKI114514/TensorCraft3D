@@ -1,142 +1,93 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project
 
-## Project Overview
+TensorCraft3D (Build and Explore Neural Networks in 3D) is a localhost-only model workbench: React 19 / TypeScript / Vite, Three.js / React Three Fiber, React Flow, and a FastAPI backend with optional PyTorch training. UI labels are primarily Chinese.
 
-TensorLab 3D is a localhost-only deep learning model workbench. A React 19 / TypeScript / Vite frontend combines a Three.js / React Three Fiber scene with a React Flow topology editor. A FastAPI backend provides static PyTorch source import, graph analysis, and optional real PyTorch training.
+A version-1 `Graph` is the single source of truth for editing, shape analysis, visualization, Python export, and training. Supports CNN/MLP/residual and Transformer/MQA/GQA/cross-/multi-branch attention models. Animated particles and weight schematics are illustrative, not measured activations; WebGL and PyTorch CUDA are independent.
 
-The canonical project is a version-1 `Graph` containing layers, parameters, editor positions, and edges. The same graph drives editing, shape diagnostics, visualization, standalone Python generation, and training. Supported model families include CNN, MLP, residual networks, Transformer encoders, MQA, GQA, cross-attention, and multi-branch attention.
+## Commands
 
-The browser's animated particles and weight schematics are illustrative, not measured tensor activations. Real training metrics arrive separately over WebSocket. WebGL acceleration and PyTorch CUDA support are independent.
-
-## Build & Run Commands
-
-Run commands from the repository root. Windows is the primary environment; use the existing `.venv` interpreter for Python commands. Prerequisites documented in `README.md` are Node.js 20.19+ and Python 3.10+.
+Run from the repository root. Windows is primary; use the existing `.venv` for Python. Requires Node.js 20.19+ and Python 3.10+.
 
 | Task | Command |
 | --- | --- |
-| Production build (TypeScript + Vite) | `npm run build` |
-| Typecheck without building | `npm exec --no -- tsc --noEmit` |
-| Frontend development server | `npm run dev` |
-| Preview the production frontend | `npm run preview` |
-| Integrated built app, without opening a browser | `.\.venv\Scripts\python.exe run.py --no-browser` |
-| Start with a fresh build and open the browser | `powershell -ExecutionPolicy Bypass -File .\start.ps1` |
-| Backend for frontend development | `.\.venv\Scripts\python.exe -m uvicorn backend.app:app --host 127.0.0.1 --port 8765` |
-| All source tests | `npm test` |
+| Build | `npm run build` |
+| Typecheck | `npm exec --no -- tsc --noEmit` |
+| Frontend dev | `npm run dev` |
+| Backend dev | `.\.venv\Scripts\python.exe -m uvicorn backend.app:app --host 127.0.0.1 --port 8765` |
+| Integrated app | `.\.venv\Scripts\python.exe run.py --no-browser` |
 | One source test file | `npm exec --no -- vitest run src/imageLayout.test.ts` |
-| One source test by name | `npm exec --no -- vitest run src/imageLayout.test.ts -t "caps wide blocks"` |
-| Backend tests | `.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment` |
-| Focused import/CUDA browser tests | `npm run test:e2e -- e2e/runtime.spec.ts` |
-| Explicit project PyTorch setup | `.\setup-training.ps1 -Variant cu128` (or `-Variant cpu`) |
 | One backend test | `.\.venv\Scripts\python.exe -m unittest backend.test_training.TrainingTests.test_shape_and_parameter_contract` |
-| All browser tests | `npm run test:e2e` |
-| Focused image-export browser tests | `npm run test:e2e -- e2e/imageExport.spec.ts` |
-| Build the Windows release archive | `powershell -ExecutionPolicy Bypass -File .\build.ps1` |
+| Focused browser tests | `npm run test:e2e -- e2e/runtime.spec.ts` (or `e2e/imageExport.spec.ts`) |
+| Explicit PyTorch setup | `.\setup-training.ps1 -Variant cu128` (or `-Variant cpu`) |
+| Release archive | `powershell -ExecutionPolicy Bypass -File .\build.ps1` |
 
-There is no lint script configured in `package.json`.
+- Dev: Vite proxies `/api` and WebSockets to backend port 8765; keep the frontend on a different port.
+- `run.py` serves `dist`: build after source changes. It tries ports 8765–8784 by default; `--port` selects the starting port. Without FastAPI/Uvicorn it falls back to static-only serving (no Python API or training).
+- `start.ps1` builds and prefers `.venv`; `start.cmd` uses the existing build. `npm start` uses the shell's `python`.
+- Playwright requires an already-running server, defaults to `http://127.0.0.1:8765`, and uses installed Microsoft Edge. For another port, set `$env:TENSORLAB_TEST_URL = 'http://127.0.0.1:8766'`.
+- Prefer targeted checks; full suites only when requested/required: `npm test`, `npm run test:e2e`, or `.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment`. Some source tests and real-training browser tests require Python/PyTorch. No lint script.
+- Do not install/change dependencies without authorization. `setup-training.ps1` changes project `.venv` only and refuses PyTorch replacement while project Python processes run; it does not change drivers/environment variables. `install.ps1` is for explicitly requested setup. Release output is `release/TensorCraft3D.zip`, not a self-contained executable.
 
-### Startup Details
+## Key Files & Contracts
 
-- Development uses two terminals: backend on `127.0.0.1:8765`, then `npm run dev` on Vite's frontend port. `vite.config.ts` proxies `/api`, including WebSockets, to port 8765. Do not put the dev frontend on 8765 when using that backend.
-- `run.py` serves `dist`, so run `npm run build` after source changes before using the integrated app. It defaults to port 8765, tries the next 19 ports if occupied, and prints the selected URL. `--port` selects the starting port; `--no-browser` suppresses browser launch.
-- With FastAPI and Uvicorn installed, `run.py` launches `backend.app:app`. Without them, it serves a browser-only static fallback; Python API import and training are unavailable in that mode.
-- `start.ps1` builds and prefers the virtual-environment interpreter. `start.cmd` launches the existing build without rebuilding. `npm start` uses the current shell's `python`, not explicitly `.venv`.
-- `playwright.config.ts` expects a server already running at `http://127.0.0.1:8765`; it does not start one. Set `TENSORLAB_TEST_URL` to the actual URL when `run.py` selects another port. Tests use installed Microsoft Edge (`msedge`), headless WebGL, one worker, and a 1440x900 default viewport.
-- `setup-training.ps1` is an explicitly invoked project-only setup path, not a web installer. It pins torch 2.9.1+cu128 or 2.14.1+cpu from the corresponding official PyTorch index, uses pip's isolated mode, and validates import and selected runtime after setup. Stop project Python processes before replacement: Windows locks loaded PyTorch DLLs. The script checks for those processes and refuses replacement rather than stopping them; it does not change drivers or environment variables.
-- Full browser tests include backend requests and real training. Full source tests also require Python/PyTorch: several Vitest files invoke `.venv/Scripts/python.exe` to compare generated models with backend execution. The image-layout/attention-layout tests do not require the backend.
-- For explicitly requested environment setup, `install.ps1` installs npm dependencies, builds, creates `.venv`, and installs base backend requirements. `install.ps1 -Training` additionally installs PyTorch. Base requirements are in `backend/requirements.txt`; training requirements add `torch>=2.6,<3`. Do not install or change dependencies merely to run a documentation or narrow frontend task.
-- `build.ps1` creates `release/TensorLab-3D.zip`. The release includes sources and `dist`, but not `node_modules` or `.venv`; it is not a self-contained Windows executable.
+| Area | Files / responsibility |
+| --- | --- |
+| Graph state | `src/types.ts`: shared contract; `src/App.tsx`: graph history, selection, import/export/training UI, persistence (`tensorlab-project`) |
+| Validation | `src/analysis.ts` and `backend/graph.py`: independent graph/shape/resource validation |
+| Attention | `src/attentionConfig.ts`: configuration/ports; `src/attentionLayout.ts`: geometry/endpoints/routes; `src/AttentionModule.tsx`, `src/Scene.tsx`, `src/Flow.tsx`: rendering; `src/graphRoutes.ts`: reachability-based Add shortcuts |
+| Image export | `src/sceneImageExport.ts`: PNG/SVG preparation/routing/camera; `src/imageLayout.ts`: compact placement/scaling/labels; `src/attentionExport.ts`: flat attention geometry |
+| Python | `src/export.ts`: standalone `VisualModel`; `backend/pytorch_import.py`: static AST import; `backend/static_tensors.py`: torch-free constant evaluation |
+| Runtime | `backend/training.py`, `backend/attention.py`, `backend/tensor_ops.py`: validated execution shared with generated Python; `backend/cuda_environment.py`: local CUDA diagnostics |
+| API | `backend/app.py`: health/analyze/PyTorch import, read-only environment diagnostics, explicit smoke probe, training WebSocket, built frontend |
 
-## Current Status & Progress
+### Graph, import & training
 
-Last updated: 2026-10-07.
+- Graphs allow 1–8 Inputs, one Output, up to 128 nodes / 512 edges. Invalid editable connections may remain with diagnostics; execution and Python export reject invalid graphs. Validate before allocation.
+- Operation/connection changes must stay consistent across frontend/backend analysis, training, Python export, and static import. Attention projection IDs (e.g. `b0:q0`) are edge `sourcePort`/`targetPort`; cross-attention uses `query`/`context`. Different ports between the same nodes are distinct connections.
+- Import never executes uploaded source, imports its modules, or loads weights. Limits: 512,000 UTF-8 source bytes / 30,000 AST nodes. Unsupported dynamic behavior produces diagnostics.
+- Static float32 constants are bounded to 5 dimensions / 65,536 elements, a 1,000,000-unit evaluation budget, and 65,536 total graph-buffer elements. Preserve `ConstantAdd` buffer values and `Slice`/`Select` indexing semantics across all paths. Reject unsupported dtype/uninitialized buffers, batch-axis or advanced indexing, negative steps, and dynamic bounds.
+- Real training is local classification with logits `[B,2..256]`, synthetic/CSV data, CPU/CUDA. This is not arbitrary Python execution, distributed training, ONNX import, live Python synchronization, or a full profiler. See `README.md` for operation support and user-facing limits.
+- CUDA diagnostics load only when the panel expands. Opening/refreshing never installs anything or runs a GPU probe; smoke testing is explicit. Training and full diagnostics/probes share one local lock. Block training while any diagnostic/probe is in flight, including across panel folding and dialog close/reopen.
 
-### Completed P0 & Local CUDA Work
+### Image export
 
-- Static float32 positional additions retain real values as `ConstantAdd` buffers. `Slice` and `Select` retain indexing semantics through import, editing, frontend/backend shape analysis, real execution, standalone Python generation, and reimport.
-- Static evaluation is torch-free and never executes uploaded source. Constants are bounded to 5 dimensions and 65,536 elements; evaluation has a 1,000,000-unit work budget and graph buffers total at most 65,536 elements. Unsupported dtype, uninitialized buffers, batch-axis indexing, advanced indexing, negative steps, and unsupported dynamic bounds fail with diagnostics.
-- Training's CUDA panel reports the backend interpreter, wheel/runtime, GPU/driver, and selected environment variables on demand. Diagnostics start only when the panel is expanded; opening/refreshing it does not run the GPU probe or install anything. Explicit forward/backward testing uses `/api/environment/smoke`; full diagnostics and probes share the local training lock. Starting training is disabled while a diagnostic/probe request remains in flight, including after folding or closing/reopening the dialog.
-- Local `.venv` was repaired to torch 2.9.1+cu128 / CUDA 12.8 after explicit authorization. RTX 4060 Ti with driver 591.74 was available; system `CUDA_PATH` remained at 11.2, demonstrating that the wheel runtime does not depend on changing that variable. No driver or environment variable was changed.
-- Package replacement initially failed at a locked `c10.dll`. Stopping the confirmed backends and repairing PyTorch resolved import/device availability. The script now blocks replacement while project Python processes are running. pip still warns about a leftover invalid `~orch` distribution; `pip --isolated check` reported no broken requirements. The leftover backup was not deleted.
-- CUDA training is local classification, not a remote CUDA connection, embedded driver/toolkit, or general GPU service. Delivery branch: `feat/static-tensors-cuda-diagnostics`, for merge into `main` following review and regression checks. Check Git for the live commit and remote synchronization status. No release archive was made for this work.
+- Keep compact placement separate from rendered size: placement uses ordinary-block scale 1.6 and unscaled flat attention; render targets are 2.0 / 1.12, capped by `imageNodeScale()` within existing space. Preserve accepted node centers, stages, lanes, and wrap decisions.
+- Use effective rendered bounds for endpoints, camera fitting, captions, residual clearance, and cross-band offsets. PNG/SVG share preparation and label collision handling. Export must not mutate interactive scene/camera or shared geometry.
+- Shared-input heads may stack; independently wired faces and separate branches remain separate. Preserve full face size and real projection-port associations. Do not change attention/flow colors for size/layout tasks.
+- Regression tests: `src/imageLayout.test.ts`, `src/attentionLayout.test.ts`, `e2e/imageExport.spec.ts`. Dense fixture: `artifacts/DualBranchCrossAttentionTransformer.json` via `e2e/imageGraph.ts`. Browser tests regenerate files under `artifacts`; inspect the worktree and resulting images.
 
-### P0 & CUDA Verification
+## Improvement Priorities
 
-- `npm test`: 103 tests passed after CUDA repair, including backend/export/reimport numerical and gradient contracts.
-- `.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment`: 56 tests passed with no skips, including CUDA buffer movement/backward and cross-attention backward.
-- With `TENSORLAB_TEST_URL=http://127.0.0.1:8766`, `npm run test:e2e -- e2e/runtime.spec.ts`: 2 tests passed. Coverage includes import, edit/undo, Python download, CPU training, two-epoch CUDA classification with finite losses/nonzero measured gradients, explicit GPU probe, desktop/mobile layout, and nonblank WebGL pixel checks.
-- The extended browser test initially timed out selecting CUDA because it had not reopened the training modal after CPU training; the test flow was fixed and the two tests then passed. A fresh delivery rerun later failed with zero CUDA metrics: captured WebSocket messages confirmed `Another training run is already active`, caused by the folded environment panel's automatic diagnostic taking the shared lock. Lazy diagnostics and an in-flight request guard fixed the race. The final build and both browser tests passed; regression coverage now also asserts zero diagnostics for the folded panel and blocks training during delayed refresh/probe responses, across folding and dialog close/reopen.
-- `npm run build` and `npm exec --no -- tsc --noEmit`: passed. Vite reported the existing large-bundle warning.
-- PowerShell AST parsing of `setup-training.ps1`: passed. `powershell.exe -NoProfile -File .\setup-training.ps1 -Variant cu128` passed twice consecutively on the final script: both runs skipped installation for matching torch 2.9.1+cu128 and reported CUDA build 12.8 / status `available`. No execution-policy bypass or package replacement was used for these checks. Actual CUDA install/post-install diagnostics succeeded before the final isolated-pip adjustment; its installation branch was not re-run.
-- Final browser interaction at `http://127.0.0.1:8766/` checked CUDA panel opening/refresh, runtime/GPU/driver display, and 390px mobile width without overflow; no page errors, failing API responses, or automatic smoke calls were observed. Prior successful desktop/mobile model and probe screenshots were preserved as `artifacts/position-classifier-desktop.png`, `artifacts/position-classifier-mobile.png`, `artifacts/cuda-desktop.png`, and `artifacts/cuda-mobile.png`. The final read-only panel captures are `artifacts/cuda-final-desktop.png` and `artifacts/cuda-final-mobile.png`; these do not represent a new probe run. Screenshots were read for inspection. The existing Vite service on port 8765 returned API 500 during final health checks and was left unchanged; use the verified integrated server on 8766 for this session.
-- Full browser suite, CPU-wheel switching, release packaging, and other machines/GPU combinations were not verified in this round.
+Product direction: an editable 3D PyTorch model workbench for learners, teachers, and small-model experiments. Prioritize the workflow **import structure → edit and validate → inspect a run → export code and figures**. The items below are a proposed backlog, not implemented capabilities or an instruction to execute every item during unrelated work. Research and rationale: [competitive analysis](docs/research/tensor-visualization-landscape-2026-10-07.md).
 
-### Completed Image-Export Work
+| Priority | Improvement | Acceptance target |
+| --- | --- | --- |
+| P0 | Clear project description, short demo, and guided examples | Explain the workbench in one sentence; CNN, residual, and MQA/GQA examples demonstrate import → edit → shape validation → export. Offer structure exploration before optional training setup. |
+| P1 | Single-sample inference and Tensor Inspector | Selecting a layer shows measured shape/dtype, min/max/mean/std, a histogram, and a tensor slice, with the originating run/sample identified. |
+| P1 | Small-model Attention Inspector | Select a branch/head and inspect actual Q/K/V, scaled QKᵀ scores, softmax probabilities, and output, with correct tensor dimensions and MQA/GQA sharing. |
+| P2 | Module folding, synchronized navigation, and figure annotations | Switch between graph overview and module internals; synchronize 2D/3D selection and retain readable PNG/SVG exports without altering graph execution. |
+| P2 | Import support matrix and reproducible examples | Document supported layers/operations and limitations; provide CNN, residual, and Transformer source examples with input shapes and expected import results. |
+| P3 | External Python observation interface, then evaluate ONNX | Start with offline structure and sampled-tensor snapshots; assess live synchronization and additional formats after this workflow works. |
 
-The earlier export change enlarges modules while preserving the previous compact arrangement shown in `artifacts/compact-model-before-size.png`.
+### Observation implementation constraints
 
-- Placement and render dimensions are separate. Compact placement still uses the original ordinary-block scale of 1.6 and unscaled flat-attention dimensions, so stage widths, lane ordering, and wrap decisions remain unchanged.
-- Render-only target scales are 2.0 for ordinary blocks and 1.12 for attention modules. `imageNodeScale()` caps growth within existing column/lane space rather than reflowing the model.
-- Attention geometry and external query/context/Q/K/V endpoints share the effective per-node scale. Cross-band entry/exit offsets account for enlarged boundaries; residual clearance uses rendered dimensions.
-- PNG and SVG share preparation, camera fitting, and label collision handling. The interactive scene and current-view export are not resized by compact-export scaling.
-- The dense fixture retains two compact bands and the reference node-center arrangement, allowing only uniform camera zoom/translation. Measured projected bounding-box area increased approximately 51% for ordinary sample modules and 20-22% for attention sample modules; these percentages are fixture-specific.
-- Updated outputs are `artifacts/compact-model-1920.png`, `artifacts/compact-model-square.png`, and `artifacts/compact-model.svg`. Original `compact-model-before-size.png` and `.svg` references are retained alongside the updated samples.
-- Delivery branch: `feat/enlarge-export-modules`. Code, regression tests, export samples, baseline references, and this project guide are included in the same change. Check Git for the current commit and remote synchronization status.
+- Keep structural animation/weight schematics distinguishable from measured observation. Real training metrics do not make the existing particle animation or weight colors measured data.
+- Start with one sample from a batch; bound captured layers, channels, sequence lengths, payload sizes, and sampling frequency. Send statistics/downsampled values rather than every activation every frame; do not retain autograd graphs for display.
+- Use channel feature maps for CNNs, position/token × feature heatmaps for sequences, and query × key heatmaps for attention. Label sequence positions as tokens only when actual token metadata is available. Let 3D provide navigation and the inspector provide precise values.
+- `scaled_dot_product_attention` currently does not return attention probabilities. If an explicit diagnostic mode reconstructs them from captured Q/K, preserve scaling, KV grouping, and any supported mask semantics; bound the quadratic matrix size. Check deterministic eval output against the normal execution path within numerical tolerance, and keep ordinary training behavior unchanged.
+- Distinguish learned projection matrices Wq/Wk/Wv from input-dependent attention probabilities A. Diagnostic snapshots must identify their source and must not present simulated values as observations.
+- Describe import as supported static structure plus supported constants; it does not load the original trainable weights or support arbitrary Python behavior. Do not advertise arbitrary-model import or full GPT debugging without implementing and verifying the missing capabilities.
 
-### Verification At Handoff
+### Branding considerations
 
-- `npm exec --no -- vitest run src/imageLayout.test.ts src/attentionLayout.test.ts`: 24 tests passed.
-- `npx --no-install playwright test e2e/imageExport.spec.ts`: 2 tests passed. Coverage includes legacy normalized node positions, module size, node/label overlap, PNG dimensions/transparency/frame fill, and query/context/Q/K/V edge alignment in a 16-head fixture.
-- `npm exec --no -- tsc --noEmit`: passed.
-- `git diff --check`: passed; Git reported only LF-to-CRLF conversion warnings.
-- Actual PNG output was rendered and visually inspected. Comparison against the original SVG confirmed unchanged normalized node centers.
-- The full Vitest suite, full browser suite, backend suites, and production build were not run for this export change. Do not describe those as verified.
+- The adopted product name is TensorCraft3D with the subtitle “Build and Explore Neural Networks in 3D” (Chinese UI: “神经网络三维构建与探索”). Repository description/topics/name changes belong to the publication workflow.
+- Preserve compatibility for `tensorlab-project`, `application/tensorlab-layer`, `TENSORLAB_TEST_URL`, `TensorLabAttention`/`TensorLabTransformer`, and `_TENSORLAB_INPUT_SHAPES`. Introduce migrations or parsing aliases before replacing persisted or exported identifiers; avoid a global search-and-replace that breaks saved projects or existing Python exports.
 
-### Existing Boundaries
+## Conventions & Status
 
-Real training is local classification with logits `[B,2..256]`, synthetic or CSV data, and CPU/CUDA execution. Python import reads model structure, constructor arguments, and supported static constants, not original trainable weights or training scripts. This is not a general Python execution environment, distributed trainer, ONNX importer, live Python synchronization system, or full profiler. See `README.md` for the supported operation set and user-facing limitations; verify implementation before extending its claims.
-
-## Architecture
-
-### Graph State & Validation
-
-`src/types.ts` defines the shared frontend graph/edge/parameter contract. `src/App.tsx` owns graph history, selection, import/export UI, and training state, and persists the graph under the browser-storage key `tensorlab-project`. The scene and topology editor are views over this state, not separate model representations.
-
-`src/analysis.ts` validates client graphs, computes topological order, derives shapes and parameter/activation estimates, and emits diagnostics. `backend/graph.py` independently validates the graph before model allocation and derives backend shapes/limits. Operation or connection changes often require coordinated updates to both analyzers, training construction, Python generation, and static import mappings.
-
-Graphs allow 1-8 Inputs and one Output, up to 128 nodes and 512 edges. Shapes, parameters, and attention allocations have bounded resource checks. Invalid editable connections may remain in the project with diagnostics, but execution and standalone Python export must reject invalid graphs.
-
-### Attention & Connections
-
-`src/attentionConfig.ts` centralizes attention configuration and port semantics. Projection IDs such as `b0:q0`, `b0:k0`, and `b0:v0` are stored in edge `sourcePort`/`targetPort`; cross-attention uses base `query`/`context` inputs. Connections between the same nodes through different ports are distinct.
-
-`src/attentionLayout.ts` is the shared geometry/port/route description. Interactive attention rendering consumes it in `src/AttentionModule.tsx`; `src/Scene.tsx` composes nodes and connections, while GPU flow rendering uses `src/Flow.tsx` and shared routing geometry. `src/graphRoutes.ts` detects Add shortcuts from reachability rather than naming them as residuals.
-
-Image export builds flat attention geometry in `src/attentionExport.ts`. Heads with a shared input can form stepped stacks; independently wired faces keep separate columns, and distinct branches do not stack together. Preserve full face size and the association between displayed vertices and real projection ports.
-
-### Image Export
-
-`src/sceneImageExport.ts` clones the scene, prepares compact/current layouts, rebuilds export attention geometry, routes edges, fits the camera, and exports PNG/SVG. `src/imageLayout.ts` handles stage-preserving compact placement, bounded render scaling, caption wrapping, and shared screen-space label packing.
-
-Keep layout dimensions distinct from rendered bounds. Module-size changes must not silently alter the accepted compact arrangement. Use rendered geometry for visible endpoints, fitting, and caption obstacles; do not mutate the interactive scene/camera or shared geometry during export.
-
-`e2e/imageGraph.ts` loads the dense fixture from `artifacts/DualBranchCrossAttentionTransformer.json`. `e2e/imageExport.spec.ts` checks actual downloaded PNG/SVG rather than only internal layout calculations. Browser tests write samples under `artifacts`; inspect the resulting worktree so regenerated samples are not mistaken for unrelated user edits.
-
-### Python Import, Export & Training
-
-`src/export.ts` generates standalone PyTorch `VisualModel` code and embeds `backend/attention.py` for attention graphs and `backend/tensor_ops.py` for `ConstantAdd` graphs. `backend/static_tensors.py` evaluates whitelisted constant expressions without torch or source execution. Backend training and generated Python must agree on graph order, layer configuration, constant buffers/indexing, projection shapes, and attention behavior.
-
-`backend/pytorch_import.py` is a bounded static AST parser. It must never execute uploaded source, import its modules, or load its weights. Import limits include 512,000 UTF-8 source bytes, 30,000 AST nodes, and 128 nodes/512 edges; unsupported dynamic behavior produces diagnostics. The frontend import preview confirms a parsed graph before replacing the current project.
-
-`backend/app.py` exposes `/api/health`, `/api/analyze`, `/api/import/pytorch`, read-only `/api/environment`, explicit POST `/api/environment/smoke`, and WebSocket `/api/train`, and serves built frontend files. `backend/cuda_environment.py` distinguishes missing/broken torch, CPU wheels, masked/unavailable GPUs, initialization errors, and usable CUDA. A shared lock permits one local training job or full environment/probe request. `backend/training.py` constructs validated, whitelisted PyTorch layers and trains with Adam/CrossEntropyLoss, validation metrics, gradient clipping, early stopping, and cooperative stop/disconnect handling. `backend/attention.py` supplies the attention runtime used by both paths.
-
-## Style & Implementation Guidelines
-
-- TypeScript uses strict checking, ES2022, React functional components/hooks, two-space indentation, single-quoted imports/strings, semicolons, and type-only imports. Follow the surrounding compact style without reformatting unrelated code.
-- Python uses four-space indentation, type hints where established, and explicit validation. Preserve the static-import boundary and validation-before-allocation behavior.
-- The UI is primarily Chinese, with technical identifiers and operation names in English. Keep existing control labels and `aria-label` semantics consistent; Playwright locates many controls by their accessible Chinese names.
-- Shape analysis and execution rules are cross-language contracts. Reuse existing attention configuration, layout, and route helpers rather than implementing parallel interpretations.
-- For export-only visual edits, preserve the user's accepted compact topology and protect layout positions as well as geometry size in tests. Updating a camera or passing enlarged bounds into the placement optimizer is not equivalent to enlarging module area.
-- Avoid changing attention/flow colors or claiming the animation represents measured activations when the task concerns only size or layout.
-- Keep `Current Status & Progress` synchronized with completed work and actual verification. Record unresolved limitations without marking unrun tests as passed.
+- TypeScript: strict, ES2022, functional React/hooks, two spaces, single quotes, semicolons, type-only imports. Python: four spaces, established type hints, explicit validation. Match surrounding style; avoid unrelated refactors.
+- Reuse shared attention/layout/routing helpers. Preserve Chinese control labels and `aria-label` semantics used by browser tests.
+- Completed: compact-export module enlargement without reflow; static tensor/indexing round-trip and execution; local CUDA diagnostics and explicit probes. Check Git for current branch/commit and `README.md` for detailed behavior; historical test runs are not verification of new changes.
+- Keep this guide focused on durable contracts and commands. Report only checks actually run and unresolved limitations; do not accumulate session logs, screenshots, or obsolete branch/environment details here.

@@ -38,6 +38,22 @@ class PyTorchImportTests(unittest.TestCase):
         self.assertEqual(result["inputs"][0]["shape"], [1, 4])
         self.assertEqual(result["analysis"]["totalParameters"], sum(p.numel() for p in original.parameters()))
 
+    def test_bilinear_infers_each_input_feature_width(self):
+        for width in (16, 7):
+            for activation in (False, True):
+                with self.subTest(width=width, activation=activation):
+                    forward = "return self.layer(x, F.relu(y))" if activation else "return self.layer(x, y)"
+                    code = module_source(f"self.layer = nn.Bilinear(8, {width}, 10)", forward, inputs="x, y")
+                    result, model = self.parsed(code)
+                    self.assertEqual([i["shape"] for i in result["inputs"]], [[1, 8], [1, width]])
+                    self.assertEqual(result["analysis"]["totalParameters"], 8 * width * 10 + 10)
+                    original = nn.Bilinear(8, width, 10)
+                    model.layers["import_3" if activation else "import_2"].load_state_dict(original.state_dict())
+                    x, y = torch.randn(3, 8), torch.randn(3, width)
+                    values = {i["id"]: value for i, value in zip(result["inputs"], (x, y))}
+                    torch.testing.assert_close(model(values), original(x, torch.relu(y) if activation else y))
+                    self.reject(code, "STRUCTURE", input_shapes={"x": [1, 8], "y": [1, 8]})
+
     def test_residual_cnn_and_channels_are_preserved(self):
         code = module_source("self.stem = nn.Conv2d(3, 8, 3, padding=1)\nself.block = nn.Conv2d(8, 8, 3, padding=1)\nself.pool = nn.AdaptiveAvgPool2d((1, 1))\nself.head = nn.Linear(8, 2)", "x = F.relu(self.stem(x))\nresidual = x\nx = F.relu(self.block(x) + residual)\nx = self.pool(x)\nx = x.view(x.size(0), -1)\nreturn self.head(x)")
         result, model = self.parsed(code, input_shapes={"x": [2, 3, 16, 16]})

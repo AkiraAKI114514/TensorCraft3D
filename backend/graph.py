@@ -220,8 +220,14 @@ def analyze_graph(graph):
                         if actual > size: raise ValueError(f"{key}: input sequence exceeds constant buffer capacity")
                     elif size not in (1, actual): raise ValueError(f"{key}: constant shape does not broadcast to input")
             elif op == "Bilinear":
+                # in2_features is a weight dimension: it must equal the second
+                # input's last dim, and it is also what nn.Bilinear is built
+                # with, so inferring it from either side alone drifts.
                 if len(shape) != 2: raise ValueError(f"{key}: Bilinear requires [B,F1]")
-                other = integer("in2_features", shape[1]); features = integer("out_features", 10)
+                if len(in_shapes[1]) != 2: raise ValueError(f"{key}: Bilinear requires two 2D inputs")
+                if shape[0] != in_shapes[1][0]: raise ValueError(f"{key}: Bilinear inputs must share the batch dimension")
+                other = integer("in2_features", 16); features = integer("out_features", 10)
+                if in_shapes[1][1] != other: raise ValueError(f"{key}: in2_features must equal the second input's last dimension {in_shapes[1][1]}")
                 count = shape[1] * other * features + features; shape = [shape[0], features]
             elif op == "Embedding":
                 if len(shape) < 2: raise ValueError(f"{key}: Embedding requires integer index input")

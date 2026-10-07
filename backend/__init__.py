@@ -1,1 +1,1 @@
-"""TensorLab local model and training services."""
+"""TensorCraft3D local model and training services."""

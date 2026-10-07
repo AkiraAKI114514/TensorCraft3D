@@ -21,7 +21,7 @@ def main():
             except OSError: continue
     else: raise SystemExit("No free port found")
     url = f"http://127.0.0.1:{port}"
-    print(f"TensorLab 3D: {url}", flush=True)
+    print(f"TensorCraft3D · Build and Explore Neural Networks in 3D: {url}", flush=True)
     if not options.no_browser: webbrowser.open(url)
     if importlib.util.find_spec("uvicorn") and importlib.util.find_spec("fastapi"):
         import uvicorn
