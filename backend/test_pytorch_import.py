@@ -235,6 +235,91 @@ class Net(nn.Module):
         self.assertFalse(any(d["code"] == "UNSUPPORTED" and "unsqueeze" in d["message"] for d in result["diagnostics"]))
         self.assertEqual(sum(n["op"] == "MultiHeadAttention" for n in result["graph"]["nodes"]), 1)
         self.assertGreaterEqual(sum(n["op"] == "Transformer" for n in result["graph"]["nodes"]), 1)
+        self.assertEqual(sum(n["op"] == "ConstantAdd" for n in result["graph"]["nodes"]), 2)
+        self.assertEqual(sum(n["op"] == "Select" for n in result["graph"]["nodes"]), 1)
+        imported, info = build_model(result["graph"])
+        # Execute only this trusted test fixture to obtain an independent reference.
+        namespace = {}; exec(source, namespace)
+        original = namespace["Net"]().eval(); imported.eval()
+        for node in result["graph"]["nodes"]:
+            if node["op"] not in ("Linear", "Transformer", "MultiHeadAttention"): continue
+            target = imported.layers[node["id"]]
+            path = node["name"].removeprefix("self.")
+            if node["op"] == "Transformer": path = path.rsplit('.', 1)[0] + '.layers.' + path.rsplit('.', 1)[1]
+            reference = original.get_submodule(path)
+            if node["op"] == "Linear": target.load_state_dict(reference.state_dict())
+            elif node["op"] == "MultiHeadAttention": self.copy_attention(target, reference)
+            else:
+                self.copy_attention(target.attention, reference.self_attn)
+                target.norm1.load_state_dict(reference.norm1.state_dict()); target.norm2.load_state_dict(reference.norm2.state_dict())
+                target.ffn[0].load_state_dict(reference.linear1.state_dict()); target.ffn[3].load_state_dict(reference.linear2.state_dict())
+        for node in result["graph"]["nodes"]:
+            if node["op"] == "ConstantAdd":
+                actual = imported.layers[node["id"]].constant
+                torch.testing.assert_close(actual, original.left[1].pe, atol=1e-6, rtol=1e-5)
+                self.assertGreater(actual.abs().sum().item(), 0)
+        for batch, length in ((1, 3), (3, 6)):
+            left = torch.randn(batch, length, 4, requires_grad=True); right = torch.randn(batch, length, 5, requires_grad=True)
+            output = imported({item["id"]: value for item, value in zip(result["inputs"], (left, right))})
+            expected = original(left, right)
+            self.assertEqual(list(output.shape), [batch])
+            torch.testing.assert_close(output, expected, atol=1e-6, rtol=1e-5)
+            for actual_grad, expected_grad in zip(torch.autograd.grad(output.square().sum(), (left, right)), torch.autograd.grad(expected.square().sum(), (left, right))):
+                torch.testing.assert_close(actual_grad, expected_grad, atol=1e-6, rtol=1e-4)
+        self.assertEqual(info["totalParameters"], sum(p.numel() for p in original.parameters()))
+
+    def test_odd_width_position_buffers_and_static_arithmetic(self):
+        source = module_source(
+            'position = torch.arange(0, 9, dtype=torch.float32).unsqueeze(1)\n'
+            'div = torch.exp(torch.arange(0, 5, 2, dtype=torch.float32) * (-math.log(10000.0) / 5))\n'
+            'pe = torch.zeros(1, 9, 5)\n'
+            'pe[0, :, 0::2] = torch.sin(position * div)\n'
+            'pe[0, :, 1::2] = torch.cos(position * div[:2])\n'
+            'self.register_buffer("pe", pe, persistent=False)',
+            'return (x + self.pe[:, :x.shape[1]])[:, -1]',
+        ).replace('import torch\n', 'import torch\nimport math\n', 1)
+        result, imported = self.parsed(source, input_shapes={"x": [2, 6, 5]})
+        namespace = {}; exec(source, namespace); original = namespace["Net"]()
+        for batch, length in ((1, 1), (2, 6), (3, 9)):
+            x = torch.zeros(batch, length, 5, requires_grad=True)
+            torch.testing.assert_close(imported(x), original(x), atol=1e-6, rtol=1e-5)
+            imported(x).sum().backward(); self.assertTrue(torch.isfinite(x.grad).all())
+        self.assertEqual(result["analysis"]["totalParameters"], 0)
+        source = module_source('a = torch.ones(1, 4)\nb = torch.zeros(1, 4)\nself.register_buffer("buffer", (a + b + 2) * 3 - a / 2)', 'return x + self.buffer')
+        _, model = self.parsed(source, input_shapes={"x": [2, 4]})
+        x = torch.randn(3, 4)
+        torch.testing.assert_close(model(x), x + 8.5)
+
+    def test_tensor_indexing_keeps_all_axes_and_real_values(self):
+        cases = [('x[:, 1:5:2, -1]', lambda x: x[:, 1:5:2, -1]), ('x[..., 1:4:2]', lambda x: x[..., 1:4:2]), ('x[:, -1, 1:4:2]', lambda x: x[:, -1, 1:4:2]), ('x[:, None, 1:5, -1]', lambda x: x[:, None, 1:5, -1]), ('torch.select(x, dim=1, index=-1)', lambda x: x.select(1, -1)), ('x.select(-1, 2)', lambda x: x.select(-1, 2))]
+        for expression, reference in cases:
+            with self.subTest(expression=expression):
+                result, model = self.parsed(module_source('', 'return ' + expression), input_shapes={"x": [2, 6, 5]})
+                x = torch.randn(3, 6, 5, requires_grad=True)
+                actual, expected = model(x), reference(x)
+                torch.testing.assert_close(actual, expected)
+                torch.testing.assert_close(torch.autograd.grad(actual.square().sum(), x)[0], torch.autograd.grad(expected.square().sum(), x)[0])
+                self.assertEqual(result["analysis"]["shapes"][result["analysis"]["output"]], list(reference(torch.randn(2, 6, 5)).shape))
+
+    def test_unsupported_static_and_index_semantics_fail_with_source_locations(self):
+        cases = [('', 'return x[0]'), ('', 'return x[:1]'), ('', 'return x[:, [0, 2]]'), ('', 'return x[:, ::-1]'), ('', 'return x[:, :x.size(2)]'), ('', 'return x[:, :other.size(1)]'), ('self.register_buffer("pe", torch.empty(1, 6, 5))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, dtype=torch.float64))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, unexpected=True))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :other.size(1)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(1), :2]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x * self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe.real')]
+        for init, forward in cases:
+            with self.subTest(init=init, forward=forward):
+                result = self.reject(module_source(init, forward, inputs="x, other"), input_shapes={"x": [2, 6, 5], "other": [2, 6, 5]})
+                self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
+    def test_static_work_and_allocation_limits_are_bounded(self):
+        for init in ('self.register_buffer("pe", torch.zeros(65537))', 'a = torch.ones(257, 1)\nb = torch.ones(1, 257)\nself.register_buffer("pe", a * b)', 'self.register_buffer("pe", torch.zeros(1.5, 4))'):
+            result = self.reject(module_source(init, 'return x + self.pe'), input_shapes={"x": [2, 4]})
+            self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+        init = 'a = torch.ones(1, 8192)\n' + '\n'.join('a = a + 1' for _ in range(65)) + '\nself.register_buffer("pe", a)'
+        self.reject(module_source(init, 'return x + self.pe'), input_shapes={"x": [2, 8192]})
+
+    def test_static_buffer_import_does_not_execute_source(self):
+        source = module_source('self.register_buffer("pe", torch.ones(1, 4))', 'return (x + self.pe)[:, -1:]')
+        with patch("builtins.exec", side_effect=AssertionError("executed uploaded source")), patch("builtins.eval", side_effect=AssertionError("evaluated uploaded source")):
+            result = import_pytorch(source, input_shapes={"x": [2, 4]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
 
 
 if __name__ == "__main__": unittest.main()

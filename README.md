@@ -14,7 +14,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Training
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-Dependencies are already installed in the current directory and a compiled `dist` is present, so you can also just double-click `start.cmd`. The default address is http://127.0.0.1:8765, and it listens on localhost only. Closing the terminal stops the service.
+Once dependencies are installed and a compiled `dist` is present, you can also just double-click `start.cmd`. The default address is http://127.0.0.1:8765, and it listens on localhost only. Closing the terminal stops the service.
 
 If you don't need real training, `npm install`, `npm run build` and `python run.py` are enough. The standard-library server still provides the 3D view, model editing, warning demos and export.
 
@@ -28,9 +28,12 @@ If you don't need real training, `npm install`, `npm run build` and `python run.
 npm run dev
 
 npm test
-.\.venv\Scripts\python.exe -m unittest backend.test_training
+.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment
 # With the service running on 8765, run the browser flow tests using the installed Microsoft Edge
 npm run test:e2e
+# If run.py selected another port, point browser tests at that server
+$env:TENSORLAB_TEST_URL = 'http://127.0.0.1:8766'
+npm run test:e2e -- e2e/runtime.spec.ts
 npm run build
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
@@ -59,7 +62,7 @@ Clicking a 3D Q/K/V cube centres it and opens that object's connection configura
 
 Project connections store vertex ports via `sourcePort` / `targetPort`, for example `{"source":"memory","target":"attention","targetPort":"b0:k0"}` specifies the input of K1 in the first branch; `{"source":"attention","sourcePort":"b0:q0","target":"flatten"}` passes the projected Q1 of the first branch to Flatten. The same pair of model layers can be connected multiple times through different ports. Training, shape validation and standalone Python export all use the same connection semantics.
 
-The colours and particles of the 3D weight matrices are still a **simulated illustration**; real attention weights, Q/K/V activations and token-level gradients are not collected, and the properties panel labels this "weight schematic". Loss and per-layer gradients in real training monitoring come from actual PyTorch training. The example input is a token feature vector; there is no text tokenizer, positional encoding or causal/padding mask yet.
+The colours and particles of the 3D weight matrices are still a **simulated illustration**; real attention weights, Q/K/V activations and token-level gradients are not collected, and the properties panel labels this "weight schematic". Loss and per-layer gradients in real training monitoring come from actual PyTorch training. The example input is a token feature vector; there is no text tokenizer or causal/padding mask yet. Imported static float32 positional buffers are supported as `ConstantAdd` nodes; they are not automatically added to attention templates.
 
 ## GPU animation and training
 
@@ -71,7 +74,33 @@ Real training uses Adam + CrossEntropyLoss, with CPU / CUDA / automatic selectio
 
 Training pushes measured train/val loss, accuracy, global and per-layer gradient norms, and the ReLU zero-activation fraction over WebSocket. Gradient clipping is at a threshold of 100; early stopping triggers on a run of unimproved validation loss windows. Only one local training job runs at a time, and disconnecting the page or pressing stop halts it on the next batch. Inputs, data and activations have resource limits, and complex models need to run in a professional training environment.
 
-PyTorch from the default PyPI index may be a CPU build. If you need CUDA, get the install command matching your GPU driver from https://pytorch.org/get-started/locally/, run it in this project's `.venv`, and restart the service; the interface will then show the CUDA device.
+### Local CUDA diagnostics and setup
+
+Open "CUDA 环境与配置" in the training panel to inspect the backend's actual interpreter, PyTorch version, CUDA build, GPU/driver and selected environment variables. The folded panel does not request full diagnostics. Starting training is disabled until any diagnostic/probe request finishes, even if the panel is folded or the dialog is closed and reopened. `GET /api/environment` is read-only and distinguishes a missing or broken PyTorch import, a CPU wheel, a hidden GPU and CUDA initialization failures. Full inspection runs a bounded `nvidia-smi` query; the regular health check does not. This is an on-demand snapshot, not continuous monitoring.
+
+CUDA training runs in the local Python backend, not in the browser or a separate CUDA service. Official CUDA PyTorch wheels supply their runtime libraries and still need a compatible NVIDIA driver. Installing a system CUDA toolkit or setting `CUDA_PATH` cannot turn a CPU wheel into a CUDA build. The app does not bundle PyTorch/CUDA, install drivers, alter environment variables or connect to a remote GPU service.
+
+The setup script changes only this project's existing `.venv`. It pins `torch==2.9.1+cu128` for CUDA and `torch==2.14.1+cpu` for CPU, using the corresponding official PyTorch index. It skips installation when that exact version is already present, then checks import and device availability. A different Python/platform or driver may need a different wheel from the [official installation selector](https://pytorch.org/get-started/locally/).
+
+Stop all project Python backends and training jobs before replacing PyTorch. On Windows, a running process can hold PyTorch DLLs open. The script refuses to start package replacement while it detects a project Python process; it does not stop processes itself.
+
+```powershell
+# Run from the project root, after stopping its Python processes
+.\setup-training.ps1 -Variant cu128
+
+# Explicit CPU alternative
+.\setup-training.ps1 -Variant cpu
+```
+
+After successful setup, restart the Python backend, refresh diagnostics and explicitly click "测试 GPU 前向与反向". That button calls `POST /api/environment/smoke` to perform a small CUDA matrix operation and backward pass; opening or refreshing diagnostics never runs this probe automatically. Diagnostics and the probe share the training lock and return HTTP 409 during training. CUDA-unavailable or failed probes return HTTP 422. Finally, select CUDA in the training panel and run a classification job to verify the full training path.
+
+If installation fails during uninstall/replacement, PyTorch may be left incomplete. Do not assume the old wheel still works: inspect `/api/environment` after restarting, or run the diagnostic below in a new process. Resolve permissions and stop DLL-holding processes before an explicitly authorized repair.
+
+```powershell
+.\.venv\Scripts\python.exe -c "import json; from backend.cuda_environment import inspect_environment; print(json.dumps(inspect_environment(), ensure_ascii=False))"
+```
+
+Local verification on 2026-10-07 used Python 3.13, `torch==2.9.1+cu128` (CUDA runtime 12.8), an NVIDIA GeForce RTX 4060 Ti and driver 591.74. The browser's explicit GPU forward/backward probe and a two-epoch CUDA classification run with imported position buffers and slices passed. An earlier replacement failed at a locked `c10.dll`; stopping the confirmed project backends and repairing `.venv` resolved it without changing the system driver or environment variables. This verifies that local configuration, not every GPU/driver combination.
 
 ## About the warnings
 
@@ -111,8 +140,10 @@ $body = @{
 Invoke-RestMethod -Uri http://127.0.0.1:8765/api/import/pytorch -Method Post -ContentType 'application/json' -Body $body
 ```
 
-The parser only reads the Python AST; it does not execute uploaded code, import modules from the source or load weights, optimizers or training scripts. It supports static `nn.Module`, `nn.Sequential`, nested modules, `ModuleList`, `ModuleDict`, residual addition, `torch.cat`, `flatten/view/reshape`, the common layers listed above, `MultiheadAttention`, `TransformerEncoderLayer`/`TransformerEncoder` and TensorLab Attention/Transformer. Query/Context and Q/K/V port connections for Cross-Attention and MQA/GQA are supported.
+The parser only reads the Python AST; it does not execute uploaded code, import modules from the source or load weights, optimizers or training scripts. It supports static `nn.Module`, `nn.Sequential`, nested modules, `ModuleList`, `ModuleDict`, residual addition, `torch.cat`, `flatten/view/reshape`, the common layers listed above, `unsqueeze/squeeze`, bounded tensor indexing, `MultiheadAttention`, `TransformerEncoderLayer`/`TransformerEncoder` and TensorLab Attention/Transformer/ConstantAdd. Query/Context and Q/K/V port connections for Cross-Attention and MQA/GQA are supported.
 
-What is imported is the model structure and its constructor arguments, not the original weights; after importing you can choose the data and the CPU/CUDA device in the training panel. Dynamic control flow, loops that depend on runtime data, arbitrary custom operators, weight sharing, complex masks and tensor operations that cannot be statically inferred are reported as errors or warnings. Source is limited to 512 KB, 30,000 AST nodes, and a generated graph of at most 128 nodes and 512 edges; up to 8 input shapes are allowed. When shapes are missing, conservative inference is used with a warning, and you can edit them in the window and re-parse.
+Static float32 buffers used in addition are evaluated by a bounded, torch-free interpreter and saved as `ConstantAdd` parameters, not dropped as passthrough operations. Supported construction includes `torch.zeros/ones/arange`, static arithmetic, selected `math` functions, and elementwise `exp/sin/cos/sqrt/abs`. Supported indexing includes integer selection, positive-step slices, negative bounds/indices, one ellipsis and inserted singleton axes. Examples such as `x + self.pe[:, :x.size(1)]` retain the buffer's real values and use the current input sequence length, within the stored capacity; `x[:, -1]` becomes `Select`. Batch-axis indexing, advanced/boolean indexing, negative steps, unsupported dynamic bounds, uninitialized `torch.empty` buffers and non-float32 buffers are rejected with diagnostics. Static tensors have at most 5 dimensions and 65,536 elements, evaluation is limited to 1,000,000 charged work units, and graph constant buffers total at most 65,536 elements. The supported operations are available in editing, shape analysis, backend execution and standalone Python export; float32 transcendental values are compared with numerical tolerances, not a bitwise equivalence guarantee.
+
+What is imported is the model structure, its constructor arguments and these supported static constants, not the original trainable weights; after importing you can choose the data and the CPU/CUDA device in the training panel. Dynamic control flow, loops that depend on runtime data, arbitrary custom operators, weight sharing, complex masks and tensor operations that cannot be statically inferred are reported as errors or warnings. Source is limited to 512 KB, 30,000 AST nodes, and a generated graph of at most 128 nodes and 512 edges; up to 8 input shapes are allowed. When shapes are missing, conservative inference is used with a warning, and you can edit them in the window and re-parse.
 
 The HTTP endpoint is `POST /api/import/pytorch`, with request fields `source`, optional `model_name` and `input_shapes`. The response contains `graph`, `models`, `model`, `inputs`, `diagnostics` and `analysis`, and can be integrated into other editors or automated pipelines.

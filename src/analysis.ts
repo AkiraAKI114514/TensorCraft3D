@@ -13,7 +13,7 @@ export function validateGraph(value: unknown): Graph {
   g.nodes.forEach(n => {
     if (!n || typeof n.id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.id) || ids.has(n.id) || !OPS.includes(n.op) || typeof n.name !== 'string' || n.name.length > 120 || !n.params || typeof n.params !== 'object' || Array.isArray(n.params)) throw new Error('节点数据或 ID 无效');
     if (!n.position || !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y)) throw new Error('节点坐标无效');
-    for (const v of Object.values(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= 8 && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
+    for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= (n.op === 'ConstantAdd' && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
   const edgeIds = new Set<string>(), pairs = new Set<string>();
@@ -42,7 +42,7 @@ export function analyze(graph: Graph): Analysis {
   const ancestors = new Set<string>();
   const visit = (id: string) => { if (ancestors.has(id)) return; ancestors.add(id); graph.edges.filter(e => e.target === id).forEach(e => visit(e.source)); };
   if (outputNode) visit(outputNode.id);
-  let parameters = 0, activationBytes = 0;
+  let parameters = 0, activationBytes = 0, constantElements = 0;
   const depth: Record<string, number> = {};
   for (const id of order) {
     const n = graph.nodes.find(n => n.id === id)!;
@@ -115,7 +115,27 @@ export function analyze(graph: Graph): Analysis {
           output = output.filter((size, index) => !indices.includes(index) || size !== 1);
         }
       }
-      else if (n.op === 'Linear') {
+      else if (n.op === 'Slice' || n.op === 'Select') {
+        const dim = (integer('dim', 1, -output.length, output.length - 1) + output.length) % output.length;
+        if (dim === 0) throw new Error('Slice / Select 不能改变 batch 维度');
+        if (n.op === 'Select') { integer('index', -1, -output[dim], output[dim] - 1); output.splice(dim, 1); }
+        else {
+          const size = output[dim], step = integer('step', 1);
+          const bound = (key: string, fallback: number) => { const raw = n.params[key] ?? 'none'; if (raw === 'none') return fallback; const value = integer(key, 0, -65536, 65536); return Math.min(size, Math.max(0, value < 0 ? size + value : value)); };
+          const length = Math.max(0, Math.ceil((bound('end', size) - bound('start', 0)) / step));
+          if (!length) throw new Error('Slice 输出为空'); output[dim] = length;
+        }
+      } else if (n.op === 'ConstantAdd') {
+        const shape = n.params.shape, values = n.params.values;
+        if (!output.length || !Array.isArray(shape) || shape.length > Math.min(5, output.length) || !shape.every(v => Number.isInteger(v) && v >= 1 && v <= 65536)) throw new Error('常量 shape 无效');
+        if (!Array.isArray(values) || !values.length || values.length > 65536 || product(shape) !== values.length || !values.every(v => Number.isFinite(v) && Math.abs(v) <= 3.4028234663852886e38)) throw new Error('常量 values 必须是与 shape 匹配的有限 FP32 数组');
+        constantElements += values.length; if (constantElements > 65536) throw new Error('模型常量缓冲区不能超过 65536 个元素');
+        const offset = output.length - shape.length, aligned = [...Array(offset).fill(1), ...shape];
+        if (aligned[0] !== 1) throw new Error('常量必须在 batch 维度广播');
+        const sequenceDim = n.params.sequence_dim === undefined ? null : integer('sequence_dim', 1, 1, output.length - 1);
+        if (sequenceDim !== null && sequenceDim < offset) throw new Error('sequence_dim 不在常量维度中');
+        aligned.forEach((size, dim) => { if (dim === sequenceDim ? output[dim] > size : size !== 1 && size !== output[dim]) throw new Error(dim === sequenceDim ? '输入序列超过常量缓冲区容量' : '常量形状无法广播到输入'); });
+      } else if (n.op === 'Linear') {
         if (output.length < 2) throw new Error('Linear 需要至少二维输入 [B,...,F]');
         const features = integer('out_features', 10); count = (output.at(-1)! + 1) * features; output = [...output.slice(0, -1), features];
       } else if (n.op === 'Bilinear') {

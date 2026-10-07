@@ -7,7 +7,7 @@ OPS = {
     "ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity",
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
-    "Flatten", "Unsqueeze", "Squeeze", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
+    "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
     "Add", "Concat", "MultiHeadAttention", "Transformer"
 }
 
@@ -91,6 +91,7 @@ def analyze_graph(graph):
     visit(outputs[0]["id"])
     if any(n["id"] not in ancestors for n in inputs): raise ValueError("Every Input must be connected to the model Output")
     shapes, port_shapes, parameters, total, activation = {}, {}, {}, 0, 0
+    constant_elements = 0
     def edge_shape(edge):
         return port_shapes[edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else shapes[edge["source"]]
     for key in order:
@@ -185,6 +186,39 @@ def analyze_graph(graph):
                     indices = [dim % rank for dim in dims]
                     if len(set(indices)) != len(indices): raise ValueError(f"{key}: duplicate squeeze dimensions")
                     shape = [size for index, size in enumerate(shape) if index not in indices or size != 1]
+            elif op in ("Slice", "Select"):
+                dim = integer("dim", 1, -len(shape), len(shape) - 1) % len(shape)
+                if dim == 0: raise ValueError(f"{key}: slicing/selecting the batch axis is not supported")
+                if op == "Select":
+                    index = integer("index", -1, -shape[dim], shape[dim] - 1)
+                    shape.pop(dim)
+                else:
+                    bounds = []
+                    for name in ("start", "end"):
+                        raw = p.get(name, "none")
+                        bounds.append(None if raw == "none" else integer(name, 0, -65536, 65536))
+                    step = integer("step", 1)
+                    start, end, step = slice(*bounds, step).indices(shape[dim])
+                    size = len(range(start, end, step))
+                    if size < 1: raise ValueError(f"{key}: slice output is empty")
+                    shape[dim] = size
+            elif op == "ConstantAdd":
+                buffer_shape, values = p.get("shape"), p.get("values")
+                if not shape or not isinstance(buffer_shape, list) or len(buffer_shape) > min(5, len(shape)) or any(type(v) is not int or not 1 <= v <= 65536 for v in buffer_shape):
+                    raise ValueError(f"{key}: invalid constant shape")
+                if not isinstance(values, list) or not 1 <= len(values) <= 65536 or prod(buffer_shape) != len(values) or any(type(v) not in (int, float) or not isfinite(v) or abs(v) > 3.4028234663852886e38 for v in values):
+                    raise ValueError(f"{key}: invalid constant values")
+                constant_elements += len(values)
+                if constant_elements > 65536: raise ValueError(f"{key}: graph constant buffers exceed 65536 elements")
+                offset = len(shape) - len(buffer_shape)
+                aligned = [1] * offset + buffer_shape
+                if aligned[0] != 1: raise ValueError(f"{key}: constants must broadcast across the batch axis")
+                sequence_dim = integer("sequence_dim", 1, 1, len(shape) - 1) if "sequence_dim" in p else None
+                if sequence_dim is not None and sequence_dim < offset: raise ValueError(f"{key}: sequence_dim is not present in the constant")
+                for dim, (size, actual) in enumerate(zip(aligned, shape)):
+                    if dim == sequence_dim:
+                        if actual > size: raise ValueError(f"{key}: input sequence exceeds constant buffer capacity")
+                    elif size not in (1, actual): raise ValueError(f"{key}: constant shape does not broadcast to input")
             elif op == "Bilinear":
                 if len(shape) != 2: raise ValueError(f"{key}: Bilinear requires [B,F1]")
                 other = integer("in2_features", shape[1]); features = integer("out_features", 10)

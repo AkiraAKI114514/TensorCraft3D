@@ -38,7 +38,7 @@ export default function PyTorchImport({ online, disabled, onClose, onImport }: {
       for (const [name, text] of Object.entries(shapes)) {
         if (!text.trim()) continue;
         const shape = text.split(/[,×x\s]+/).filter(Boolean).map(Number);
-        if (![2, 3, 4].includes(shape.length) || shape.some(v => !Number.isInteger(v) || v < 1 || v > 65536)) throw new Error(`${name} 需要 [B,F]、[B,S,E] 或 [B,C,H,W]，各维度为正整数`);
+        if (![2, 3, 4, 5].includes(shape.length) || shape.some(v => !Number.isInteger(v) || v < 1 || v > 65536)) throw new Error(`${name} 需要 [B,F]、[B,S,E]、[B,C,H,W] 或 [B,C,D,H,W]，各维度为正整数`);
         input_shapes[name] = shape;
       }
       const response = await fetch('/api/import/pytorch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, model_name: model || null, input_shapes }) });
@@ -70,7 +70,7 @@ export default function PyTorchImport({ online, disabled, onClose, onImport }: {
       {error && <div role="alert" className="diagnostic-item error">{error}</div>}
       {result?.diagnostics.map((d, i) => <button key={i} type="button" role={d.level === 'error' ? 'alert' : undefined} className={`diagnostic-item ${d.level}`} onClick={() => jumpToLine(d.line)}><div><strong>{d.line ? `第 ${d.line} 行${d.column ? ` · 第 ${d.column} 列` : ''} · ` : ''}{d.code}</strong><p>{d.message}</p></div></button>)}
       {result?.graph && preview && <div className="import-preview"><div className="import-section-title"><CheckCircle2 size={14} />解析通过 <small>{result.graph.nodes.length} 个节点 · {result.graph.edges.length} 条连接 · {formatNumber(preview.parameters)} 参数</small></div><div className="import-preview-scroll"><table><thead><tr><th>层名称</th><th>类型</th><th>输出形状</th></tr></thead><tbody>{result.graph.nodes.map(n => <tr key={n.id}><td>{n.name}</td><td>{n.op}</td><td>{shapeText(preview.layers[n.id]?.output)}</td></tr>)}</tbody></table></div></div>}
-      <details className="import-support"><summary>支持范围与导入方式</summary><p>支持 Sequential、静态 nn.Module、嵌套模块、ModuleDict/ModuleList、残差相加、cat、展平、Conv/ConvTranspose、Linear/Bilinear、Norm、Pool、Dropout、Embedding、Upsample、常用激活、MultiheadAttention 和 TransformerEncoder。注意力输入使用 batch_first=True。</p><p>只静态解析结构，不执行上传代码；权重和训练脚本不会导入。动态控制流、权重共享、掩码、未知算子或不兼容参数会报出源码位置。可重新导入 TensorLab 导出的 Python。</p></details>
+      <details className="import-support"><summary>支持范围与导入方式</summary><p>支持 Sequential、静态 nn.Module、嵌套模块、ModuleDict/ModuleList、残差相加、cat、展平、Conv/ConvTranspose、Linear/Bilinear、Norm、Pool、Dropout、Embedding、Upsample、常用激活、MultiheadAttention、TransformerEncoder、固定位置编码、Slice 和 Select。注意力输入使用 batch_first=True。</p><p>只静态解析结构，不执行上传代码；权重和训练脚本不会导入。常量缓冲区保留实际 FP32 数值；切片和位置编码需要明确输入形状。高级索引、batch 轴切片、动态控制流、权重共享、掩码、未知算子或不兼容参数会报出源码位置。可重新导入 TensorLab 导出的 Python。</p></details>
       <div className="modal-footer"><button className="button subtle" disabled={busy || !source.trim() || !online || disabled} onClick={() => void parse()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Code2 size={15} />}{busy ? '正在解析' : '解析代码'}</button><button className="button primary" disabled={busy || !result?.graph || disabled} onClick={() => { if (result?.graph) onImport(result.graph); }}><CheckCircle2 size={15} />导入模型</button></div>
     </div>
   </div>;

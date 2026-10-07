@@ -1,5 +1,4 @@
 import asyncio
-import importlib.util
 import queue
 import threading
 from pathlib import Path
@@ -10,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from .graph import analyze_graph
+from .cuda_environment import inspect_environment
 
 app = FastAPI(title="TensorLab 3D", version="1.0.1")
 training_lock = threading.Lock()
@@ -32,16 +32,44 @@ class TrainingConfig(BaseModel):
 
 @app.get("/api/health")
 def health():
-    available = importlib.util.find_spec("torch") is not None
-    cuda, device = False, "CPU"
-    if available:
+    inspection = inspect_environment(full=False)
+    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True}
+
+
+@app.get("/api/environment")
+def environment():
+    if not training_lock.acquire(blocking=False):
+        from fastapi import HTTPException
+        raise HTTPException(409, "训练期间无法执行 CUDA 环境检查")
+    try:
+        return inspect_environment(full=True)
+    finally:
+        training_lock.release()
+
+
+@app.post("/api/environment/smoke")
+def environment_smoke():
+    from fastapi import HTTPException
+    if not training_lock.acquire(blocking=False):
+        raise HTTPException(409, "训练期间无法执行 CUDA smoke probe")
+    try:
+        inspection = inspect_environment(full=False)
+        if not inspection["cuda"]["available"]:
+            raise HTTPException(422, "当前 CUDA 不可用，无法执行 smoke probe")
         try:
             import torch
-            cuda = torch.cuda.is_available()
-            device = torch.cuda.get_device_name(0) if cuda else "CPU"
-        except Exception:
-            available = False
-    return {"torch": available, "cuda": cuda, "device": device, "apiVersion": "1.0.1", "pytorchImport": True}
+            device = torch.device("cuda")
+            left = torch.randn((32, 32), device=device, requires_grad=True)
+            loss = (left @ left.T).mean()
+            loss.backward()
+            torch.cuda.synchronize()
+            if left.grad is None or not torch.isfinite(loss).item() or not torch.isfinite(left.grad).all().item():
+                raise ValueError("CUDA 运算产生无效损失或梯度")
+            return {"ok": True, "device": torch.cuda.get_device_name(0), "loss": float(loss.detach().cpu())}
+        except Exception as error:
+            raise HTTPException(422, f"CUDA smoke probe 失败：{str(error)[:400]}") from error
+    finally:
+        training_lock.release()
 
 
 @app.post("/api/analyze")

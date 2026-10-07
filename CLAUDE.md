@@ -26,7 +26,9 @@ Run commands from the repository root. Windows is the primary environment; use t
 | All source tests | `npm test` |
 | One source test file | `npm exec --no -- vitest run src/imageLayout.test.ts` |
 | One source test by name | `npm exec --no -- vitest run src/imageLayout.test.ts -t "caps wide blocks"` |
-| Backend tests | `.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import` |
+| Backend tests | `.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment` |
+| Focused import/CUDA browser tests | `npm run test:e2e -- e2e/runtime.spec.ts` |
+| Explicit project PyTorch setup | `.\setup-training.ps1 -Variant cu128` (or `-Variant cpu`) |
 | One backend test | `.\.venv\Scripts\python.exe -m unittest backend.test_training.TrainingTests.test_shape_and_parameter_contract` |
 | All browser tests | `npm run test:e2e` |
 | Focused image-export browser tests | `npm run test:e2e -- e2e/imageExport.spec.ts` |
@@ -40,7 +42,8 @@ There is no lint script configured in `package.json`.
 - `run.py` serves `dist`, so run `npm run build` after source changes before using the integrated app. It defaults to port 8765, tries the next 19 ports if occupied, and prints the selected URL. `--port` selects the starting port; `--no-browser` suppresses browser launch.
 - With FastAPI and Uvicorn installed, `run.py` launches `backend.app:app`. Without them, it serves a browser-only static fallback; Python API import and training are unavailable in that mode.
 - `start.ps1` builds and prefers the virtual-environment interpreter. `start.cmd` launches the existing build without rebuilding. `npm start` uses the current shell's `python`, not explicitly `.venv`.
-- `playwright.config.ts` expects a server already running at `http://127.0.0.1:8765`; it does not start one. Tests use installed Microsoft Edge (`msedge`), headless WebGL, one worker, and a 1440x900 default viewport. Verify the actual port if using `run.py`.
+- `playwright.config.ts` expects a server already running at `http://127.0.0.1:8765`; it does not start one. Set `TENSORLAB_TEST_URL` to the actual URL when `run.py` selects another port. Tests use installed Microsoft Edge (`msedge`), headless WebGL, one worker, and a 1440x900 default viewport.
+- `setup-training.ps1` is an explicitly invoked project-only setup path, not a web installer. It pins torch 2.9.1+cu128 or 2.14.1+cpu from the corresponding official PyTorch index, uses pip's isolated mode, and validates import and selected runtime after setup. Stop project Python processes before replacement: Windows locks loaded PyTorch DLLs. The script checks for those processes and refuses replacement rather than stopping them; it does not change drivers or environment variables.
 - Full browser tests include backend requests and real training. Full source tests also require Python/PyTorch: several Vitest files invoke `.venv/Scripts/python.exe` to compare generated models with backend execution. The image-layout/attention-layout tests do not require the backend.
 - For explicitly requested environment setup, `install.ps1` installs npm dependencies, builds, creates `.venv`, and installs base backend requirements. `install.ps1 -Training` additionally installs PyTorch. Base requirements are in `backend/requirements.txt`; training requirements add `torch>=2.6,<3`. Do not install or change dependencies merely to run a documentation or narrow frontend task.
 - `build.ps1` creates `release/TensorLab-3D.zip`. The release includes sources and `dist`, but not `node_modules` or `.venv`; it is not a self-contained Windows executable.
@@ -49,9 +52,29 @@ There is no lint script configured in `package.json`.
 
 Last updated: 2026-10-07.
 
+### Completed P0 & Local CUDA Work
+
+- Static float32 positional additions retain real values as `ConstantAdd` buffers. `Slice` and `Select` retain indexing semantics through import, editing, frontend/backend shape analysis, real execution, standalone Python generation, and reimport.
+- Static evaluation is torch-free and never executes uploaded source. Constants are bounded to 5 dimensions and 65,536 elements; evaluation has a 1,000,000-unit work budget and graph buffers total at most 65,536 elements. Unsupported dtype, uninitialized buffers, batch-axis indexing, advanced indexing, negative steps, and unsupported dynamic bounds fail with diagnostics.
+- Training's CUDA panel reports the backend interpreter, wheel/runtime, GPU/driver, and selected environment variables on demand. Diagnostics start only when the panel is expanded; opening/refreshing it does not run the GPU probe or install anything. Explicit forward/backward testing uses `/api/environment/smoke`; full diagnostics and probes share the local training lock. Starting training is disabled while a diagnostic/probe request remains in flight, including after folding or closing/reopening the dialog.
+- Local `.venv` was repaired to torch 2.9.1+cu128 / CUDA 12.8 after explicit authorization. RTX 4060 Ti with driver 591.74 was available; system `CUDA_PATH` remained at 11.2, demonstrating that the wheel runtime does not depend on changing that variable. No driver or environment variable was changed.
+- Package replacement initially failed at a locked `c10.dll`. Stopping the confirmed backends and repairing PyTorch resolved import/device availability. The script now blocks replacement while project Python processes are running. pip still warns about a leftover invalid `~orch` distribution; `pip --isolated check` reported no broken requirements. The leftover backup was not deleted.
+- CUDA training is local classification, not a remote CUDA connection, embedded driver/toolkit, or general GPU service. Delivery branch: `feat/static-tensors-cuda-diagnostics`, for merge into `main` following review and regression checks. Check Git for the live commit and remote synchronization status. No release archive was made for this work.
+
+### P0 & CUDA Verification
+
+- `npm test`: 103 tests passed after CUDA repair, including backend/export/reimport numerical and gradient contracts.
+- `.\.venv\Scripts\python.exe -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment`: 56 tests passed with no skips, including CUDA buffer movement/backward and cross-attention backward.
+- With `TENSORLAB_TEST_URL=http://127.0.0.1:8766`, `npm run test:e2e -- e2e/runtime.spec.ts`: 2 tests passed. Coverage includes import, edit/undo, Python download, CPU training, two-epoch CUDA classification with finite losses/nonzero measured gradients, explicit GPU probe, desktop/mobile layout, and nonblank WebGL pixel checks.
+- The extended browser test initially timed out selecting CUDA because it had not reopened the training modal after CPU training; the test flow was fixed and the two tests then passed. A fresh delivery rerun later failed with zero CUDA metrics: captured WebSocket messages confirmed `Another training run is already active`, caused by the folded environment panel's automatic diagnostic taking the shared lock. Lazy diagnostics and an in-flight request guard fixed the race. The final build and both browser tests passed; regression coverage now also asserts zero diagnostics for the folded panel and blocks training during delayed refresh/probe responses, across folding and dialog close/reopen.
+- `npm run build` and `npm exec --no -- tsc --noEmit`: passed. Vite reported the existing large-bundle warning.
+- PowerShell AST parsing of `setup-training.ps1`: passed. `powershell.exe -NoProfile -File .\setup-training.ps1 -Variant cu128` passed twice consecutively on the final script: both runs skipped installation for matching torch 2.9.1+cu128 and reported CUDA build 12.8 / status `available`. No execution-policy bypass or package replacement was used for these checks. Actual CUDA install/post-install diagnostics succeeded before the final isolated-pip adjustment; its installation branch was not re-run.
+- Final browser interaction at `http://127.0.0.1:8766/` checked CUDA panel opening/refresh, runtime/GPU/driver display, and 390px mobile width without overflow; no page errors, failing API responses, or automatic smoke calls were observed. Prior successful desktop/mobile model and probe screenshots were preserved as `artifacts/position-classifier-desktop.png`, `artifacts/position-classifier-mobile.png`, `artifacts/cuda-desktop.png`, and `artifacts/cuda-mobile.png`. The final read-only panel captures are `artifacts/cuda-final-desktop.png` and `artifacts/cuda-final-mobile.png`; these do not represent a new probe run. Screenshots were read for inspection. The existing Vite service on port 8765 returned API 500 during final health checks and was left unchanged; use the verified integrated server on 8766 for this session.
+- Full browser suite, CPU-wheel switching, release packaging, and other machines/GPU combinations were not verified in this round.
+
 ### Completed Image-Export Work
 
-The latest requested change enlarges modules while preserving the previous compact arrangement shown in `artifacts/compact-model-before-size.png`.
+The earlier export change enlarges modules while preserving the previous compact arrangement shown in `artifacts/compact-model-before-size.png`.
 
 - Placement and render dimensions are separate. Compact placement still uses the original ordinary-block scale of 1.6 and unscaled flat-attention dimensions, so stage widths, lane ordering, and wrap decisions remain unchanged.
 - Render-only target scales are 2.0 for ordinary blocks and 1.12 for attention modules. `imageNodeScale()` caps growth within existing column/lane space rather than reflowing the model.
@@ -72,7 +95,7 @@ The latest requested change enlarges modules while preserving the previous compa
 
 ### Existing Boundaries
 
-Real training is local classification with logits `[B,2..256]`, synthetic or CSV data, and CPU/CUDA execution. Python import reads model structure and constructor arguments, not weights or training scripts. This is not a general Python execution environment, distributed trainer, ONNX importer, live Python synchronization system, or full profiler. See `README.md` for the supported operation set and user-facing limitations; verify implementation before extending its claims.
+Real training is local classification with logits `[B,2..256]`, synthetic or CSV data, and CPU/CUDA execution. Python import reads model structure, constructor arguments, and supported static constants, not original trainable weights or training scripts. This is not a general Python execution environment, distributed trainer, ONNX importer, live Python synchronization system, or full profiler. See `README.md` for the supported operation set and user-facing limitations; verify implementation before extending its claims.
 
 ## Architecture
 
@@ -102,11 +125,11 @@ Keep layout dimensions distinct from rendered bounds. Module-size changes must n
 
 ### Python Import, Export & Training
 
-`src/export.ts` generates standalone PyTorch `VisualModel` code and embeds `backend/attention.py` as raw source for attention graphs. Backend training and generated Python must agree on graph order, layer configuration, projection shapes, and attention behavior.
+`src/export.ts` generates standalone PyTorch `VisualModel` code and embeds `backend/attention.py` for attention graphs and `backend/tensor_ops.py` for `ConstantAdd` graphs. `backend/static_tensors.py` evaluates whitelisted constant expressions without torch or source execution. Backend training and generated Python must agree on graph order, layer configuration, constant buffers/indexing, projection shapes, and attention behavior.
 
 `backend/pytorch_import.py` is a bounded static AST parser. It must never execute uploaded source, import its modules, or load its weights. Import limits include 512,000 UTF-8 source bytes, 30,000 AST nodes, and 128 nodes/512 edges; unsupported dynamic behavior produces diagnostics. The frontend import preview confirms a parsed graph before replacing the current project.
 
-`backend/app.py` exposes `/api/health`, `/api/analyze`, `/api/import/pytorch`, and WebSocket `/api/train`, and serves built frontend files. A lock permits one local training job. `backend/training.py` constructs validated, whitelisted PyTorch layers and trains with Adam/CrossEntropyLoss, validation metrics, gradient clipping, early stopping, and cooperative stop/disconnect handling. `backend/attention.py` supplies the attention runtime used by both paths.
+`backend/app.py` exposes `/api/health`, `/api/analyze`, `/api/import/pytorch`, read-only `/api/environment`, explicit POST `/api/environment/smoke`, and WebSocket `/api/train`, and serves built frontend files. `backend/cuda_environment.py` distinguishes missing/broken torch, CPU wheels, masked/unavailable GPUs, initialization errors, and usable CUDA. A shared lock permits one local training job or full environment/probe request. `backend/training.py` constructs validated, whitelisted PyTorch layers and trains with Adam/CrossEntropyLoss, validation metrics, gradient clipping, early stopping, and cooperative stop/disconnect handling. `backend/attention.py` supplies the attention runtime used by both paths.
 
 ## Style & Implementation Guidelines
 

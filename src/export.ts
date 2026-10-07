@@ -2,6 +2,7 @@ import { analyze } from './analysis';
 import type { Graph } from './types';
 import { attentionConfig, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import attentionRuntime from '../backend/attention.py?raw';
+import tensorRuntime from '../backend/tensor_ops.py?raw';
 
 export function download(content: string | Blob, name: string, mime = 'text/plain') {
   const url = URL.createObjectURL(typeof content === 'string' ? new Blob([content], { type: mime }) : content);
@@ -57,6 +58,14 @@ export function generatePython(graph: Graph) {
         const dim = p.dim ?? 'all', argument = dim === 'all' ? '' : `, dim=${Array.isArray(dim) ? `(${dim.join(', ')}${dim.length === 1 ? ',' : ''})` : dim}`;
         forward.push(`        values[${key}] = torch.squeeze(${inputs[0]}${argument})`); continue;
       }
+      case 'Slice': {
+        const dim = (Number(p.dim ?? 1) + info.input[0].length) % info.input[0].length;
+        const bound = (name: string) => p[name] === undefined || p[name] === 'none' ? '' : String(p[name]);
+        const indices = Array.from({ length: dim + 1 }, (_, i) => i === dim ? `${bound('start')}:${bound('end')}:${p.step ?? 1}` : ':');
+        forward.push(`        values[${key}] = ${inputs[0]}[${indices.join(', ')}]`); continue;
+      }
+      case 'Select': forward.push(`        values[${key}] = torch.select(${inputs[0]}, dim=${p.dim ?? 1}, index=${p.index ?? -1})`); continue;
+      case 'ConstantAdd': expr = `TensorLabConstantAdd(shape=${JSON.stringify(p.shape)}, values=${JSON.stringify(p.values)}${p.sequence_dim === undefined ? '' : `, sequence_dim=${p.sequence_dim}`})`; break;
       case 'Dropout':
       case 'Dropout1d':
       case 'Dropout2d':
@@ -97,7 +106,7 @@ export function generatePython(graph: Graph) {
     } else forward.push(`        values[${key}] = self.layers[${key}](${inputs.join(', ')})`);
   }
   const output = graph.nodes.find(n => n.op === 'Output')!;
-  const helper = graph.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '';
+  const helper = (graph.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (graph.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
   for (const node of graph.nodes.filter(n => n.op === 'Embedding')) {
     const edge = graph.edges.find(e => e.target === node.id && !e.targetPort);
