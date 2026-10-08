@@ -1,14 +1,34 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
+type SvgWindow = Window & { focusSvg?: Promise<string> };
+
+test.beforeEach(async ({ page }) => {
+  // Focus checks need the exported coordinates, not Edge's native download UI.
+  // Real SVG/PNG downloads are covered separately in imageExport.spec.ts.
+  await page.addInitScript(() => {
+    const createObjectURL = URL.createObjectURL, click = HTMLAnchorElement.prototype.click;
+    const blobs = new Map<string, Blob>();
+    URL.createObjectURL = function(blob) {
+      const url = createObjectURL.call(this, blob);
+      if (blob instanceof Blob) blobs.set(url, blob);
+      return url;
+    };
+    HTMLAnchorElement.prototype.click = function() {
+      const blob = blobs.get(this.href);
+      if (!this.download.endsWith('.svg') || !blob) return click.call(this);
+      (window as SvgWindow).focusSvg = blob.text();
+    };
+  });
+});
+
 async function exportSvg(page: Page) {
+  await page.evaluate(() => { delete (window as SvgWindow).focusSvg; });
   await page.getByRole('button', { name: '导出图像', exact: true }).click();
   await page.getByLabel('图像布局').selectOption('current');
-  const event = page.waitForEvent('download');
   await page.getByRole('button', { name: 'SVG 矢量图', exact: true }).click();
-  const stream = await (await event).createReadStream(), chunks: Buffer[] = [];
-  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
+  await page.waitForFunction(() => !!(window as SvgWindow).focusSvg);
+  return page.evaluate(() => (window as SvgWindow).focusSvg!);
 }
 
 async function anchor(page: Page, svg: string, selector: string) {
