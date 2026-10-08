@@ -54,23 +54,17 @@ const focusCases: [string, string[][]][] = [
   ['residual', [['layer_5', 'Add']]]
 ];
 
-for (const [preset, entries] of focusCases) test(`centers every ${preset} layer when clicked`, async ({ page }) => {
+for (const [preset, entries] of focusCases) for (const [id, op] of entries) test(`centers ${preset} ${id} (${op}) when clicked`, async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
   await page.goto('/');
   await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
   await page.getByLabel('模型模板').selectOption(preset);
-  for (const [id, op] of entries) {
-    await page.getByRole('button', { name: '重置视角', exact: true }).click();
-    await clickAndCheckCenter(page, `g[data-node-id="${id}"]`, op);
-  }
+  await page.getByRole('button', { name: '重置视角', exact: true }).click();
+  await clickAndCheckCenter(page, `g[data-node-id="${id}"]`, op);
   expect(errors).toEqual([]);
 });
 
-for (const [group, parts] of [
-  ['projections', ['b0:q0', 'b0:k0', 'b0:v0', 'b0:q1', 'b0:q2', 'b0:q3']],
-  ['compute', ['FFN', 'Concat · Wᵒ', 'Add1', 'Add2', 'LN1', 'LN2', 'scores-0', 'weighted-0']],
-  ['ports', ['input', 'head-input', 'head-output']]
-] as [string, string[]][]) test(`centers attention ${group} when clicked`, async ({ page }) => {
+for (const part of ['b0:q0', 'b0:k0', 'b0:v0', 'b0:q1', 'b0:q2', 'b0:q3', 'FFN', 'Concat · Wᵒ', 'Add1', 'Add2', 'LN1', 'LN2', 'scores-0', 'weighted-0', 'input', 'head-input', 'head-output']) test(`centers attention ${part} when clicked`, async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
   await page.goto('/');
   await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
@@ -85,10 +79,8 @@ for (const [group, parts] of [
   const svg = await exportSvg(page);
   expect(svg).toContain('data-sides="6"');
   for (const label of ['Q1', 'Q2', 'Q3', 'Q4', 'K1', 'V1']) expect(svg).toContain(`>${label}</text>`);
-  for (const part of parts) {
-    await page.getByRole('button', { name: '聚焦选中层', exact: true }).click();
-    await clickAndCheckCenter(page, `g[data-node-id="layer_1"] polygon[data-part="${part}"]`);
-  }
+  await page.getByRole('button', { name: '聚焦选中层', exact: true }).click();
+  await clickAndCheckCenter(page, `g[data-node-id="layer_1"] polygon[data-part="${part}"]`);
   expect(errors).toEqual([]);
 });
 
