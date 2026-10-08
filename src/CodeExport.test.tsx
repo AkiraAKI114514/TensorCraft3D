@@ -6,8 +6,8 @@ import CodeExport from './CodeExport';
 import App from './App';
 
 vi.mock('./export', async importOriginal => ({ ...await importOriginal<typeof import('./export')>(), generatePython: vi.fn(() => '# generated on demand') }));
-vi.mock('./Scene', () => ({ default: () => null }));
-vi.mock('./Topology', () => ({ default: () => null }));
+vi.mock('./SceneView', () => ({ default: () => null }));
+vi.mock('./TopologyView', () => ({ default: () => null }));
 vi.mock('./Charts', () => ({ default: () => null }));
 
 beforeEach(() => { vi.mocked(generatePython).mockReset().mockReturnValue('# generated on demand'); });

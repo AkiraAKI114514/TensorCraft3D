@@ -2,10 +2,12 @@ import { useMemo } from 'react';
 import { Braces, Code2, Download } from 'lucide-react';
 import { download, generatePython, safeFilename } from './export';
 import type { Graph } from './types';
+import { useI18n } from './i18n';
 
 type Props = { graph: Graph; valid: boolean; tab: 'python' | 'json'; onTab: (tab: 'python' | 'json') => void; onExport: () => void };
 
 export default function CodeExport({ graph, valid, tab, onTab, onExport }: Props) {
+  const { t } = useI18n();
   const python = useMemo(() => {
     if (tab !== 'python') return { code: '', error: '' };
     try { return { code: generatePython(graph), error: '' }; }
@@ -19,10 +21,10 @@ export default function CodeExport({ graph, valid, tab, onTab, onExport }: Props
     </div>
     <pre className="code-preview"><code>{content}</code></pre>
     <div className="modal-footer">
-      <span className="muted-text">{valid ? '形状校验通过' : '请先修复结构错误'}</span>
+      <span className="muted-text">{valid ? t('形状校验通过') : t('请先修复结构错误')}</span>
       <button className="button primary" disabled={tab === 'python' && (!valid || !!python.error)} onClick={() => {
         download(content, `${safeFilename(graph.name)}.${tab === 'python' ? 'py' : 'json'}`); onExport();
-      }}><Download size={15} />下载 {tab === 'python' ? '.py' : '.json'}</button>
+      }}><Download size={15} />{t('下载')} {tab === 'python' ? '.py' : '.json'}</button>
     </div>
   </>;
 }

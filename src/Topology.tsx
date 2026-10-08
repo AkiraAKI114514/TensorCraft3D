@@ -7,6 +7,7 @@ import { shapeText } from './analysis';
 import { residualEdges } from './graphRoutes';
 import { RESIDUAL_COLOR } from './flowGeometry';
 import { crossInputRole, isCrossAttention, isProjectionPort, projectionPorts, projectionLabel } from './attentionConfig';
+import { useI18n } from './i18n';
 type LayerNode = Node<{ name: string; op: string; color: string; shape: string; error: boolean; cross: boolean; ports: ReturnType<typeof projectionPorts> }, 'layer'>;
 function Layer({ id, data, selected }: NodeProps<LayerNode>) {
   const updateInternals = useUpdateNodeInternals();
@@ -26,6 +27,7 @@ function ResidualEdge({ id, sourceX, sourceY, targetX, targetY, markerEnd, selec
 }
 const edgeTypes = { residual: ResidualEdge };
 export default function Topology({ graph, analysis, selected, onSelect, onChange, onConnect, onAddObject, onRemoveSelected, disabled }: { graph: Graph; analysis: Analysis; selected: string | null; onSelect: (id: string | null) => void; onChange: (g: Graph) => void; onConnect: (c: Connection) => void; onAddObject: (op: 'Input' | 'Output') => void; onRemoveSelected: () => void; disabled: boolean }) {
+  const { t } = useI18n();
   const [instance, setInstance] = useState<ReactFlowInstance<LayerNode> | null>(null);
   useEffect(() => { void instance?.fitView({ padding: 0.2, duration: 160 }); }, [instance, graph.nodes.length]);
   const nodes = useMemo(() => graph.nodes.map(n => ({ id: n.id, type: 'layer' as const, position: n.position, selected: n.id === selected, data: { name: n.name, op: n.op, color: COLORS[n.op], shape: shapeText(analysis.layers[n.id]?.output), error: analysis.diagnostics.some(d => d.level === 'error' && d.nodeId === n.id), cross: isCrossAttention(n), ports: projectionPorts(n) } })), [graph, analysis, selected]);
@@ -50,8 +52,8 @@ export default function Topology({ graph, analysis, selected, onSelect, onChange
   const edgeChanges = (changes: EdgeChange[]) => { if (disabled) return; const deleted = changes.filter(c => c.type === 'remove').map(c => c.id); if (deleted.length) onChange({ ...graph, edges: graph.edges.filter(e => !deleted.includes(e.id)) }); };
   return <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={setInstance} onNodesChange={changes} onEdgesChange={edgeChanges} onConnect={onConnect} onNodeClick={(_, n) => onSelect(n.id)} onPaneClick={() => onSelect(null)} nodesDraggable={!disabled} nodesConnectable={!disabled} fitView minZoom={0.15} maxZoom={2} deleteKeyCode={disabled ? null : 'Delete'} proOptions={{ hideAttribution: true }}>
     <Panel position="top-left" className="topology-toolbar">
-      <div className="topology-actions"><button className="button subtle" disabled={disabled} onClick={() => onAddObject('Input')}><Plus size={13} />添加输入对象</button><button className="button subtle" disabled={disabled} onClick={() => onAddObject('Output')}><Plus size={13} />添加输出对象</button><button className="button subtle" disabled={disabled || !selected} onClick={onRemoveSelected}><Trash2 size={13} />删除选中对象</button></div>
-      <span>拖动端口自由连线；选中模块可增删输入 / 输出连接。错误原因见右侧诊断。</span>
+      <div className="topology-actions"><button className="button subtle" disabled={disabled} onClick={() => onAddObject('Input')}><Plus size={13} />{t('添加输入对象')}</button><button className="button subtle" disabled={disabled} onClick={() => onAddObject('Output')}><Plus size={13} />{t('添加输出对象')}</button><button className="button subtle" disabled={disabled || !selected} onClick={onRemoveSelected}><Trash2 size={13} />{t('删除选中对象')}</button></div>
+      <span>{t('拖动端口自由连线；选中模块可增删输入 / 输出连接。错误原因见右侧诊断。')}</span>
     </Panel>
     <Background gap={20} color="#d0dce1" /><Controls /><MiniMap nodeColor={n => String(n.data.color)} pannable zoomable />
   </ReactFlow>;

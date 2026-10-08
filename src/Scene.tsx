@@ -11,6 +11,7 @@ import { outerResidualCurve, residualEdges } from './graphRoutes';
 import { crossInputRole, isCrossAttention, isProjectionPort } from './attentionConfig';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
 import type { ImageExportOptions } from './imageLayout';
+import { useI18n } from './i18n';
 
 export interface SceneHandle { capture: (size: number, transparent: boolean, options?: ImageExportOptions) => Promise<Blob>; svg: (options?: ImageExportOptions, width?: number) => string; reset: () => void; focus: (nodeId: string) => void; focusHead: (nodeId: string, index: number) => void; }
 interface Props { graph: Graph; analysis: Analysis; selected: string | null; onSelect: (id: string | null) => void; selectedHead: number | null; selectedProjection: string | null; onSelectProjection: (id: string, port: string) => void; onSelectHead: (id: string, index: number) => void; rotating: boolean; playing: boolean; direction: 'forward' | 'backward'; speed: number; expanded: boolean; diagnostics: Diagnostic[]; onReady: (handle: SceneHandle) => void; onGpu: (name: string) => void; }
@@ -181,11 +182,12 @@ function World(props: Props) {
   </>;
 }
 
-class SceneBoundary extends Component<{ children: ReactNode }, { error: boolean }> {
+class SceneBoundary extends Component<{ children: ReactNode; failure: string }, { error: boolean }> {
   state = { error: false };
   static getDerivedStateFromError() { return { error: true }; }
-  render() { return this.state.error ? <div className="empty-state">WebGL 初始化失败。请启用浏览器硬件加速，或切换到拓扑图。</div> : this.props.children; }
+  render() { return this.state.error ? <div className="empty-state">{this.props.failure}</div> : this.props.children; }
 }
 export default function Scene(props: Props) {
-  return <SceneBoundary><Canvas gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }} dpr={[1, 2]} onPointerMissed={() => props.onSelect(null)}><OrthographicCamera makeDefault position={[15, 11, 18]} near={0.1} far={200} zoom={35} /><World {...props} /></Canvas></SceneBoundary>;
+  const { t } = useI18n();
+  return <SceneBoundary failure={t('WebGL 初始化失败。请启用浏览器硬件加速，或切换到拓扑图。')}><Canvas gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }} dpr={[1, 2]} onPointerMissed={() => props.onSelect(null)}><OrthographicCamera makeDefault position={[15, 11, 18]} near={0.1} far={200} zoom={35} /><World {...props} /></Canvas></SceneBoundary>;
 }
