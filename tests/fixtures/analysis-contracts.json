@@ -399,6 +399,123 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "batchnorm1_rank2",
+      "graph": {
+        "version": 1, "name": "BatchNorm1d rank two",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "BatchNorm1d", "op": "BatchNorm1d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4], "parameters": 8 }
+    },
+    {
+      "id": "batchnorm1_rank3",
+      "graph": {
+        "version": 1, "name": "BatchNorm1d rank three",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 6] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "BatchNorm1d", "op": "BatchNorm1d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 6], "parameters": 8 }
+    },
+    {
+      "id": "batchnorm1_rank4_invalid",
+      "graph": {
+        "version": 1, "name": "BatchNorm1d rank four invalid",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 3, 3] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "BatchNorm1d", "op": "BatchNorm1d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "batchnorm2_rank4",
+      "graph": {
+        "version": 1, "name": "BatchNorm2d rank four",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 3, 3] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "BatchNorm2d", "op": "BatchNorm2d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 3, 3], "parameters": 8 }
+    },
+    {
+      "id": "batchnorm3_rank5",
+      "graph": {
+        "version": 1, "name": "BatchNorm3d rank five",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 2, 3, 3] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "BatchNorm3d", "op": "BatchNorm3d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 2, 3, 3], "parameters": 8 }
+    },
+    {
+      "id": "instancenorm1_rank2_invalid",
+      "graph": {
+        "version": 1, "name": "InstanceNorm1d rank two invalid",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "InstanceNorm1d", "op": "InstanceNorm1d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "convtranspose1d_rank3",
+      "graph": {
+        "version": 1, "name": "ConvTranspose1d rank three",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 3, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "ConvTranspose1d", "op": "ConvTranspose1d", "params": { "out_channels": 4 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 16], "parameters": 52 }
+    },
+    {
+      "id": "maxpool1d_rank3",
+      "graph": {
+        "version": 1, "name": "MaxPool1d rank three",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MaxPool1d", "op": "MaxPool1d", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 4], "parameters": 0 }
+    },
+    {
+      "id": "adaptiveavgpool1d_rank3",
+      "graph": {
+        "version": 1, "name": "AdaptiveAvgPool1d rank three",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "AdaptiveAvgPool1d", "op": "AdaptiveAvgPool1d", "params": { "output_size": 2 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [{ "id": "e0", "source": "n0", "target": "n1" }, { "id": "e1", "source": "n1", "target": "n2" }]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 2], "parameters": 0 }
     }
   ]
 }

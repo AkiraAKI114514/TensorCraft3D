@@ -35,7 +35,7 @@ class TrainingConfig(BaseModel):
 @app.get("/api/health")
 def health():
     inspection = inspect_environment(full=False)
-    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True, "tensorInference": True, "trainedInference": True}
+    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True, "tensorInference": True, "trainedInference": True, "attentionInference": True}
 
 
 @app.post("/api/infer")

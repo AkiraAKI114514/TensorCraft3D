@@ -1,16 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, LoaderCircle, TriangleAlert } from 'lucide-react';
 import type { Graph } from './types';
-import type { InferenceReport } from './inferenceTypes';
+import type { AttentionSelection, InferenceReport } from './inferenceTypes';
 import { tensorNumber } from './inferenceTypes';
 import type { TrainedModelMetadata } from './trainedModel';
 import TensorHistogram from './TensorHistogram';
+import AttentionInspector from './AttentionInspector';
+import { analyze } from './analysis';
+import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import './TensorInspector.css';
 
-type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void };
+type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void };
 type Result = { graph: Graph; settings: string; report: InferenceReport };
 
-export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, selected, active, ready, cuda, valid, blocked, onBusy }: Props) {
+export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy }: Props) {
   const [weightMode, setWeightMode] = useState<'random' | 'trained'>(trainedModel ? 'trained' : 'random');
   const modelId = weightMode === 'trained' ? trainedModel?.modelId : undefined;
   const weightsAvailable = weightMode === 'random' || (!!modelId && trainedReady);
@@ -18,17 +21,28 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
   const [seed, setSeed] = useState(42), [device, setDevice] = useState<'cpu' | 'cuda'>('cpu');
   const [inputMode, setInputMode] = useState<'synthetic' | 'provided'>('synthetic'), [inputText, setInputText] = useState('');
   const [indices, setIndices] = useState<Record<string, number[]>>({});
+  const [attentionSelections, setAttentionSelections] = useState<Record<string, AttentionSelection>>({});
+  const layers = useMemo(() => analyze(graph).layers, [graph]);
+  const node = graph.nodes.find(layer => layer.id === selected);
+  const attentionNode = node && isAttention(node.op) ? node : undefined;
+  const attentionConfigValue = attentionNode ? attentionConfig(attentionNode.params) : null;
+  const attentionSelection = selected ? attentionSelections[selected] ?? { branch: 0, head: 0, queryStart: 0, keyStart: 0 } : { branch: 0, head: 0, queryStart: 0, keyStart: 0 };
+  const queryLength = attentionNode ? layers[attentionNode.id]?.output[1] ?? 1 : 1;
+  const kvInput = attentionNode ? graph.edges.find(edge => edge.target === attentionNode.id && edge.targetPort === `b${attentionSelection.branch}:k0`) ?? incomingEdges(graph, attentionNode).filter(edge => !isProjectionPort(edge.targetPort))[attentionNode.params.attention_type === 'cross' ? 1 : 0] : undefined;
+  const keyLength = kvInput ? edgeOutputShape(graph, kvInput, layers)?.[1] ?? 1 : 1;
+  const attentionValid = !attentionNode || Object.values(attentionSelection).every(value => Number.isInteger(value) && value >= 0) && attentionSelection.branch < attentionConfigValue!.branches && attentionSelection.head < attentionConfigValue!.heads && attentionSelection.queryStart < queryLength && attentionSelection.keyStart < keyLength;
+  const updateAttention = (key: keyof AttentionSelection, value: number) => { if (selected) setAttentionSelections(previous => ({ ...previous, [selected]: { ...attentionSelection, [key]: value } })); };
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const requesting = useRef(false), controller = useRef<AbortController | null>(null), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
-  useEffect(() => { setIndices({}); setError(''); }, [graph]);
-  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices });
+  useEffect(() => { setIndices({}); setAttentionSelections({}); setError(''); }, [graph]);
+  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
   const previousSnapshot = result?.graph === graph ? result.report.tensors.find(tensor => tensor.nodeId === selected) : undefined;
   const snapshot = current ? previousSnapshot : undefined;
-  const node = graph.nodes.find(layer => layer.id === selected);
+  const attentionSnapshot = current ? result.report.attentions?.find(value => value.nodeId === selected) : undefined;
   const run = async () => {
-    if (requesting.current || blocked || !ready || !valid || !selected || !weightsAvailable) return;
+    if (requesting.current || blocked || !ready || !valid || !selected || !weightsAvailable || !attentionValid) return;
     requesting.current = true; setBusy(true); setError(''); onBusy(true);
     controller.current = new AbortController();
     try {
@@ -47,11 +61,12 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
       const nodeIds = Array.from(new Set([selected, output]));
       const response = await fetch('/api/infer', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.current.signal,
-        body: JSON.stringify({ graph, nodeIds, seed, device, modelId, inputs, slices: Object.fromEntries(nodeIds.filter(id => indices[id]).map(id => [id, indices[id]])) })
+        body: JSON.stringify({ graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(nodeIds.filter(id => indices[id]).map(id => [id, indices[id]])) })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `单样本推理失败 (${response.status})`);
       if (modelId ? body.weights !== 'trained' || body.model?.modelId !== modelId : body.weights !== 'random-initialized') throw new Error('推理返回的权重来源与请求不一致，请更新并重启后端');
+      if (attentionNode && attentionReady && !body.attentions?.some((value: { nodeId: string; branch: number; head: number }) => value.nodeId === attentionNode.id && value.branch === attentionSelection.branch && value.head === attentionSelection.head)) throw new Error('推理响应缺少所选 Attention 观测，请更新并重启后端');
       if (mounted.current) setResult({ graph, settings, report: body as InferenceReport });
     } catch (reason) {
       if (mounted.current && (reason as Error).name !== 'AbortError') { setResult(null); setError((reason as Error).message || '无法连接推理服务'); }
@@ -85,7 +100,15 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
     <label className="field-label">输入样本<select aria-label="推理输入来源" value={inputMode} disabled={busy} onChange={e => setInputMode(e.target.value as 'synthetic' | 'provided')}><option value="synthetic">固定种子合成样本</option><option value="provided">自定义单样本 JSON</option></select></label>
     {inputMode === 'provided' && <label className="field-label">Input ID → 平铺数组<textarea aria-label="推理输入 JSON" value={inputText} disabled={busy} placeholder={JSON.stringify(Object.fromEntries(graph.nodes.filter(layer => layer.op === 'Input').map(layer => [layer.id, []])))} onChange={e => setInputText(e.target.value)} /><span>每个输入省略 batch 轴，按原维度顺序平铺；Embedding 输入使用合法整数 ID。{weightMode === 'trained' && trainedModel?.preprocessing === 'csv-standardized' ? '输入原始 CSV 数值，自动应用训练集拟合的标准化。' : '不应用 CSV 标准化。'}</span></label>}
     {previousSnapshot && <div className="tensor-prefix-controls">{previousSnapshot.slice.indices.map((value, axis) => <label className="field-label" key={axis}>切片轴 {axis}{axis === 0 ? ' · 样本' : ''}<input aria-label={`张量切片轴 ${axis}`} type="number" min={0} max={previousSnapshot.shape[axis] - 1} value={indices[previousSnapshot.nodeId]?.[axis] ?? value} disabled={busy || previousSnapshot.shape[axis] === 1} onChange={e => changeIndex(axis, Number(e.target.value))} /></label>)}</div>}
-    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !node || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? '单样本推理中' : '运行单样本推理'}</button>
+    {attentionNode && <div className="attention-observation"><h3>Attention 采样窗口</h3>
+      <div className="attention-filters">
+        <label className="field-label">分支<select aria-label="Attention 分支" value={attentionSelection.branch} disabled={busy || !attentionReady} onChange={event => updateAttention('branch', Number(event.target.value))}>{Array.from({ length: Math.max(1, Math.min(8, Math.floor(attentionConfigValue!.branches) || 1)) }, (_, index) => <option value={index} key={index}>B{index + 1}</option>)}</select></label>
+        <label className="field-label">Query Head<select aria-label="Attention Head" value={attentionSelection.head} disabled={busy || !attentionReady} onChange={event => updateAttention('head', Number(event.target.value))}>{Array.from({ length: Math.max(1, Math.min(16, Math.floor(attentionConfigValue!.heads) || 1)) }, (_, index) => <option value={index} key={index}>H{index + 1}</option>)}</select></label>
+        <label className="field-label">Query 起点<input aria-label="Attention Query 起点" type="number" min={0} max={queryLength - 1} value={attentionSelection.queryStart} disabled={busy || !attentionReady} onChange={event => updateAttention('queryStart', Number(event.target.value))} /></label>
+        <label className="field-label">Key 起点<input aria-label="Attention Key 起点" type="number" min={0} max={keyLength - 1} value={attentionSelection.keyStart} disabled={busy || !attentionReady} onChange={event => updateAttention('keyStart', Number(event.target.value))} /></label>
+      </div><p className="tensor-note">只采样所选分支与 Head，每个矩阵最多 16 × 16；修改窗口后重新运行，完整矩阵统计不变。{!attentionReady && '后端暂不支持 Attention 内部观测；当前仅采集层输出。'}</p>
+    </div>}
+    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !node || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? '单样本推理中' : '运行单样本推理'}</button>
     <p className="tensor-note">{node ? `采样 ${node.name} 与模型输出；修改切片后需重新运行。` : '请在三维视图或拓扑图中选择一层。'}训练或环境检查期间不可运行。</p>
     {error && <div className="diagnostic-item error" role="alert"><TriangleAlert size={15} /><p>{error}</p></div>}
     {result && !current && <p className="tensor-stale" role="status">模型或采样配置已变化，旧快照已失效，请重新运行。</p>}
@@ -99,6 +122,7 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
       <time dateTime={result.report.createdAt}>{result.report.createdAt}</time>
       <code title={result.report.runId}>Run {result.report.runId}</code>
     </div>}
+    {attentionSnapshot && result && <AttentionInspector key={result.report.runId + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={node?.op === 'Transformer'} />}
     {current && !snapshot && <p className="tensor-note">当前层未包含在本次采样中，选择该层后重新运行。</p>}
     {snapshot && <>
       <div className="inspector-section"><h3>{node?.name} · 实测输出</h3>

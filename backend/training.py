@@ -58,7 +58,7 @@ def build_model(graph):
                     module = TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
                 else: continue
                 self.layers[key] = module
-        def forward(self, x, observer=None):
+        def forward(self, x, observer=None, attention_observer=None):
             if isinstance(x, dict):
                 if set(x) != set(info["inputs"]): raise ValueError("Input dictionary must contain exactly the model's Input node IDs")
             elif len(info["inputs"]) != 1:
@@ -87,7 +87,10 @@ def build_model(graph):
                 elif op == "Select": values[key] = torch.select(args[0], int(node["params"].get("dim", 1)), int(node["params"].get("index", -1)))
                 elif op in ("Transformer", "MultiHeadAttention"):
                     overrides = {e["targetPort"]: edge_value(e) for e in info["overrideEdges"][key]}
-                    values[key], ports[key] = self.layers[key].forward_with_ports(args[0], args[1] if len(args) > 1 else None, overrides)
+                    attention_callback = None
+                    if attention_observer is not None:
+                        attention_callback = lambda stage, branch, tensors, node_id=key: attention_observer(node_id, stage, branch, tensors)
+                    values[key], ports[key] = self.layers[key].forward_with_ports(args[0], args[1] if len(args) > 1 else None, overrides, observer=attention_callback)
                 else:
                     values[key] = self.layers[key](*args)
                     if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = float((values[key].detach() == 0).float().mean().item())

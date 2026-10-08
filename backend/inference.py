@@ -19,6 +19,15 @@ MAX_SLICE_SIDE = 16
 HISTOGRAM_BINS = 12
 
 
+class AttentionSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    branch: StrictInt = Field(0, ge=0, le=7)
+    head: StrictInt = Field(0, ge=0, le=15)
+    queryStart: StrictInt = Field(0, ge=0, le=65535)
+    keyStart: StrictInt = Field(0, ge=0, le=65535)
+
+
 class TensorInferenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -29,6 +38,7 @@ class TensorInferenceRequest(BaseModel):
     modelId: StrictStr | None = Field(default=None, min_length=1, max_length=128)
     inputs: dict[str, list[StrictFloat | StrictInt]] | None = Field(default=None, max_length=8)
     slices: dict[str, list[StrictInt]] = Field(default_factory=dict, max_length=8)
+    attention: dict[StrictStr, AttentionSelection] = Field(default_factory=dict, max_length=8)
 
     @field_validator("nodeIds")
     @classmethod
@@ -250,6 +260,97 @@ def _describe(node_id: str, value: Any, indices: list[int], torch: Any) -> dict[
     }
 
 
+def _attention_matrix(name: str, value: Any, row_start: int, column_start: int, torch: Any) -> dict[str, Any]:
+    """Describe one full sample/head matrix and expose only a bounded offset window."""
+    matrix = value.detach().to(torch.float32)
+    if matrix.ndim != 2:
+        matrix = matrix.reshape(matrix.shape[-2], matrix.shape[-1])
+    rows, columns = (int(matrix.shape[0]), int(matrix.shape[1]))
+    end_row = min(rows, row_start + MAX_SLICE_SIDE)
+    end_column = min(columns, column_start + MAX_SLICE_SIDE)
+    window = matrix[row_start:end_row, column_start:end_column].detach().cpu().tolist()
+    values = [[float(item) if _finite(item) else None for item in row] for row in window]
+    described = _describe(name, matrix, [], torch)
+    described["slice"] = {
+        "indices": [],
+        "shape": [rows, columns],
+        "rows": len(values),
+        "columns": len(values[0]) if values else 0,
+        "values": values,
+        "truncated": row_start != 0 or column_start != 0 or len(values) != rows or (len(values[0]) if values else 0) != columns,
+    }
+    described["rowStart"] = row_start
+    described["columnStart"] = column_start
+    return described
+
+
+def _validate_attention(request: TensorInferenceRequest, info: dict[str, Any], selected: list[str]) -> None:
+    by_id = {node["id"]: node for node in info["nodes"]}
+    unknown = set(request.attention) - set(selected)
+    if unknown:
+        raise InferenceError("attention keys must refer to selected nodeIds")
+    extra_scratch = 0
+    for node_id, selection in request.attention.items():
+        node = by_id.get(node_id)
+        if node is None or node["op"] not in ("Transformer", "MultiHeadAttention"):
+            raise InferenceError(f"{node_id}: attention selection requires an attention node")
+        params = node["params"]
+        branches = int(params.get("branches", 1))
+        heads = int(params.get("num_heads", 1))
+        if selection.branch >= branches:
+            raise InferenceError(f"{node_id}: attention branch is outside [0,{branches - 1}]")
+        if selection.head >= heads:
+            raise InferenceError(f"{node_id}: attention head is outside [0,{heads - 1}]")
+        query_length = int(info["shapes"][node_id][1])
+        key_shape = info["portShapes"][node_id].get(f"b{selection.branch}:k0")
+        key_length = int(key_shape[1]) if key_shape is not None else query_length
+        if selection.queryStart >= query_length:
+            raise InferenceError(f"{node_id}: queryStart is outside the query length")
+        if selection.keyStart >= key_length:
+            raise InferenceError(f"{node_id}: keyStart is outside the key length")
+        if query_length * key_length > 262144:
+            raise InferenceError(f"{node_id}: selected attention score matrix exceeds the 262144 element limit")
+        embed = int(params.get("embed_dim", 64))
+        head_dim = embed // heads
+        kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
+        # Captures retain all native projection/head stacks until the merged callback.
+        projection_elements = query_length * embed * 4 + key_length * head_dim * kv_heads * 2
+        extra_scratch += query_length * key_length * 64 + projection_elements * 32
+    if int(info["activationBytesPerSample"]) + extra_scratch > MAX_CAPTURE_BYTES:
+        raise InferenceError("Attention inspection scratch exceeds 64 MB")
+
+
+def _capture_attention(node_id: str, selection: AttentionSelection, record: dict[str, Any], torch: Any) -> dict[str, Any]:
+    q = record["q"][0, selection.head]
+    native_k = record["k"][0, selection.head // record["repeats"]]
+    native_v = record["v"][0, selection.head // record["repeats"]]
+    weighted = record["weighted"][0, selection.head]
+    scale = 1.0 / math.sqrt(q.shape[-1])
+    with torch.no_grad():
+        scores = (q.float() @ native_k.float().transpose(-2, -1)) * scale
+        probabilities = torch.softmax(scores, dim=-1)
+    tensors = {
+        "q": _attention_matrix("q", q, selection.queryStart, 0, torch),
+        "k": _attention_matrix("k", native_k, selection.keyStart, 0, torch),
+        "v": _attention_matrix("v", native_v, selection.keyStart, 0, torch),
+        "scores": _attention_matrix("scores", scores, selection.queryStart, selection.keyStart, torch),
+        "probabilities": _attention_matrix("probabilities", probabilities, selection.queryStart, selection.keyStart, torch),
+        "headOutput": _attention_matrix("headOutput", weighted, selection.queryStart, 0, torch),
+        "branchOutput": _attention_matrix("branchOutput", record["output"][0], selection.queryStart, 0, torch),
+        "mergedOutput": _attention_matrix("mergedOutput", record["merged"][0], selection.queryStart, 0, torch),
+    }
+    params = record["params"]
+    return {
+        "nodeId": node_id, "branch": selection.branch, "head": selection.head,
+        "queryStart": selection.queryStart, "keyStart": selection.keyStart,
+        "kvHead": selection.head // record["repeats"], "numHeads": int(params["heads"]),
+        "kvHeads": int(params["kv_heads"]), "branches": int(params["branches"]),
+        "headDim": int(q.shape[-1]), "queryLength": int(q.shape[-2]), "keyLength": int(native_k.shape[-2]),
+        "scale": scale, "mask": "none", "dropout": 0, "scoreSource": "projected-qk",
+        "outputSource": "scaled_dot_product_attention", "tensors": tensors,
+    }
+
+
 def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
     try:
         import torch
@@ -262,6 +363,7 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
     by_id = {node["id"]: node for node in copied["nodes"]}
     if any(node_id not in by_id for node_id in selected):
         raise InferenceError("nodeIds must refer to graph nodes")
+    _validate_attention(request, info, selected)
     slices: dict[str, list[int]] = {}
     for node_id, requested in request.slices.items():
         if node_id not in by_id:
@@ -300,11 +402,32 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         model.eval()
         inputs = {key: value.to(device_name) for key, value in inputs.items()}
         captured: dict[str, dict[str, Any]] = {}
+        attention_records: dict[str, dict[str, Any]] = {}
+        attention_results: dict[str, dict[str, Any]] = {}
         def observe(node_id: str, value: Any) -> None:
             if node_id in selected:
                 captured[node_id] = _describe(node_id, value, slices[node_id], torch)
+        def observe_attention(node_id: str, stage: str, branch: int, tensors: dict[str, Any]) -> None:
+            selection = request.attention.get(node_id)
+            if selection is None or (stage != "merged" and branch != selection.branch):
+                return
+            record = attention_records.setdefault(node_id, {})
+            if stage == "merged":
+                params = by_id[node_id]["params"]
+                heads = int(params.get("num_heads", 1))
+                kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
+                record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1))}
+                record["repeats"] = heads // kv_heads
+                record["merged"] = tensors["output"].detach()
+                attention_results[node_id] = _capture_attention(node_id, selection, record, torch)
+                del attention_records[node_id]
+            else:
+                wanted = {"q": "q", "k": "k", "v": "v", "weighted": "weighted", "output": "output"}[stage]
+                record[wanted] = tensors[wanted].detach()
         with torch.inference_mode():
-            model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe)
+            model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if request.attention else None)
+        if set(attention_results) != set(request.attention):
+            raise InferenceError("Attention observer did not capture the selected nodes")
     return {
         "runId": str(uuid.uuid4()),
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -317,4 +440,5 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         "inputTransform": snapshot.metadata["preprocessing"] if snapshot is not None else "none",
         "mode": "eval",
         "tensors": [captured[node_id] for node_id in selected],
+        "attentions": [attention_results[node_id] for node_id in request.attention],
     }

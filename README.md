@@ -47,6 +47,10 @@ npm run test:e2e -- e2e/errorBoundary.spec.ts
 npm exec --no -- vitest run src/CodeExport.test.tsx src/TensorInspector.test.tsx src/trainedModel.test.ts
 .\.venv\Scripts\python.exe -m unittest backend.test_inference backend.test_trained_models
 npm run test:e2e -- e2e/inference.spec.ts e2e/trainedInference.spec.ts
+# Focused dimension contracts, Attention observation, examples and executable roundtrips
+npm exec --no -- vitest run src/channelRanks.test.ts src/analysisContracts.test.ts src/AttentionInspector.test.tsx src/importExamples.test.ts src/pytorchImport.test.ts
+.\.venv\Scripts\python.exe -m unittest backend.test_channel_ranks backend.test_attention_inference backend.test_import_examples backend.test_graph_contracts
+npm run test:e2e -- e2e/attentionInference.spec.ts
 npm run build
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
@@ -75,7 +79,7 @@ Clicking a 3D Q/K/V cube centres it and opens that object's connection configura
 
 Project connections store vertex ports via `sourcePort` / `targetPort`, for example `{"source":"memory","target":"attention","targetPort":"b0:k0"}` specifies the input of K1 in the first branch; `{"source":"attention","sourcePort":"b0:q0","target":"flatten"}` passes the projected Q1 of the first branch to Flatten. The same pair of model layers can be connected multiple times through different ports. Training, shape validation and standalone Python export all use the same connection semantics.
 
-The colours and particles of the 3D weight matrices are still a **simulated illustration**; real attention weights, Q/K/V activations and token-level gradients are not collected, and the properties panel labels this "weight schematic". Loss and per-layer gradients in real training monitoring come from actual PyTorch training. The example input is a token feature vector; there is no text tokenizer or causal/padding mask yet. Imported static float32 positional buffers are supported as `ConstantAdd` nodes; they are not automatically added to attention templates.
+The colours and particles of the 3D weight matrices are still a **simulated illustration**, and the properties panel labels this "weight schematic". The on-demand **Attention Inspector** separately observes actual Q/K/V projections and head/branch outputs during single-sample inference, and recomputes scaled QK scores and softmax probabilities from those projections. It does not collect token-level gradients. Loss and per-layer gradients in real training monitoring come from actual PyTorch training. The example input is a token feature vector; there is no text tokenizer or causal/padding mask yet. Imported static float32 positional buffers are supported as `ConstantAdd` nodes; they are not automatically added to attention templates.
 
 ## GPU animation and training
 
@@ -127,9 +131,19 @@ Choose a reproducible synthetic sample (integer IDs for Embedding) or provide JS
 
 The inspector shows measured shape/dtype, finite/non-finite element counts, full-tensor min/max/mean/population std, and a 12-bin histogram with keyboard/hover readouts and a data table. The numerical slice fixes the leading axes (sample/channel/depth as applicable) and shows up to 16 × 16 values from the final two dimensions; truncation is labelled. Change the leading-axis indices and rerun to inspect another channel or depth. Non-finite values are explicitly marked and excluded from finite statistics/histograms. No autograd graphs or full activations are sent to the browser. Editing the graph or sampling configuration invalidates the previous snapshot, including late responses from an earlier graph.
 
-`POST /api/infer` accepts `graph`, `nodeIds`, optional `seed`, `device` (`cpu` by default, `cuda` or `auto`), optional `modelId` (a retained trained model; omitted/null means random weights), optional flat `inputs`, and optional leading-axis `slices` keyed by captured node ID. The report includes `weights`, `model` metadata (null for random weights) and `inputTransform`. Inference shares the training/diagnostics lock: concurrent work returns HTTP 409, invalid graphs/inputs or resource limits return HTTP 422. Opening the tab never starts inference, installs dependencies or probes CUDA. The existing particle animation and attention weight colours remain illustrative; this inspector captures layer outputs, not attention probability matrices.
+`POST /api/infer` accepts `graph`, `nodeIds`, optional `seed`, `device` (`cpu` by default, `cuda` or `auto`), optional `modelId` (a retained trained model; omitted/null means random weights), optional flat `inputs`, and optional leading-axis `slices` keyed by captured node ID. The report includes `weights`, `model` metadata (null for random weights) and `inputTransform`. Inference shares the training/diagnostics lock: concurrent work returns HTTP 409, invalid graphs/inputs or resource limits return HTTP 422. Opening the tab never starts inference, installs dependencies or probes CUDA. The existing particle animation and attention weight colours remain illustrative; attention internals are shown only in the separately labelled, explicit inference observation.
 
 It accepts at most 8 captured nodes, 5 million parameters / 20 MiB parameter-storage cap, 4 million elements per input, 64 MiB of summed single-sample activation estimates, and 1 million attention-score elements per attention layer. These limits are checked before model allocation; displayed slices are capped at 16 × 16 and leading-axis indices at 3.
+
+### Attention Inspector
+
+Select a `MultiHeadAttention` or `Transformer` node in **张量观测**, choose a branch and Query head, and run the sample. The same inference report, seed/input, random or retained trained model, and lock are used for layer and attention observations. Native K/V groups are identified correctly for MQA/GQA; cross-attention and projection overrides use their actual Query/Key sequence lengths.
+
+The panel exposes actual projected Q/K/V, actual SDPA head output before concatenation, branch output after Wₒ, and the branch-averaged attention output. For Transformer, this attention merge is **not** the final residual/FFN layer output, which remains separately available below. Scores `QKᵀ / √d` and `softmax(scores)` are recomputed in float32 from the actual projections for inspection; they can differ numerically from fused SDPA and do not replace its executed result. This eval path has dropout zero and no causal/padding mask.
+
+Heatmaps have exact-value tables, hover/keyboard readouts, optional ordered textures, and selected light/dark palettes. Probability colors use a fixed 0–1 scale; signed tensors use a symmetric zero-centered scale based on full-matrix statistics. Every returned matrix has full shape/statistics but at most a 16 × 16 display window. Query/Key starting offsets are explicit, truncation is labelled, and changing selectors invalidates old observations until rerun.
+
+The optional `/api/infer` field `attention` maps selected node IDs to `{branch, head, queryStart, keyStart}` (zero-based, defaults zero). A request allows at most one head/branch per selected node and eight selected nodes. The **full** selected-head score matrix is capped at 262,144 elements even if its displayed window is small; all selected inspection scratch estimates are added to the existing 64 MiB activation budget before model allocation. Other existing inference limits remain in force. Graphs can therefore run ordinary layer inference but exceed the stricter attention inspection budget. Invalid selectors/offsets or exceeded budgets fail explicitly, not as a partial or random-weight fallback.
 
 Python generation is also on demand: opening the Python export preview generates code for the current graph; a closed export dialog or a JSON-only preview does not generate Python.
 
@@ -164,12 +178,14 @@ Example request:
 ```powershell
 $body = @{
   source = "from torch import nn`nmodel = nn.Sequential(nn.Linear(4, 8), nn.GELU(), nn.Linear(8, 2))"
-  model_name = "MLP"
+  model_name = "model"
   input_shapes = @{ x = @(1, 4) }
 } | ConvertTo-Json -Depth 8
 
 Invoke-RestMethod -Uri http://127.0.0.1:8765/api/import/pytorch -Method Post -ContentType 'application/json' -Body $body
 ```
+
+See the [source import support matrix](docs/pytorch-import-support.md) for constructor/forward restrictions, known limitations and diagnostics, and the [five reproducible examples](examples/import_models/README.md) for CNN, residual CNN, MQA, GQA and cross-attention inputs and run/import commands. Source-import support is narrower than layer-editor/runtime support; a matching layer name does not guarantee every PyTorch option is preserved.
 
 The parser only reads the Python AST; it does not execute uploaded code, import modules from the source or load weights, optimizers or training scripts. It supports static `nn.Module`, `nn.Sequential`, nested modules, `ModuleList`, `ModuleDict`, residual addition, `torch.cat`, `flatten/view/reshape`, the common layers listed above, `unsqueeze/squeeze`, bounded tensor indexing, `MultiheadAttention`, `TransformerEncoderLayer`/`TransformerEncoder` and the custom Attention/Transformer/ConstantAdd classes. Query/Context and Q/K/V port connections for Cross-Attention and MQA/GQA are supported.
 

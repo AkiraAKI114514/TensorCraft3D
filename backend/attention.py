@@ -20,7 +20,7 @@ class AttentionBranch(nn.Module):
         self.v_proj = nn.Linear(embed_dim, kv_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, query, context, overrides=None, prefix=""):
+    def forward(self, query, context, overrides=None, prefix="", observer=None, branch_index=0):
         batch, query_length, embed = query.shape
         overrides = overrides or {}
         projections = {}
@@ -38,16 +38,24 @@ class AttentionBranch(nn.Module):
                 heads.append(tensor)
             return torch.stack(heads, dim=1)
         q = project("q", self.q_proj, query, self.num_heads)
-        k = project("k", self.k_proj, context, self.kv_heads)
-        v = project("v", self.v_proj, context, self.kv_heads)
+        k_native = project("k", self.k_proj, context, self.kv_heads)
+        v_native = project("v", self.v_proj, context, self.kv_heads)
+        if observer is not None:
+            observer("q", branch_index, {"q": q})
+            observer("k", branch_index, {"k": k_native})
+            observer("v", branch_index, {"v": v_native})
         # Each KV group serves num_heads / kv_heads consecutive Q heads.
         repeats = self.num_heads // self.kv_heads
-        if repeats > 1:
-            k = k.repeat_interleave(repeats, dim=1)
-            v = v.repeat_interleave(repeats, dim=1)
-        result = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
-        result = result.transpose(1, 2).contiguous().view(batch, query_length, embed)
-        return self.out_proj(result), projections
+        k = k_native.repeat_interleave(repeats, dim=1) if repeats > 1 else k_native
+        v = v_native.repeat_interleave(repeats, dim=1) if repeats > 1 else v_native
+        result_heads = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
+        if observer is not None:
+            observer("weighted", branch_index, {"weighted": result_heads})
+        result = result_heads.transpose(1, 2).contiguous().view(batch, query_length, embed)
+        branch_output = self.out_proj(result)
+        if observer is not None:
+            observer("output", branch_index, {"output": branch_output})
+        return branch_output, projections
 
 
 class TensorLabAttention(nn.Module):
@@ -71,10 +79,10 @@ class TensorLabAttention(nn.Module):
         self.kv_heads = kv_heads
         self.branches = nn.ModuleList([AttentionBranch(embed_dim, num_heads, kv_heads, dropout) for _ in range(branches)])
 
-    def forward(self, query, context=None):
-        return self.forward_with_ports(query, context)[0]
+    def forward(self, query, context=None, observer=None):
+        return self.forward_with_ports(query, context, observer=observer)[0]
 
-    def forward_with_ports(self, query, context=None, overrides=None):
+    def forward_with_ports(self, query, context=None, overrides=None, observer=None):
         if self.attention_type == "cross":
             if context is None:
                 raise ValueError("Cross-Attention requires Query and Context inputs")
@@ -85,10 +93,13 @@ class TensorLabAttention(nn.Module):
         result = None
         projections = {}
         for index, branch in enumerate(self.branches):
-            value, ports = branch(query, context, overrides, f"b{index}:")
+            value, ports = branch(query, context, overrides, f"b{index}:", observer, index)
             result = value if result is None else result + value
             projections.update(ports)
-        return result / len(self.branches), projections
+        merged = result / len(self.branches)
+        if observer is not None:
+            observer("merged", -1, {"output": merged})
+        return merged, projections
 
 
 class TensorLabTransformer(nn.Module):
@@ -103,13 +114,13 @@ class TensorLabTransformer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.ffn = nn.Sequential(nn.Linear(embed_dim, ff_dim), nn.ReLU() if activation == "relu" else nn.GELU(), nn.Dropout(dropout), nn.Linear(ff_dim, embed_dim), nn.Dropout(dropout))
 
-    def forward(self, query, context=None):
-        return self.forward_with_ports(query, context)[0]
+    def forward(self, query, context=None, observer=None):
+        return self.forward_with_ports(query, context, observer=observer)[0]
 
-    def forward_with_ports(self, query, context=None, overrides=None):
+    def forward_with_ports(self, query, context=None, overrides=None, observer=None):
         # Q and self-attention overrides receive the same pre-norm as the base input.
         overrides = {port: self.norm1(value) if self.norm_first and (":q" in port or self.attention.attention_type != "cross") else value for port, value in (overrides or {}).items()}
-        attention, ports = self.attention.forward_with_ports(self.norm1(query) if self.norm_first else query, context, overrides)
+        attention, ports = self.attention.forward_with_ports(self.norm1(query) if self.norm_first else query, context, overrides, observer=observer)
         x = query + self.dropout(attention)
         if self.norm_first:
             return x + self.ffn(self.norm2(x)), ports

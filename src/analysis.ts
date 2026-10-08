@@ -70,7 +70,7 @@ export function analyze(graph: Graph): Analysis {
         if (!Array.isArray(s) || ![2, 3, 4, 5].includes(s.length) || !s.every(v => Number.isInteger(v) && v > 0 && v <= 65536) || product(s) > 16e6) throw new Error('输入形状须为 [B,F]、[B,S,E]、[B,C,H,W] 或 [B,C,D,H,W]，元素数不超过 1600 万');
         output = [...s];
       } else if (['ConvTranspose1d', 'ConvTranspose2d', 'ConvTranspose3d'].includes(n.op)) {
-        const rank = Number(n.op.match(/\d$/)?.[0] || 2) + 2;
+        const rank = Number(n.op.match(/([123])d$/)?.[1] || 2) + 2;
         if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
         const k = integer('kernel_size', 4, 1, 64), stride = integer('stride', 2, 1, 64), padding = integer('padding', 1, 0, 64), outputPadding = integer('output_padding', 0, 0, 64);
         if (outputPadding >= stride) throw new Error('output_padding 必须小于 stride');
@@ -81,7 +81,7 @@ export function analyze(graph: Graph): Analysis {
         count = (output[1] * (channels / groups) * Math.pow(k, rank - 2)) + channels;
         output = [output[0], channels, ...spatial];
       } else if (['Conv1d', 'Conv2d', 'Conv3d', 'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d'].includes(n.op)) {
-        const rank = Number(n.op.match(/\d$/)?.[0] || 2) + 2;
+        const rank = Number(n.op.match(/([123])d$/)?.[1] || 2) + 2;
         if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
         const convolution = n.op.startsWith('Conv'), k = integer('kernel_size', convolution ? 3 : 2, 1, 64), stride = integer('stride', convolution ? 1 : 2, 1, 64), padding = integer('padding', convolution ? 1 : 0, 0, 64);
         const spatial = output.slice(2).map(size => Math.floor((size + 2 * padding - k) / stride) + 1);
@@ -90,7 +90,7 @@ export function analyze(graph: Graph): Analysis {
         if (convolution) { const groups = integer('groups', 1, 1, output[1]); if (output[1] % groups || channels % groups) throw new Error('channels 必须能被 groups 整除'); count = channels * (output[1] / groups) * Math.pow(k, rank - 2) + channels; }
         output = [output[0], channels, ...spatial];
       } else if (['BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d'].includes(n.op)) {
-        const rank = Number(n.op.match(/\d$/)?.[0] || 2) + 2; if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`); if (n.op.startsWith('BatchNorm') || Number(n.params.affine ?? 1)) count = output[1] * 2;
+        const dimensions = Number(n.op.match(/([123])d$/)?.[1] || 2); const ranks = n.op === 'BatchNorm1d' ? [2, 3] : [dimensions + 2]; if (!ranks.includes(output.length)) throw new Error(`${n.op} 需要 ${ranks.join(' 或 ')} 维通道输入`); if (n.op.startsWith('BatchNorm') || Number(n.params.affine ?? 1)) count = output[1] * 2;
       } else if (n.op === 'LayerNorm') {
         const raw = n.params.normalized_shape, normalized: number[] = (Array.isArray(raw) ? raw : [raw]).map(Number);
         if (!normalized.length || !normalized.every(v => Number.isInteger(v) && v > 0)) throw new Error('LayerNorm normalized_shape 必须是正整数或正整数数组');
@@ -99,7 +99,7 @@ export function analyze(graph: Graph): Analysis {
       } else if (n.op === 'GroupNorm') {
         if (output.length < 3) throw new Error('GroupNorm 需要 NCHW 类输入'); const groups = integer('num_groups', 1, 1, output[1]); if (output[1] % groups) throw new Error('num_channels 必须能被 num_groups 整除'); if (Number(n.params.affine ?? 1)) count = output[1] * 2;
       } else if (n.op.startsWith('AdaptiveAvgPool') || n.op.startsWith('AdaptiveMaxPool')) {
-        const rank = Number(n.op.match(/\d$/)?.[0] || 2) + 2; if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
+        const rank = Number(n.op.match(/([123])d$/)?.[1] || 2) + 2; if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
         const raw = n.params.output_size ?? 1, sizes: number[] = (Array.isArray(raw) ? raw : Array(rank - 2).fill(raw)).map(Number);
         if (sizes.length !== rank - 2 || !sizes.every(v => Number.isInteger(v) && v > 0 && v <= 256)) throw new Error('自适应池化 output_size 无效'); output = [output[0], output[1], ...sizes];
       } else if (n.op === 'Flatten') output = [output[0], product(output.slice(1))];

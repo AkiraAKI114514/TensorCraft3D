@@ -148,8 +148,9 @@ def analyze_graph(graph):
                 features = integer("out_features", 10)
                 count = (shape[-1] + 1) * features; shape = [*shape[:-1], features]
             elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d"):
-                expected_rank = int(op[-2]) + 2
-                if len(shape) != expected_rank: raise ValueError(f"{key}: {op} requires {expected_rank}D channel input")
+                dimensions = int(op[-2])
+                expected_ranks = (2, 3) if op == "BatchNorm1d" else (dimensions + 2,)
+                if len(shape) not in expected_ranks: raise ValueError(f"{key}: {op} requires {expected_ranks}D channel input")
                 if op.startswith("BatchNorm"): count = shape[1] * 2
                 elif p.get("affine", 1): count = shape[1] * 2
             elif op == "LayerNorm":

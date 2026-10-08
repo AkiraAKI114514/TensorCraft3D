@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "examples": [
+    {
+      "filename": "cnn.py",
+      "model_name": "CNNClassifier",
+      "input_shapes": { "x": [2, 3, 8, 8] },
+      "expected_output": [2, 2],
+      "expected_parameters": 242,
+      "expected_ops": ["Input", "Conv2d", "ReLU", "AdaptiveAvgPool2d", "Flatten", "Linear", "Output"]
+    },
+    {
+      "filename": "residual.py",
+      "model_name": "ResidualClassifier",
+      "input_shapes": { "x": [2, 3, 8, 8] },
+      "expected_output": [2, 2],
+      "expected_parameters": 842,
+      "expected_ops": ["Input", "Conv2d", "ReLU", "Conv2d", "BatchNorm2d", "Add", "ReLU", "AdaptiveAvgPool2d", "Flatten", "Linear", "Output"]
+    },
+    {
+      "filename": "mqa.py",
+      "model_name": "MQAClassifier",
+      "input_shapes": { "x": [2, 4, 16] },
+      "expected_output": [2, 2],
+      "expected_parameters": 714,
+      "expected_ops": ["Input", "MultiHeadAttention", "Select", "Linear", "Output"],
+      "attention": { "attention_type": "multi_query", "num_heads": 4, "kv_heads": 1 }
+    },
+    {
+      "filename": "gqa.py",
+      "model_name": "GQAClassifier",
+      "input_shapes": { "x": [2, 4, 16] },
+      "expected_output": [2, 2],
+      "expected_parameters": 1986,
+      "expected_ops": ["Input", "Transformer", "Select", "Linear", "Output"],
+      "attention": { "attention_type": "grouped_query", "num_heads": 4, "kv_heads": 2 }
+    },
+    {
+      "filename": "cross_attention.py",
+      "model_name": "CrossAttentionClassifier",
+      "input_shapes": { "query": [2, 4, 16], "context": [2, 6, 16] },
+      "expected_output": [2, 2],
+      "expected_parameters": 1122,
+      "expected_ops": ["Input", "Input", "MultiHeadAttention", "Select", "Linear", "Output"],
+      "attention": { "attention_type": "cross", "num_heads": 4, "kv_heads": 4 }
+    }
+  ]
+}
