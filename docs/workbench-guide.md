@@ -16,7 +16,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Training
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-Once dependencies are installed and a compiled `dist` is present, you can also just double-click `start.cmd`. The default address is http://127.0.0.1:8765, and it listens on localhost only. Closing the terminal stops the service.
+Once dependencies are installed and a compiled `dist` is present, you can also just double-click `start.cmd`. The default address is http://127.0.0.1:8765, and it listens on localhost only. Closing the terminal stops the service. For non-interactive startup, use `powershell -File .\start.ps1 -NoBrowser -Port 8766` (rebuilds first), or `start.cmd --no-browser --port 8766` (uses the existing build).
 
 If you don't need real training, `npm install`, `npm run build` and `python run.py` are enough. The standard-library server still provides the 3D view, model editing, warning demos and export.
 
@@ -39,6 +39,8 @@ npm run test:e2e
 # If run.py selected another port, point browser tests at that server
 $env:TENSORLAB_TEST_URL = 'http://127.0.0.1:8766'
 npm run test:e2e -- e2e/runtime.spec.ts
+# Windows startup smoke checks: built assets, API/static modes, wrappers and port fallback
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_startup.py -v
 # Focused crash recovery: saved-project backup, reload and storage failures
 npm run test:e2e -- e2e/errorBoundary.spec.ts
 # Focused single-sample inference, tensor observation and lazy code export
@@ -52,6 +54,8 @@ npm run test:e2e -- e2e/attentionInference.spec.ts
 npm run build
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
+
+CI runs frontend checks on Ubuntu and automatically discovers every `backend/test_*.py` module, including import-parameter contracts. A Windows job checks the real PowerShell/CMD launchers, API and standard-library static serving, built assets and occupied-port fallback, then runs focused Edge regressions for editing/history, import/export, tensor/attention/trained inference, language switching, recovery and runtime behavior. In CI, Playwright starts and stops its own local backend and waits for `/api/health`; normal local browser runs still use the already-running server. Failed browser runs retain traces/screenshots and upload diagnostics. These hosted checks use CPU computation, not CUDA hardware validation.
 
 `build.ps1` produces `release/TensorCraft3D.zip`, containing source, build output, the backend and the launch scripts, but not `node_modules` or the virtual environment. Recipients need Python to run it, and real training additionally needs the backend dependencies installed; this is not a runtime-free Windows EXE.
 

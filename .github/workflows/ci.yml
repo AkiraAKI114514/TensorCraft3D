@@ -40,6 +40,12 @@ jobs:
         run: npm test
       - name: Build frontend
         run: npm run build
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
+          retention-days: 7
 
   backend:
     name: Backend checks
@@ -56,4 +62,53 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements-training.txt
       - name: Run backend tests
-        run: python -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment backend.test_graph_contracts backend.test_inference backend.test_trained_models backend.test_channel_ranks backend.test_attention_inference backend.test_import_examples
+        run: python -m unittest discover -s backend -t . -p 'test_*.py' -v
+
+  windows:
+    name: Windows startup and browser checks
+    runs-on: windows-latest
+    needs: frontend
+    timeout-minutes: 25
+    env:
+      CUDA_VISIBLE_DEVICES: '-1'
+      PYTHONUNBUFFERED: '1'
+      TENSORLAB_TEST_URL: http://127.0.0.1:8765
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-training.txt
+      - name: Install JavaScript dependencies
+        run: npm ci
+      - name: Create the project Python environment
+        run: python -m venv .venv
+      - name: Install Python test dependencies
+        run: ./.venv/Scripts/python.exe -m pip install -r backend/requirements-training.txt
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+      - name: Check Windows startup entry points
+        run: ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_startup.py -v
+      - name: Run core browser regressions in Microsoft Edge
+        run: npm run test:e2e -- e2e/editing.spec.ts e2e/history.spec.ts e2e/importExamples.spec.ts e2e/inference.spec.ts e2e/attentionInference.spec.ts e2e/trainedInference.spec.ts e2e/language.spec.ts e2e/errorBoundary.spec.ts e2e/runtime.spec.ts e2e/imageExport.spec.ts
+      - name: Upload browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-browser-failures
+          path: |
+            test-results/
+            artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
