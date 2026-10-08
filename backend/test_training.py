@@ -162,10 +162,35 @@ class TrainingTests(unittest.TestCase):
                     model(torch.randn(3, 4, 8)).square().sum().backward()
                     attention = model.layers["layer_1"].attention if op == "Transformer" else model.layers["layer_1"]
                     self.assertEqual(attention.branches[0].k_proj.out_features, 8 // heads * kv_heads)
-                    for p in attention.parameters():
+                    for name, p in attention.named_parameters():
                         self.assertIsNotNone(p.grad)
                         self.assertTrue(torch.isfinite(p.grad).all())
-                        self.assertGreater(p.grad.abs().sum().item(), 0)
+                        if name.endswith("k_proj.bias"):
+                            # A shared K bias adds a row-wise constant to scores; softmax cancels it.
+                            torch.testing.assert_close(p.grad, torch.zeros_like(p.grad), atol=1e-5, rtol=0)
+                        else:
+                            self.assertGreater(p.grad.abs().sum().item(), 0)
+
+    def test_key_bias_shift_preserves_attention_output_and_has_zero_gradient(self):
+        import torch
+        from .attention import TensorLabAttention
+        torch.manual_seed(11)
+        for kind, kv_heads in (("self", 4), ("multi_query", 1), ("grouped_query", 2)):
+            with self.subTest(kind=kind):
+                layer = TensorLabAttention(8, 4, kv_heads, dropout=0, attention_type=kind, branches=2).eval()
+                x = torch.randn(2, 5, 8)
+                output = layer(x)
+                output.square().sum().backward()
+                for branch in layer.branches:
+                    bias = branch.k_proj.bias
+                    self.assertIsNotNone(bias.grad)
+                    torch.testing.assert_close(bias.grad, torch.zeros_like(bias.grad), atol=1e-5, rtol=0)
+                    self.assertGreater(branch.k_proj.weight.grad.abs().sum().item(), 0)
+                with torch.no_grad():
+                    for branch in layer.branches:
+                        branch.k_proj.bias.add_(torch.linspace(-1, 1, branch.k_proj.bias.numel()))
+                    shifted = layer(x)
+                torch.testing.assert_close(shifted, output.detach(), atol=1e-6, rtol=1e-5)
 
     def test_cross_roles_lengths_and_gradients(self):
         import torch
