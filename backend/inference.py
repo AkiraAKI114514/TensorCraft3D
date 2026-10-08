@@ -26,6 +26,7 @@ class TensorInferenceRequest(BaseModel):
     nodeIds: list[StrictStr] = Field(min_length=1, max_length=8)
     seed: StrictInt = Field(42, ge=0, le=2_147_483_647)
     device: Literal["cpu", "cuda", "auto"] = "cpu"
+    modelId: StrictStr | None = Field(default=None, min_length=1, max_length=128)
     inputs: dict[str, list[StrictFloat | StrictInt]] | None = Field(default=None, max_length=8)
     slices: dict[str, list[StrictInt]] = Field(default_factory=dict, max_length=8)
 
@@ -255,6 +256,8 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError("PyTorch is not installed") from exc
     copied, info, embedding = _prepare_graph(request.graph)
+    from .trained_models import trained_models
+    snapshot = trained_models.get(request.modelId, request.graph) if request.modelId is not None else None
     selected = list(dict.fromkeys(request.nodeIds))
     by_id = {node["id"]: node for node in copied["nodes"]}
     if any(node_id not in by_id for node_id in selected):
@@ -290,6 +293,9 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         inputs, input_source = _input_tensors(request, info, embedding, torch, generator)
         from .training import build_model
         model, _ = build_model(copied)
+        if snapshot is not None:
+            model.load_state_dict(snapshot.state, strict=True)
+            inputs = {key: (value - snapshot.preprocessing[key]["mean"]) / snapshot.preprocessing[key]["scale"] if key in snapshot.preprocessing else value for key, value in inputs.items()}
         model.to(device_name)
         model.eval()
         inputs = {key: value.to(device_name) for key, value in inputs.items()}
@@ -306,7 +312,9 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         "seed": request.seed,
         "sampleIndex": 0,
         "inputSource": input_source,
-        "weights": "random-initialized",
+        "weights": "trained" if snapshot is not None else "random-initialized",
+        "model": copy.deepcopy(snapshot.metadata) if snapshot is not None else None,
+        "inputTransform": snapshot.metadata["preprocessing"] if snapshot is not None else "none",
         "mode": "eval",
         "tensors": [captured[node_id] for node_id in selected],
     }

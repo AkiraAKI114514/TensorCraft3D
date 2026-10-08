@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from .graph import analyze_graph
 from .cuda_environment import inspect_environment
 from .inference import InferenceError, TensorInferenceRequest, run_inference
+from .trained_models import trained_models
 
 app = FastAPI(title="TensorCraft3D · Build and Explore Neural Networks in 3D", version="1.0.1")
 training_lock = threading.Lock()
@@ -34,7 +35,7 @@ class TrainingConfig(BaseModel):
 @app.get("/api/health")
 def health():
     inspection = inspect_environment(full=False)
-    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True, "tensorInference": True}
+    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True, "tensorInference": True, "trainedInference": True}
 
 
 @app.post("/api/infer")
@@ -126,7 +127,7 @@ async def training_socket(ws: WebSocket):
         acquired = True; messages = queue.Queue()
         from .training import train
         def run():
-            try: train(graph, config, messages.put, stop)
+            try: train(graph, config, messages.put, stop, retain_model=trained_models.save)
             except Exception as error: messages.put({"type": "error", "message": str(error)})
             finally: training_lock.release()
         worker = threading.Thread(target=run, daemon=True); worker.start()

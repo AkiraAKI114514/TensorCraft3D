@@ -1,3 +1,5 @@
+import type { TrainedModelMetadata } from './trainedModel';
+
 export interface TensorSnapshot {
   nodeId: string;
   shape: number[];
@@ -17,7 +19,9 @@ export interface InferenceReport {
   seed: number;
   sampleIndex: 0;
   inputSource: 'synthetic' | 'provided';
-  weights: 'random-initialized';
+  weights: 'random-initialized' | 'trained';
+  model: TrainedModelMetadata | null;
+  inputTransform: 'none' | 'csv-standardized';
   mode: 'eval';
   tensors: TensorSnapshot[];
 }

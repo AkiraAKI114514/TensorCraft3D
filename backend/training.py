@@ -2,6 +2,7 @@
 import csv
 import io
 import math
+import uuid
 from .graph import analyze_graph
 
 
@@ -162,7 +163,7 @@ def load_data(info, config, classes):
     return values, labels
 
 
-def train(graph, config, emit, stop):
+def train(graph, config, emit, stop, retain_model=None):
     import torch
     from torch import nn
     torch.set_num_threads(min(4, torch.get_num_threads()))
@@ -181,15 +182,31 @@ def train(graph, config, emit, stop):
     count = max(2, int(len(labels) * config["validationFraction"]))
     val_x, val_y = {key: value[:count] for key, value in x.items()}, labels[:count]
     train_x, train_y = {key: value[count:] for key, value in x.items()}, labels[count:]
+    preprocessing = {}
     if config["dataset"] == "csv":
         # Fit normalization on the training split only, avoiding validation leakage.
         for key in train_x:
             if not train_x[key].is_floating_point():
                 continue
             mean = train_x[key].mean(0); scale = train_x[key].std(0).clamp_min(1e-6)
+            preprocessing[key] = {"mean": mean, "scale": scale}
             train_x[key], val_x[key] = (train_x[key] - mean) / scale, (val_x[key] - mean) / scale
     criterion = nn.CrossEntropyLoss(); optimizer = torch.optim.Adam(model.parameters(), lr=config["learningRate"])
-    best_loss, stale, best_state = float("inf"), 0, None
+    best_loss, stale, best_state, best_epoch = float("inf"), 0, None, 0
+    training_run_id = str(uuid.uuid4())
+    def finish(reason, epoch):
+        if stop.is_set():
+            emit({"type": "done", "reason": "stopped"}); return
+        message = {"type": "done", "reason": reason}
+        if retain_model is not None:
+            metadata = retain_model(graph, model, preprocessing, {
+                "trainingRunId": training_run_id, "device": device.upper(), "dataset": config["dataset"],
+                "seed": 42, "epochsCompleted": epoch, "weightsEpoch": best_epoch if reason == "early_stopping" else epoch, "reason": reason,
+            })
+            message["model"] = metadata
+            if metadata is None:
+                message["retentionWarning"] = "训练完成，但模型状态与预处理参数超过 64 MiB，未保留本次权重。"
+        emit(message)
     batch = config["batchSize"]
     for epoch in range(1, config["epochs"] + 1):
         if stop.is_set(): emit({"type": "done", "reason": "stopped"}); return
@@ -223,10 +240,10 @@ def train(graph, config, emit, stop):
         val_loss /= len(val_y)
         emit({"type": "metric", "device": device.upper(), "metric": {"epoch": epoch, "trainLoss": total_loss / max(1, seen), "valLoss": val_loss, "accuracy": correct / len(val_y), "gradNorm": grad_total / max(1, norm_count), "layerGradients": {key: value / max(1, norm_count) for key, value in norms.items()}, "deadRelu": {key: value / max(1, norm_count) for key, value in dead_sums.items()}, "source": "training"}})
         if val_loss < best_loss - 1e-4:
-            best_loss, stale = val_loss, 0
+            best_loss, stale, best_epoch = val_loss, 0, epoch
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
         else: stale += 1
         if config["earlyStopping"] and stale >= config["patience"]:
             if best_state: model.load_state_dict(best_state)
-            emit({"type": "done", "reason": "early_stopping"}); return
-    emit({"type": "done", "reason": "completed"})
+            finish("early_stopping", epoch); return
+    finish("completed", config["epochs"])
