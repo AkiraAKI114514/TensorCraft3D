@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 from .graph import analyze_graph
 from .cuda_environment import inspect_environment
+from .inference import InferenceError, TensorInferenceRequest, run_inference
 
 app = FastAPI(title="TensorCraft3D · Build and Explore Neural Networks in 3D", version="1.0.1")
 training_lock = threading.Lock()
@@ -33,7 +34,24 @@ class TrainingConfig(BaseModel):
 @app.get("/api/health")
 def health():
     inspection = inspect_environment(full=False)
-    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True}
+    return {"torch": inspection["torch"]["installed"], "cuda": inspection["cuda"]["available"], "device": inspection["cuda"]["devices"][0]["name"] if inspection["cuda"]["devices"] else "CPU", "apiVersion": "1.0.1", "pytorchImport": True, "tensorInference": True}
+
+
+@app.post("/api/infer")
+def infer(payload: TensorInferenceRequest):
+    from fastapi import HTTPException
+    if not training_lock.acquire(blocking=False):
+        raise HTTPException(409, "Another training or inference run is already active")
+    try:
+        return run_inference(payload)
+    except (InferenceError, ValueError, TypeError, KeyError) as error:
+        raise HTTPException(422, str(error)) from error
+    except RuntimeError as error:
+        if "not installed" in str(error):
+            raise HTTPException(503, str(error)) from error
+        raise HTTPException(422, str(error)) from error
+    finally:
+        training_lock.release()
 
 
 @app.get("/api/environment")

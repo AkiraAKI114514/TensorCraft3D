@@ -43,6 +43,10 @@ $env:TENSORLAB_TEST_URL = 'http://127.0.0.1:8766'
 npm run test:e2e -- e2e/runtime.spec.ts
 # Focused crash recovery: saved-project backup, reload and storage failures
 npm run test:e2e -- e2e/errorBoundary.spec.ts
+# Focused single-sample inference, tensor observation and lazy code export
+npm exec --no -- vitest run src/CodeExport.test.tsx src/TensorInspector.test.tsx
+.\.venv\Scripts\python.exe -m unittest backend.test_inference
+npm run test:e2e -- e2e/inference.spec.ts
 npm run build
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
@@ -110,6 +114,20 @@ If installation fails during uninstall/replacement, PyTorch may be left incomple
 ```
 
 Local verification on 2026-10-07 used Python 3.13, `torch==2.9.1+cu128` (CUDA runtime 12.8), an NVIDIA GeForce RTX 4060 Ti and driver 591.74. The browser's explicit GPU forward/backward probe and a two-epoch CUDA classification run with imported position buffers and slices passed. An earlier replacement failed at a locked `c10.dll`; stopping the confirmed project backends and repairing `.venv` resolved it without changing the system driver or environment variables. This verifies that local configuration, not every GPU/driver combination.
+
+### Single-sample inference and Tensor Inspector
+
+Select a layer in the 3D scene or topology graph, open **张量观测**, and explicitly run one sample. The local PyTorch backend executes the same graph runtime in `eval()` and `inference_mode()` with batch size 1. It captures the selected layer and model Output; selecting a different layer requires another run unless that layer was already captured. This works with non-classification outputs as well as CNN/MLP/Attention graphs.
+
+**Each run builds fresh, seeded random weights. It does not inspect a previously trained model or load the original imported weights.** The panel identifies the run ID, UTC timestamp, seed, device, input source and sample index. Choose a reproducible synthetic sample (integer IDs for Embedding) or provide JSON mapping every Input node ID to one flat sample array, without the batch axis. Custom inputs are not normalised using the training CSV pipeline. This first version infers integer input types when an Input connects directly to Embedding; an input shared between Embedding and non-Embedding consumers is rejected rather than silently cast.
+
+The inspector shows measured shape/dtype, finite/non-finite element counts, full-tensor min/max/mean/population std, and a 12-bin histogram with keyboard/hover readouts and a data table. The numerical slice fixes the leading axes (sample/channel/depth as applicable) and shows up to 16 × 16 values from the final two dimensions; truncation is labelled. Change the leading-axis indices and rerun to inspect another channel or depth. Non-finite values are explicitly marked and excluded from finite statistics/histograms. No autograd graphs or full activations are sent to the browser. Editing the graph or sampling configuration invalidates the previous snapshot, including late responses from an earlier graph.
+
+`POST /api/infer` accepts `graph`, `nodeIds`, optional `seed`, `device` (`cpu` by default, `cuda` or `auto`), optional flat `inputs`, and optional leading-axis `slices` keyed by captured node ID. Inference shares the training/diagnostics lock: concurrent work returns HTTP 409, invalid graphs/inputs or resource limits return HTTP 422. Opening the tab never starts inference, installs dependencies or probes CUDA. The existing particle animation and attention weight colours remain illustrative; this inspector captures layer outputs, not attention probability matrices.
+
+It accepts at most 8 captured nodes, 5 million parameters / 20 MiB parameter-storage cap, 4 million elements per input, 64 MiB of summed single-sample activation estimates, and 1 million attention-score elements per attention layer. These limits are checked before model allocation; displayed slices are capped at 16 × 16 and leading-axis indices at 3.
+
+Python generation is also on demand: opening the Python export preview generates code for the current graph; a closed export dialog or a JSON-only preview does not generate Python.
 
 ## About the warnings
 

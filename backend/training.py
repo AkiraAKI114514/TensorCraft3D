@@ -57,7 +57,7 @@ def build_model(graph):
                     module = TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
                 else: continue
                 self.layers[key] = module
-        def forward(self, x):
+        def forward(self, x, observer=None):
             if isinstance(x, dict):
                 if set(x) != set(info["inputs"]): raise ValueError("Input dictionary must contain exactly the model's Input node IDs")
             elif len(info["inputs"]) != 1:
@@ -65,6 +65,9 @@ def build_model(graph):
             values, ports = {}, {}
             def edge_value(edge):
                 return ports[edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else values[edge["source"]]
+            def observe(key, value):
+                if observer is not None:
+                    observer(key, value)
             by_id = {node["id"]: node for node in graph["nodes"]}
             for key in info["order"]:
                 node = by_id[key]; op = node["op"]; args = [edge_value(e) for e in info["baseEdges"][key]]
@@ -87,6 +90,7 @@ def build_model(graph):
                 else:
                     values[key] = self.layers[key](*args)
                     if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = float((values[key].detach() == 0).float().mean().item())
+                observe(key, values[key])
             return values[info["output"]]
     return GraphModel(), info
 

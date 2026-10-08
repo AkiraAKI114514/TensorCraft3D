@@ -56,4 +56,4 @@ jobs:
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements-training.txt
       - name: Run backend tests
-        run: python -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment backend.test_graph_contracts
+        run: python -m unittest backend.test_training backend.test_pytorch_import backend.test_tensor_ops backend.test_cuda_environment backend.test_graph_contracts backend.test_inference
