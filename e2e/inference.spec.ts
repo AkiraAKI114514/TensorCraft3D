@@ -113,6 +113,8 @@ test('keeps pending inference exclusive across tabs and discards responses for e
 
 test('reports inference errors and recovers while preserving Python and JSON export', async ({ page }) => {
   await page.goto('/');
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
   await page.getByRole('button', { name: '导出代码', exact: true }).click();
   await expect(page.locator('.code-preview')).toContainText('class VisualModel');
   await page.getByRole('button', { name: 'Graph JSON', exact: true }).click();
