@@ -29,12 +29,12 @@ These patterns are supported **within the restrictions below**, not as arbitrary
 | Static modules and containers | `nn.Module`, `nn.Sequential`, nested custom modules, literal `ModuleList`/`ModuleDict`, static indexing, supported static module factories | No runtime-sized containers or runtime-dependent branches/loops. A factory returning modules is not an arbitrary forward helper. |
 | Residual addition | `x + residual` | Both runtime tensors must have identical shapes; general broadcasting and inplace `+=` are unsupported. |
 | Concatenation | `torch.cat([a, b], dim=1)`, `torch.concat(...)` | A static list/tuple and a positive non-batch axis; other dimensions must match. Specify `dim`: default batch concatenation is unsupported. |
-| Convolution | Conv1d/2d/3d, ConvTranspose1d/2d/3d | Bias enabled, `groups=1`, `dilation=1`, zero padding mode, uniform spatial tuples. Ordinary Conv currently requires positive padding; see the known limitation below. |
+| Convolution | Conv1d/2d/3d, ConvTranspose1d/2d/3d | Bias enabled, `groups=1`, `dilation=1`, zero padding mode, uniform spatial tuples. Ordinary Conv accepts the PyTorch default `padding=0`. |
 | Dense layers | Linear, Bilinear | Bias enabled. Linear acts on the last dimension. Bilinear takes two `[B,F]` inputs with the declared second-input width. |
 | BatchNorm | BatchNorm1d/2d/3d | Default epsilon/momentum, affine and running statistics enabled. BN1d accepts `[B,C]` and `[B,C,L]`; BN2d/3d require ranks 4/5. |
 | Other normalization | LayerNorm, InstanceNorm1d/2d/3d, GroupNorm | LayerNorm supports static matching suffix dimensions, `eps` and `elementwise_affine`, with bias enabled. InstanceNorm source import uses default epsilon/momentum, affine disabled and no running statistics. GroupNorm uses default epsilon and affine enabled. Channel-first ranks remain required. |
 | MaxPool | MaxPool1d/2d/3d | Uniform spatial parameters, dilation 1, `return_indices=False`, `ceil_mode=False`. |
-| Avg/Adaptive pools | AvgPool1d/2d/3d, AdaptiveAvgPool1d/2d/3d, AdaptiveMaxPool1d/2d/3d | Only default AvgPool flags and AdaptiveMaxPool `return_indices=False` are preserved semantically; see the dropped-option warning below. |
+| Avg/Adaptive pools | AvgPool1d/2d/3d, AdaptiveAvgPool1d/2d/3d, AdaptiveMaxPool1d/2d/3d | AvgPool options must remain at defaults (`ceil_mode=False`, `count_include_pad=True`, `divisor_override=None`); AdaptiveMaxPool requires `return_indices=False`. Non-default options are rejected before graph creation. |
 | Activations | ReLU, GELU, Sigmoid, Tanh, SiLU, LeakyReLU, ELU, SELU, Softplus, PReLU, Hardsigmoid, Hardswish, Mish, Softsign, Softmax, LogSoftmax, Identity | No inplace variants; GELU uses `approximate="none"`. Specify an explicit dimension for Softmax/LogSoftmax. Supported slope/alpha/beta/threshold/PReLU options are preserved. |
 | Dropout | Dropout, Dropout1d/2d/3d, AlphaDropout | Static probability and no inplace mutation. Functional `F.dropout` must preserve `training=self.training`. |
 | Embedding | `nn.Embedding(num_embeddings, embedding_dim)` | Direct Input with integer IDs. No padding index, max norm, sparse/frequency-scaled weights, supplied weights or freezing. |
@@ -61,8 +61,7 @@ The MQA/GQA examples import `backend.attention` and run **from the repository ro
 
 ## Known semantic limitations
 
-- **Ordinary Conv with `padding=0` is rejected**, including the PyTorch default. The parser currently treats that spatial parameter as positive; this is an importer limitation, not a PyTorch requirement. Examples explicitly use `padding=1`.
-- **Non-default AvgPool flags and AdaptiveMaxPool indices are unsupported.** The parser can accept but discard `ceil_mode`, `count_include_pad`, `divisor_override`, or AdaptiveMaxPool `return_indices`. Runtime/export then use defaults. Do not assume parser success preserves those settings.
+- **Unsupported pool options are rejected, not discarded.** AvgPool requires `ceil_mode=False`, `count_include_pad=True`, and `divisor_override=None`; AdaptiveMaxPool requires `return_indices=False`. The importer reports the source location and returns no graph for non-default values.
 - **Softmax/LogSoftmax need explicit `dim`.** An unspecified dimension maps to `-1`, not every PyTorch implicit-axis behavior.
 - Repeated parameter-bearing layer calls are rejected rather than treated as supported weight sharing.
 - Missing input shapes may be conservatively inferred with a warning. Indexing/positional buffers need sufficiently explicit shapes. Import success does not guarantee every runtime value or unrepresented PyTorch option is valid.

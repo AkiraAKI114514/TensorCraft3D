@@ -7,19 +7,20 @@ import { PRESETS } from './presets';
 import { download, safeFilename } from './export';
 import CodeExport from './CodeExport';
 import TensorInspector from './TensorInspector';
-import { computationKey, matchingTrainedModel, type TrainedModelResult } from './trainedModel';
-import Scene, { type SceneHandle } from './Scene';
-import Topology from './Topology';
+import { matchingTrainedModel } from './trainedModel';
+import useTrainingSession from './useTrainingSession';
+import useProjectHistory from './useProjectHistory';
+import SceneView, { type SceneHandle } from './SceneView';
+import TopologyView from './TopologyView';
 import Connections from './Connections';
 import Parameters from './Parameters';
 import { attentionConfig, crossInputRole, isCrossAttention, edgeKey, isProjectionPort, projectionPorts } from './attentionConfig';
 import LossChart from './Charts';
-import { isAttention } from './AttentionModule';
+import { isAttention } from './attentionConfig';
 import { visualHeadCount } from './attentionLayout';
 import PyTorchImport from './PyTorchImport';
 import CudaEnvironment from './CudaEnvironment';
 import { DEFAULT_IMAGE_OPTIONS, type ImageExportOptions } from './imageLayout';
-import { recordHistory, redoHistory, undoHistory, type GraphHistory } from './history';
 import './styles.css';
 
 const initialConfig: TrainingConfig = { epochs: 30, learningRate: 0.001, batchSize: 32, samples: 512, device: 'auto', dataset: 'synthetic', validationFraction: 0.2, earlyStopping: true, patience: 5 };
@@ -40,54 +41,39 @@ const descriptions: Record<Op, string> = {
   ReLU: '整流激活', GELU: '高斯激活', Sigmoid: 'Sigmoid 激活', Tanh: '双曲正切', SiLU: 'SiLU / Swish', LeakyReLU: '带泄漏整流', ELU: '指数线性单元', SELU: '缩放指数单元', Softplus: '平滑 ReLU', Softmax: '概率归一化', LogSoftmax: '对数概率归一化', PReLU: '可学习斜率激活', Hardsigmoid: '硬 Sigmoid', Hardswish: '硬 Swish', Mish: 'Mish 激活', Softsign: 'Softsign 激活', Identity: '恒等映射',
   Dropout: '随机失活', Dropout1d: '通道失活 1D', Dropout2d: '通道失活 2D', Dropout3d: '通道失活 3D', AlphaDropout: 'Alpha 随机失活', Embedding: '离散词嵌入', Upsample: '上采样', Unsqueeze: '增加张量维度', Squeeze: '移除大小为 1 的维度', Slice: '张量切片', Select: '选择张量索引', ConstantAdd: '固定常量 / 位置编码相加', MultiHeadAttention: '多头自注意力', Transformer: '编码器层 · Attention + FFN', Add: '残差相加', Concat: '张量拼接'
 };
-function loadInitial() { try { const s = localStorage.getItem('tensorlab-project'); if (s) return validateGraph(JSON.parse(s)); } catch { /* Invalid saved projects fall back to a valid preset. */ } return PRESETS.cnn(); }
 function IconButton({ title, children, onClick, disabled = false, active = false }: { title: string; children: React.ReactNode; onClick: () => void; disabled?: boolean; active?: boolean }) { return <button type="button" className={`icon-button ${active ? 'active' : ''}`} title={title} aria-label={title} onClick={onClick} disabled={disabled}>{children}</button>; }
 
 export default function App() {
-  const [graph, setGraph] = useState<Graph>(loadInitial), [selected, setSelected] = useState<string | null>('layer_1');
+  const [toast, setToast] = useState(''), toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notify = useCallback((text: string) => { setToast(text); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), 4000); }, []);
+  const { metrics, setMetrics, training, trainStatus, setTrainStatus, importMetrics: applyImportedMetrics, finishDemo, trainedResult, startTraining: runTraining, stopTraining, isTrainingActive, resetMetrics } = useTrainingSession(notify);
+  const { graph, setGraph, history, commit, undo, redo } = useProjectHistory({ training, isTrainingActive, resetMetrics, notify });
+  const [selected, setSelected] = useState<string | null>('layer_1');
   const [view, setView] = useState<'3d' | 'graph'>('3d'), [playing, setPlaying] = useState(true), [direction, setDirection] = useState<'forward' | 'backward'>('forward'), [speed, setSpeed] = useState(1), [expanded, setExpanded] = useState(false);
   const [rotating, setRotating] = useState(true), [selectedHead, setSelectedHead] = useState<{ nodeId: string; index: number } | null>(null);
   const [selectedProjection, setSelectedProjection] = useState<{ nodeId: string; port: string } | null>(null);
   const [gpu, setGpu] = useState('正在初始化 WebGL'), [backend, setBackend] = useState<{ online: boolean; torch: boolean; cuda: boolean; device?: string; apiVersion?: string; pytorchImport?: boolean; tensorInference?: boolean; trainedInference?: boolean; attentionInference?: boolean }>({ online: false, torch: false, cuda: false });
   const [sceneLoaded, setSceneLoaded] = useState(false);
-  const [metrics, setMetrics] = useState<Metric[]>([]), [training, setTraining] = useState(false), [trainStatus, setTrainStatus] = useState('未开始'), [config, setConfig] = useState<TrainingConfig>(initialConfig);
+  const [config, setConfig] = useState<TrainingConfig>(initialConfig);
   const [showPyTorchImport, setShowPyTorchImport] = useState(false);
   const [environmentOpen, setEnvironmentOpen] = useState(false), [environmentRequests, setEnvironmentRequests] = useState(0);
-  const [inferenceBusy, setInferenceBusy] = useState(false), [trainedResult, setTrainedResult] = useState<TrainedModelResult | null>(null);
+  const [inferenceBusy, setInferenceBusy] = useState(false);
   const trainedModel = useMemo(() => matchingTrainedModel(graph, trainedResult), [graph, trainedResult]);
   const onEnvironmentBusy = useCallback((busy: boolean) => setEnvironmentRequests(count => count + (busy ? 1 : -1)), []);
   const [modal, setModal] = useState<'code' | 'image' | 'training' | 'new' | null>(null), [codeTab, setCodeTab] = useState<'python' | 'json'>('python'), [inspectorTab, setInspectorTab] = useState<'params' | 'alerts' | 'tensor'>('params');
-  const [imageSize, setImageSize] = useState(3840), [transparent, setTransparent] = useState(false), [exporting, setExporting] = useState(false), [toast, setToast] = useState(''), [showLibrary, setShowLibrary] = useState(false);
+  const [imageSize, setImageSize] = useState(3840), [transparent, setTransparent] = useState(false), [exporting, setExporting] = useState(false), [showLibrary, setShowLibrary] = useState(false);
   const [imageOptions, setImageOptions] = useState<ImageExportOptions>(DEFAULT_IMAGE_OPTIONS);
   const [demoScenario, setDemoScenario] = useState('overfit'), [dataFilename, setDataFilename] = useState('');
-  const sceneRef = useRef<SceneHandle | null>(null), socketRef = useRef<WebSocket | null>(null), projectInput = useRef<HTMLInputElement>(null), metricInput = useRef<HTMLInputElement>(null), csvInput = useRef<HTMLInputElement>(null), toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [history, setHistory] = useState<GraphHistory>({ past: [], future: [] });
+  const sceneRef = useRef<SceneHandle | null>(null), projectInput = useRef<HTMLInputElement>(null), metricInput = useRef<HTMLInputElement>(null), csvInput = useRef<HTMLInputElement>(null);
   const analysis = useMemo(() => analyze(graph), [graph]), runtimeAlerts = useMemo(() => diagnoseMetrics(metrics, config.patience), [metrics, config.patience]);
   const diagnostics = [...analysis.diagnostics, ...runtimeAlerts], node = graph.nodes.find(n => n.id === selected), nodeInfo = selected ? analysis.layers[selected] : undefined;
   const last = metrics.at(-1), errors = analysis.diagnostics.filter(d => d.level === 'error').length, warnings = diagnostics.filter(d => d.level === 'warning').length;
   const sequenceLayout = graph.nodes.some(n => n.op === 'Input' && Array.isArray(n.params.shape) && n.params.shape.length === 3);
-  const notify = useCallback((text: string) => { setToast(text); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), 4000); }, []);
   const sceneReady = useCallback((handle: SceneHandle) => { sceneRef.current = handle; setSceneLoaded(true); }, []);
   useEffect(() => { if (view === 'graph') { sceneRef.current = null; setSceneLoaded(false); } }, [view]);
   const gpuReady = useCallback((name: string) => setGpu(name), []);
-  useEffect(() => { localStorage.setItem('tensorlab-project', JSON.stringify(graph)); }, [graph]);
   useEffect(() => { if (!selectedHead) return; const layer = graph.nodes.find(n => n.id === selectedHead.nodeId); if (!layer || !isAttention(layer.op)) setSelectedHead(null); else if (selectedHead.index >= visualHeadCount(layer)) setSelectedHead({ nodeId: layer.id, index: visualHeadCount(layer) - 1 }); }, [graph, selectedHead]);
-  useEffect(() => { const check = () => fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject()).then(h => setBackend({ online: true, ...h })).catch(() => setBackend({ online: false, torch: false, cuda: false })); check(); const timer = setInterval(check, 15000); return () => { clearInterval(timer); const ws = socketRef.current; socketRef.current = null; ws?.close(); }; }, []);
-  const commit = useCallback((g: Graph) => { if (training) { notify('训练期间请先停止训练再修改模型'); return; } setHistory(previous => recordHistory(previous, graph)); setGraph(g); setMetrics([]); setTrainStatus('未开始'); }, [graph, training, notify]);
-  const undo = useCallback(() => { if (training) return; const step = undoHistory(history, graph); if (!step.graph) return; setHistory(step.history); setGraph(step.graph); setMetrics([]); setTrainStatus('未开始'); }, [graph, history, training]);
-  const redo = useCallback(() => { if (training) return; const step = redoHistory(history, graph); if (!step.graph) return; setHistory(step.history); setGraph(step.graph); setMetrics([]); setTrainStatus('未开始'); }, [graph, history, training]);
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (training || event.defaultPrevented || event.isComposing) return;
-      const target = event.target as HTMLElement | null;
-      if (target?.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(target?.tagName ?? '')) return;
-      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-      if (event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
-      else if (event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [redo, training, undo]);
+  useEffect(() => { const check = () => fetch('/api/health').then(r => r.ok ? r.json() : Promise.reject()).then(h => setBackend({ online: true, ...h })).catch(() => setBackend({ online: false, torch: false, cuda: false })); check(); const timer = setInterval(check, 15000); return () => clearInterval(timer); }, []);
   const selectLayer = (id: string | null) => { setSelected(id); setSelectedHead(null); setSelectedProjection(null); };
   const selectProjection = (nodeId: string, port: string) => { setSelected(nodeId); setSelectedHead(null); setSelectedProjection({ nodeId, port }); setInspectorTab('params'); };
   useEffect(() => { if (selectedProjection) { const layer = graph.nodes.find(n => n.id === selectedProjection.nodeId); if (!layer || !projectionPorts(layer).some(p => p.id === selectedProjection.port)) setSelectedProjection(null); } }, [graph, selectedProjection]);
@@ -152,38 +138,17 @@ export default function App() {
     if (file.size > 2e6) throw new Error('指标文件不能超过 2 MB'); const content = await file.text();
     const records = file.name.endsWith('.json') ? JSON.parse(content) : content.trim().split(/\r?\n/).slice(1).map(line => { const [epoch, trainLoss, valLoss, accuracy, gradNorm] = line.split(',').map(Number); return { epoch, trainLoss, valLoss, accuracy, gradNorm }; });
     if (!Array.isArray(records) || !records.length || records.length > 10000 || records.some(m => !['epoch', 'trainLoss', 'valLoss', 'accuracy', 'gradNorm'].every(k => typeof m[k] === 'number') || !Number.isInteger(m.epoch) || m.epoch < 1)) throw new Error('需要 epoch,trainLoss,valLoss,accuracy,gradNorm 五列指标');
-    setMetrics(records.map(m => ({ ...m, source: 'import' }))); setTrainStatus('指标已导入'); notify('训练指标已导入');
+    applyImportedMetrics(records.map(m => ({ ...m, source: 'import' }))); notify('训练指标已导入');
   } catch (e) { notify((e as Error).message); } };
   const runDemo = () => { if (training) return; const data = Array.from({ length: 30 }, (_, i): Metric => {
     const epoch = i + 1, trainLoss = demoScenario === 'plateau' ? 1.48 + Math.sin(i) * 0.008 : 1.8 * Math.exp(-i * 0.085) + 0.08;
     return { epoch, trainLoss, valLoss: demoScenario === 'overfit' ? 1.8 * Math.exp(-Math.min(i, 11) * 0.07) + 0.13 + Math.max(0, i - 11) * 0.035 : demoScenario === 'plateau' ? 1.55 + Math.sin(i * 0.8) * 0.01 : trainLoss * 1.12 + 0.03, accuracy: demoScenario === 'plateau' ? 0.32 : Math.min(0.96, 0.3 + i * 0.021), gradNorm: 0.8 * Math.exp(-i * 0.03), source: 'demo' };
-  }); setMetrics(data); setTrainStatus('演示完成'); setInspectorTab('alerts'); };
+  }); setMetrics(data); finishDemo(); setInspectorTab('alerts'); };
   useEffect(() => { if (modal !== 'training') setEnvironmentOpen(false); }, [modal]);
   const startTraining = () => {
-    if (training || socketRef.current || environmentRequests > 0 || inferenceBusy) return;
-    if (!analysis.valid) return notify('模型结构存在错误，请先修复');
-    if (!backend.torch) return notify('真实训练需要 Python 服务与 PyTorch，运行 install.ps1 -Training');
-    if (config.dataset === 'csv' && !config.csv) return notify('请先选择 CSV 数据集');
-    setModal(null); setMetrics([]); setTrainedResult(null); setTraining(true); setTrainStatus('准备数据');
-    const graphKey = computationKey(graph);
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/train`); socketRef.current = ws;
-    let terminal = false;
-    ws.onopen = () => { if (socketRef.current === ws) ws.send(JSON.stringify({ graph, config })); };
-    ws.onmessage = event => {
-      if (socketRef.current !== ws || terminal) return;
-      const message = JSON.parse(event.data);
-      if (message.type === 'metric') { setMetrics(m => [...m, message.metric]); setTrainStatus(`训练中 · ${message.device}`); }
-      else if (message.type === 'done') {
-        terminal = true; socketRef.current = null; setTraining(false);
-        if (message.model && ['completed', 'early_stopping'].includes(message.reason)) setTrainedResult({ graphKey, metadata: message.model });
-        setTrainStatus(message.reason === 'early_stopping' ? '早停完成' : message.reason === 'stopped' ? '已停止' : '训练完成');
-        notify(message.retentionWarning || (message.model ? '训练权重已保留，可在张量观测中推理' : '训练已结束')); ws.close();
-      } else if (message.type === 'error') { terminal = true; socketRef.current = null; setTraining(false); setTrainStatus('训练失败'); notify(message.message); ws.close(); }
-    };
-    ws.onerror = () => { if (socketRef.current !== ws || terminal) return; terminal = true; socketRef.current = null; setTraining(false); setTrainStatus('连接失败'); notify('训练服务连接失败，请检查 Python 服务'); ws.close(); };
-    ws.onclose = () => { if (socketRef.current !== ws) return; socketRef.current = null; setTraining(false); if (!terminal) { setTrainStatus('连接中断 · 未收到训练结果'); notify('训练连接中断，未确认本次模型权重'); } };
+    if (training || environmentRequests > 0 || inferenceBusy) return;
+    if (runTraining({ graph, config, valid: analysis.valid, ready: backend.torch, blocked: environmentRequests > 0 || inferenceBusy })) setModal(null);
   };
-  const stopTraining = () => { const ws = socketRef.current; if (!ws) return; if (ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: 'stop' })); setTrainStatus('正在停止'); } else ws.close(); };
   const capture = async (svg = false) => { if (!sceneRef.current) return notify('请切换到三维视图后导出'); setExporting(true); try { if (svg) download(sceneRef.current.svg(imageOptions, imageSize), `${safeFilename(graph.name)}.svg`, 'image/svg+xml'); else download(await sceneRef.current.capture(imageSize, transparent, imageOptions), `${safeFilename(graph.name)}-${imageSize}.png`); notify('图片已导出'); setModal(null); } catch (e) { notify((e as Error).message); } finally { setExporting(false); } };
   const projectionEditor = node && isAttention(node.op) && <div className="projection-editor">
     <label className="field-label">Q/K/V 对象<select aria-label="Q/K/V 对象" value={selectedProjection?.nodeId === node.id ? selectedProjection.port : ''} onChange={e => e.target.value ? selectProjection(node.id, e.target.value) : setSelectedProjection(null)}><option value="">选择 Q/K/V</option>{projectionPorts(node).map(p => <option key={p.id} value={p.id}>{p.label}</option>)}</select></label>
@@ -200,7 +165,7 @@ export default function App() {
       <div className="scene-workspace" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const op = e.dataTransfer.getData('application/tensorlab-layer'); if (OPS.includes(op as Op)) addLayer(op as Op); }}>
         <div className="scene-heading"><span className="eyebrow">ARCHITECTURE / {view === '3d' ? '3D' : 'GRAPH'}</span><h1>{graph.name || 'Untitled model'}</h1><div className="architecture-meta"><span>{graph.nodes.length} 层</span><i /><span>{formatNumber(analysis.parameters)} 参数</span><i /><span>{sequenceLayout ? 'BSE' : 'NCHW'}</span></div></div>
         <div className={`validation-badge ${errors ? 'error' : 'success'}`}><span className="status-dot" />{errors ? `${errors} 个结构错误` : '形状校验通过'}</div>
-        {view === '3d' ? <Scene graph={graph} analysis={analysis} selected={selected} onSelect={selectLayer} selectedHead={selectedHead?.nodeId === selected ? selectedHead?.index ?? null : null} selectedProjection={selectedProjection?.nodeId === selected ? selectedProjection.port : null} onSelectProjection={selectProjection} onSelectHead={(nodeId, index) => { setSelected(nodeId); setSelectedProjection(null); setSelectedHead({ nodeId, index }); setInspectorTab('params'); }} rotating={rotating} playing={playing} direction={direction} speed={speed} expanded={expanded} diagnostics={diagnostics} onReady={sceneReady} onGpu={gpuReady} /> : <Topology graph={graph} analysis={analysis} selected={selected} onSelect={selectLayer} onChange={commit} onConnect={connect} onAddObject={op => addLayer(op, true)} onRemoveSelected={deleteNode} disabled={training} />}
+        {view === '3d' ? <SceneView graph={graph} analysis={analysis} selected={selected} onSelect={selectLayer} selectedHead={selectedHead?.nodeId === selected ? selectedHead?.index ?? null : null} selectedProjection={selectedProjection?.nodeId === selected ? selectedProjection.port : null} onSelectProjection={selectProjection} onSelectHead={(nodeId, index) => { setSelected(nodeId); setSelectedProjection(null); setSelectedHead({ nodeId, index }); setInspectorTab('params'); }} rotating={rotating} playing={playing} direction={direction} speed={speed} expanded={expanded} diagnostics={diagnostics} onReady={sceneReady} onGpu={gpuReady} /> : <TopologyView graph={graph} analysis={analysis} selected={selected} onSelect={selectLayer} onChange={commit} onConnect={connect} onAddObject={op => addLayer(op, true)} onRemoveSelected={deleteNode} disabled={training} />}
         {view === '3d' && <><div className="scene-legend">{(sequenceLayout ? [['#319cac', 'Q'], ['#d6a13d', 'K'], ['#a17cbb', 'V'], ['#36a18a', '汇合'], [COLORS.Add, '残差']] : [['Conv2d', '卷积'], ['Linear', '全连接'], ['MaxPool2d', '池化'], ['ReLU', '激活'], ['BatchNorm2d', '归一化'], ...(graph.nodes.some(n => n.op === 'Add') ? [['Add', '残差']] : [])]).map(([color, name]) => <span key={color}><i style={{ background: sequenceLayout ? color : COLORS[color as Op] }} />{name}</span>)}</div><div className="flow-controls"><IconButton title={playing ? '暂停数据流' : '播放数据流'} onClick={() => setPlaying(!playing)}>{playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}</IconButton><div className="flow-direction"><button className={direction === 'forward' ? 'active' : ''} onClick={() => setDirection('forward')}><ArrowRight size={14} />前向</button><button className={direction === 'backward' ? 'active' : ''} onClick={() => setDirection('backward')}><ArrowLeft size={14} />反向</button></div><span className="toolbar-separator" /><select value={speed} aria-label="动画速度" onChange={e => setSpeed(Number(e.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={3}>3×</option></select><span className="flow-label">数据流模拟</span></div><div className="gpu-badge" title={gpu}><Cpu size={12} /><span>{/swiftshader|software|llvmpipe/i.test(gpu) ? '软件渲染' : 'WebGL 2 · GPU'}</span></div></>}
       </div>
       <section className="monitor"><div className="monitor-header"><div className="monitor-title"><Activity size={16} /><h2>训练监控</h2><span className={`source-badge ${last?.source === 'demo' ? 'demo' : ''}`}>{last?.source === 'demo' ? '演示数据' : last?.source === 'training' ? '真实训练' : last?.source === 'import' ? '导入指标' : '待运行'}</span></div><div className="monitor-actions"><select aria-label="演示场景" value={demoScenario} onChange={e => setDemoScenario(e.target.value)}><option value="overfit">过拟合场景</option><option value="plateau">不收敛场景</option><option value="healthy">正常收敛场景</option></select><button className="button text-button" onClick={runDemo} disabled={training}><Play size={13} />演示</button><IconButton title="导入训练指标" disabled={training} onClick={() => metricInput.current?.click()}><Upload size={15} /></IconButton><IconButton title="导出训练指标" disabled={!metrics.length} onClick={() => download(JSON.stringify(metrics, null, 2), 'training-metrics.json', 'application/json')}><Download size={15} /></IconButton><button className={`button ${training ? 'danger' : 'primary'}`} onClick={() => training ? stopTraining() : setModal('training')}>{training ? <Square size={12} /> : <Play size={12} />}{training ? '停止' : '训练'}</button></div></div><div className="monitor-body"><div className="chart-wrap"><div className="chart-legend"><span><i className="train-color" />训练损失</span><span><i className="val-color" />验证损失</span><span className="train-status">{trainStatus}</span></div><LossChart metrics={metrics} /></div><div className="metric-grid"><div><span>当前轮次</span><strong>{last ? `${last.epoch}` : '—'}<small> / {last?.source === 'training' ? config.epochs : 30}</small></strong></div><div><span>训练损失</span><strong>{last?.trainLoss.toFixed(4) || '—'}</strong></div><div><span>验证准确率</span><strong>{last ? `${(last.accuracy * 100).toFixed(1)}` : '—'}<small>{last ? '%' : ''}</small></strong></div><div><span>梯度范数</span><strong>{last?.gradNorm.toFixed(3) || '—'}</strong></div></div></div></section>

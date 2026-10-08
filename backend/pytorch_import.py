@@ -306,7 +306,7 @@ class Parser:
         if kind in ("Conv1d", "Conv2d", "Conv3d"):
             self.require(args, {"dilation": 1, "groups": 1, "bias": True, "padding_mode": "zeros"}, expression)
             expected = args["in_channels"]
-            dims = int(kind[-2]); params = {key: self.spatial_value(args[key], dims, expression, args["kernel_size"] if key == "stride" and args[key] is None else None) for key in ("out_channels", "kernel_size", "stride", "padding")}
+            dims = int(kind[-2]); params = {key: self.spatial_value(args[key], dims, expression, args["kernel_size"] if key == "stride" and args[key] is None else None, key == "padding") for key in ("out_channels", "kernel_size", "stride", "padding")}
         elif kind in ("ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d"):
             self.require(args, {"dilation": 1, "groups": 1, "bias": True, "padding_mode": "zeros"}, expression)
             expected = args["in_channels"]
@@ -330,8 +330,10 @@ class Parser:
             self.require(args, {"dilation": 1, "return_indices": False, "ceil_mode": False}, expression)
             dims = int(kind[-2]); params = {"kernel_size": self.spatial_value(args["kernel_size"], dims, expression), "stride": self.spatial_value(args["stride"], dims, expression, args["kernel_size"]), "padding": self.spatial_value(args["padding"], dims, expression, 0, True)}
         elif kind.startswith("AvgPool"):
+            self.require(args, {"ceil_mode": False, "count_include_pad": True, "divisor_override": None}, expression)
             dims = int(kind[-2]); params = {"kernel_size": self.spatial_value(args["kernel_size"], dims, expression), "stride": self.spatial_value(args["stride"], dims, expression, args["kernel_size"]), "padding": self.spatial_value(args["padding"], dims, expression, 0, True)}
         elif kind.startswith("Adaptive"):
+            if kind.startswith("AdaptiveMaxPool"): self.require(args, {"return_indices": False}, expression)
             dims = int(kind[-2]); params = {"output_size": args["output_size"] if isinstance(args["output_size"], int) else [self.spatial_value(args["output_size"], dims, expression)] * dims}
         elif kind == "Flatten": self.require(args, {"start_dim": 1, "end_dim": -1}, expression)
         elif kind in ("ReLU", "SiLU", "SELU", "Hardsigmoid", "Hardswish", "Mish", "LeakyReLU", "ELU", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"):
