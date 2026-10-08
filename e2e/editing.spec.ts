@@ -1,14 +1,34 @@
 import { test, expect, type Page } from '@playwright/test';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+
+type SvgWindow = Window & { focusSvg?: Promise<string> };
+
+test.beforeEach(async ({ page }) => {
+  // Focus checks need the exported coordinates, not Edge's native download UI.
+  // Real SVG/PNG downloads are covered separately in imageExport.spec.ts.
+  await page.addInitScript(() => {
+    const createObjectURL = URL.createObjectURL, click = HTMLAnchorElement.prototype.click;
+    const blobs = new Map<string, Blob>();
+    URL.createObjectURL = function(blob) {
+      const url = createObjectURL.call(this, blob);
+      if (blob instanceof Blob) blobs.set(url, blob);
+      return url;
+    };
+    HTMLAnchorElement.prototype.click = function() {
+      const blob = blobs.get(this.href);
+      if (!this.download.endsWith('.svg') || !blob) return click.call(this);
+      (window as SvgWindow).focusSvg = blob.text();
+    };
+  });
+});
 
 async function exportSvg(page: Page) {
+  await page.evaluate(() => { delete (window as SvgWindow).focusSvg; });
   await page.getByRole('button', { name: '导出图像', exact: true }).click();
   await page.getByLabel('图像布局').selectOption('current');
-  const event = page.waitForEvent('download');
   await page.getByRole('button', { name: 'SVG 矢量图', exact: true }).click();
-  const stream = await (await event).createReadStream(), chunks: Buffer[] = [];
-  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
+  await page.waitForFunction(() => !!(window as SvgWindow).focusSvg);
+  return page.evaluate(() => (window as SvgWindow).focusSvg!);
 }
 
 async function anchor(page: Page, svg: string, selector: string) {
@@ -28,21 +48,26 @@ async function clickAndCheckCenter(page: Page, selector: string, op?: string) {
   expect(Math.abs(after.y - after.height / 2), `${selector} should be centered vertically`).toBeLessThan(3);
 }
 
-test('Every layer click centers the camera, including Add and attention submodules', async ({ page }) => {
-  test.setTimeout(120000);
+const focusCases: [string, string[][]][] = [
+  ['cnn', [['layer_0', 'Input'], ['layer_1', 'Conv2d'], ['layer_2', 'BatchNorm2d'], ['layer_3', 'ReLU'], ['layer_4', 'MaxPool2d'], ['layer_7', 'AdaptiveAvgPool2d'], ['layer_8', 'Flatten'], ['layer_9', 'Linear'], ['layer_10', 'Output']]],
+  ['mlp', [['layer_3', 'Dropout'], ['layer_5', 'GELU']]],
+  ['residual', [['layer_5', 'Add']]]
+];
+
+for (const [preset, entries] of focusCases) for (const [id, op] of entries) test(`centers ${preset} ${id} (${op}) when clicked`, async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
   await page.goto('/');
-  for (const [preset, entries] of [
-    ['cnn', [['layer_0', 'Input'], ['layer_1', 'Conv2d'], ['layer_2', 'BatchNorm2d'], ['layer_3', 'ReLU'], ['layer_4', 'MaxPool2d'], ['layer_7', 'AdaptiveAvgPool2d'], ['layer_8', 'Flatten'], ['layer_9', 'Linear'], ['layer_10', 'Output']]],
-    ['mlp', [['layer_3', 'Dropout'], ['layer_5', 'GELU']]],
-    ['residual', [['layer_5', 'Add']]]
-  ] as [string, string[][]][]) {
-    await page.getByLabel('模型模板').selectOption(preset);
-    for (const [id, op] of entries) {
-      await page.getByRole('button', { name: '重置视角', exact: true }).click();
-      await clickAndCheckCenter(page, `g[data-node-id="${id}"]`, op);
-    }
-  }
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  await page.getByLabel('模型模板').selectOption(preset);
+  await page.getByRole('button', { name: '重置视角', exact: true }).click();
+  await clickAndCheckCenter(page, `g[data-node-id="${id}"]`, op);
+  expect(errors).toEqual([]);
+});
+
+for (const part of ['b0:q0', 'b0:k0', 'b0:v0', 'b0:q1', 'b0:q2', 'b0:q3', 'FFN', 'Concat · Wᵒ', 'Add1', 'Add2', 'LN1', 'LN2', 'scores-0', 'weighted-0', 'input', 'head-input', 'head-output']) test(`centers attention ${part} when clicked`, async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
   await page.getByLabel('模型模板').selectOption('transformer');
   await page.getByRole('button', { name: '拓扑图', exact: true }).click();
   await page.locator('.react-flow__node[data-id="layer_1"]').click();
@@ -51,17 +76,19 @@ test('Every layer click centers the camera, including Add and attention submodul
   await page.getByLabel('num_heads', { exact: true }).fill('4');
   await page.getByRole('button', { name: '三维视图', exact: true }).click();
   await page.getByRole('button', { name: '聚焦选中层', exact: true }).click();
-  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
   const svg = await exportSvg(page);
   expect(svg).toContain('data-sides="6"');
   for (const label of ['Q1', 'Q2', 'Q3', 'Q4', 'K1', 'V1']) expect(svg).toContain(`>${label}</text>`);
-  mkdirSync('artifacts', { recursive: true });
-  await page.screenshot({ path: 'artifacts/transformer-hexagon.png' });
-  for (const part of ['FFN', 'b0:q0', 'b0:k0', 'b0:v0', 'b0:q1', 'b0:q2', 'b0:q3', 'Concat · Wᵒ', 'Add1', 'Add2', 'LN1', 'LN2', 'scores-0', 'weighted-0', 'input', 'head-input', 'head-output']) {
-    await page.getByRole('button', { name: '聚焦选中层', exact: true }).click();
-    await clickAndCheckCenter(page, `g[data-node-id="layer_1"] polygon[data-part="${part}"]`);
-  }
-  // A saved project can also expose Concat and standalone attention as ordinary selectable modules.
+  await page.getByRole('button', { name: '聚焦选中层', exact: true }).click();
+  await clickAndCheckCenter(page, `g[data-node-id="layer_1"] polygon[data-part="${part}"]`);
+  expect(errors).toEqual([]);
+});
+
+test('centers an imported Concat when clicked', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  // A saved project can also expose Concat as an ordinary selectable module.
   const project = { version: 1, name: 'Concat focus', nodes: [
     { id: 'input', name: 'input', op: 'Input', params: { shape: [1, 16] }, position: { x: 0, y: 100 } },
     { id: 'a', name: 'a', op: 'ReLU', params: {}, position: { x: 210, y: 100 } },
@@ -75,7 +102,7 @@ test('Every layer click centers the camera, including Add and attention submodul
   expect(errors).toEqual([]);
 });
 
-test('Input/output objects and free connections report and recover from structural errors', async ({ page, request }) => {
+test('Input/output objects and free connections report and recover from structural errors', async ({ page, request }, testInfo) => {
   await page.goto('/'); await page.getByLabel('模型模板').selectOption('mlp');
   await page.getByRole('button', { name: '拓扑图', exact: true }).click();
   await page.getByRole('button', { name: '添加输入对象', exact: true }).click();
@@ -114,6 +141,7 @@ test('Input/output objects and free connections report and recover from structur
   await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
   const graph = await page.evaluate(() => JSON.parse(localStorage.getItem('tensorlab-project')!));
   expect((await request.post('/api/analyze', { data: graph })).ok()).toBe(true);
-  await page.screenshot({ path: 'artifacts/free-connections.png' });
-  expect(readFileSync('artifacts/free-connections.png').length).toBeGreaterThan(10000);
+  const screenshot = testInfo.outputPath('free-connections.png');
+  await page.screenshot({ path: screenshot });
+  expect(readFileSync(screenshot).length).toBeGreaterThan(10000);
 });
