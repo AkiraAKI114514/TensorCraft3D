@@ -68,7 +68,10 @@ jobs:
     name: Windows startup and browser checks
     runs-on: windows-latest
     needs: frontend
-    timeout-minutes: 25
+    # The Edge regressions take about 23 minutes on a hosted Windows runner, so the previous
+    # 25-minute cap left no headroom and the job was killed mid-run instead of reporting a
+    # result. The cap is raised so a slow runner finishes rather than being cancelled.
+    timeout-minutes: 40
     env:
       CUDA_VISIBLE_DEVICES: '-1'
       PYTHONUNBUFFERED: '1'
