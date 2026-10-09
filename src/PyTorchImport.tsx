@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { CheckCircle2, Code2, LoaderCircle, Upload, X } from 'lucide-react';
 import { analyze, formatNumber, shapeText, validateGraph } from './analysis';
+import { autoGroup } from './grouping';
 import type { Graph } from './types';
 import { useI18n } from './i18n';
 
@@ -17,6 +18,7 @@ export default function PyTorchImport({ online, disabled, onClose, onImport }: {
   const { t } = useI18n();
   const [source, setSource] = useState(''), [filename, setFilename] = useState(''), [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null), [model, setModel] = useState('');
+  const [autoGroupEnabled, setAutoGroupEnabled] = useState(true), [groupCount, setGroupCount] = useState(0);
   const [activeLine, setActiveLine] = useState<number | null>(null);
   const [shapes, setShapes] = useState<Record<string, string>>({}), [error, setError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null), requestId = useRef(0);
@@ -49,6 +51,15 @@ export default function PyTorchImport({ online, disabled, onClose, onImport }: {
       if (!Array.isArray(next.models) || !Array.isArray(next.diagnostics)) throw new Error('解析服务响应无效，请重启 Python 服务');
       if (next.graph) {
         next.graph = validateGraph(next.graph);
+        // 导入时按结构识别重复块：大模型一进来就是少数几个块，而不是几百个扁平算子。
+        // 失败就退回未分组的图，导入本身不能因为分组而不成立。
+        if (autoGroupEnabled) {
+          try {
+            const grouped = autoGroup(next.graph);
+            if (grouped.groups) { next.graph = validateGraph(grouped.graph); setGroupCount(grouped.groups); }
+            else setGroupCount(0);
+          } catch { setGroupCount(0); }
+        } else setGroupCount(0);
         const check = analyze(next.graph);
         if (!check.valid) throw new Error(`模型校验失败：${check.diagnostics.find(d => d.level === 'error')?.message}`);
       }
@@ -71,7 +82,7 @@ export default function PyTorchImport({ online, disabled, onClose, onImport }: {
       {!online && <div className="diagnostic-item error">{t('Python 服务未连接，请先运行 start.ps1。代码解析无需安装 PyTorch。')}</div>}
       {error && <div role="alert" className="diagnostic-item error">{t(error)}</div>}
       {result?.diagnostics.map((d, i) => <button key={i} type="button" role={d.level === 'error' ? 'alert' : undefined} className={`diagnostic-item ${d.level}`} onClick={() => jumpToLine(d.line)}><div><strong>{d.line ? t('第 {line} 行{column} · ', { line: d.line, column: d.column ? t(' · 第 {column} 列', { column: d.column }) : '' }) : ''}{d.code}</strong><p>{t(d.message)}</p></div></button>)}
-      {result?.graph && preview && <div className="import-preview"><div className="import-section-title"><CheckCircle2 size={14} />{t('解析通过')}<small>{result.graph.nodes.length} {t('个节点 ·')}{result.graph.edges.length} {t('条连接 ·')}{formatNumber(preview.parameters)} {t('参数')}</small></div><div className="import-preview-scroll"><table><thead><tr><th>{t('层名称')}</th><th>{t('类型')}</th><th>{t('输出形状')}</th></tr></thead><tbody>{result.graph.nodes.map(n => <tr key={n.id}><td>{n.name}</td><td>{n.op}</td><td>{shapeText(preview.layers[n.id]?.output)}</td></tr>)}</tbody></table></div></div>}
+      {result?.graph && preview && <div className="import-preview"><div className="import-section-title"><CheckCircle2 size={14} />{t('解析通过')}<small>{result.graph.nodes.length} {t('个节点 ·')}{result.graph.edges.length} {t('条连接 ·')}{formatNumber(preview.parameters)} {t('参数')}</small></div><label className="checkbox-label"><input type="checkbox" checked={autoGroupEnabled} disabled={busy} onChange={e => { setAutoGroupEnabled(e.target.checked); invalidate(); }} />{t('自动识别重复结构块')}{groupCount > 0 && <small>{t('已识别 {count} 个块', { count: groupCount })}</small>}</label><div className="import-preview-scroll"><table><thead><tr><th>{t('层名称')}</th><th>{t('类型')}</th><th>{t('输出形状')}</th></tr></thead><tbody>{result.graph.nodes.map(n => <tr key={n.id}><td>{n.name}</td><td>{n.op}</td><td>{shapeText(preview.layers[n.id]?.output)}</td></tr>)}</tbody></table></div></div>}
       <details className="import-support"><summary>{t('支持范围与导入方式')}</summary><p>{t('支持 Sequential、静态 nn.Module、嵌套模块、ModuleDict/ModuleList、残差相加、cat、展平、Conv/ConvTranspose、Linear/Bilinear、Norm、Pool、Dropout、Embedding、Upsample、常用激活、MultiheadAttention、TransformerEncoder、固定位置编码、Slice 和 Select。注意力输入使用 batch_first=True。')}</p><p>{t('只静态解析结构，不执行上传代码；权重和训练脚本不会导入。常量缓冲区保留实际 FP32 数值；切片和位置编码需要明确输入形状。高级索引、batch 轴切片、动态控制流、权重共享、掩码、未知算子或不兼容参数会报出源码位置。可重新导入 TensorCraft3D 导出的 Python。')}</p></details>
       <div className="modal-footer"><button className="button subtle" disabled={busy || !source.trim() || !online || disabled} onClick={() => void parse()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Code2 size={15} />}{busy ? t('正在解析') : t('解析代码')}</button><button className="button primary" disabled={busy || !result?.graph || disabled} onClick={() => { if (result?.graph) onImport(result.graph); }}><CheckCircle2 size={15} />{t('导入模型')}</button></div>
     </div>
