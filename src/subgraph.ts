@@ -81,3 +81,46 @@ export function expandGraph(graph: Graph): Graph {
 
 /** 子图实例在图里没有自己的算子语义，参数面板和导出都要按哨兵跳过。 */
 export const isGroupNode = (layer: Layer) => isGroup(layer);
+
+/**
+ * 沿下钻路径取出当前层级的图。
+ *
+ * 子图定义本身就是一张合法的 Graph（有 Input/Output 形状的算子、有边），所以视图
+ * 可以直接把它当图来分析和渲染——下钻不需要第二套渲染路径。
+ */
+export function graphAt(graph: Graph, path: string[]): Graph {
+  let current = graph;
+  for (const name of path) {
+    const def = current.subgraphs?.[name];
+    if (!def) throw new SubgraphError(`下钻路径中的子图 ${name} 不存在`);
+    current = { version: 1, name: def.name, nodes: def.nodes, edges: def.edges, subgraphs: current.subgraphs };
+  }
+  return current;
+}
+
+/** 把当前层级的图写回它在原图中的位置。这是下钻编辑能落盘的关键。 */
+export function replaceGraphAt(graph: Graph, path: string[], next: Graph): Graph {
+  if (!path.length) return { ...next, subgraphs: next.subgraphs ?? graph.subgraphs };
+  const [head, ...rest] = path;
+  const definitions = graph.subgraphs ?? {};
+  const def = definitions[head];
+  if (!def) throw new SubgraphError(`下钻路径中的子图 ${head} 不存在`);
+  const replaced = replaceGraphAt({ version: 1, name: def.name, nodes: def.nodes, edges: def.edges, subgraphs: definitions }, rest, next);
+  return {
+    ...graph,
+    subgraphs: { ...definitions, [head]: { ...def, nodes: replaced.nodes, edges: replaced.edges } },
+  };
+}
+
+/** 面包屑：从根到当前层级的可读名称。 */
+export function breadcrumb(graph: Graph, path: string[]): { name: string; label: string }[] {
+  const trail: { name: string; label: string }[] = [{ name: '', label: graph.name }];
+  let current: Graph = graph;
+  for (const name of path) {
+    const def = current.subgraphs?.[name];
+    if (!def) break;
+    trail.push({ name, label: def.name });
+    current = { version: 1, name: def.name, nodes: def.nodes, edges: def.edges, subgraphs: current.subgraphs };
+  }
+  return trail;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyze, validateGraph } from './analysis';
-import { expandGraph, topLevelId, SubgraphError } from './subgraph';
+import { breadcrumb, expandGraph, graphAt, replaceGraphAt, topLevelId, SubgraphError } from './subgraph';
 import type { Edge, Graph, Layer, SubgraphDef } from './types';
 
 const node = (id: string, op: Layer['op'], params: Layer['params'] = {}, extra: Partial<Layer> = {}): Layer =>
@@ -144,5 +144,67 @@ describe('expandGraph guards', () => {
   it('throws a typed error for a missing definition', () => {
     const graph: Graph = { ...grouped(), nodes: [node('i', 'Input', { shape: [2, 4] }), node('g', 'Group', {}, { subgraph: 'ghost' }), node('o', 'Output')] };
     expect(() => expandGraph(graph)).toThrow(SubgraphError);
+  });
+});
+
+describe('drill-down addressing', () => {
+  it('returns the subgraph as a graph of its own', () => {
+    const level = graphAt(grouped(), ['block']);
+    expect(level.nodes.map(n => n.id).sort()).toEqual(['a', 'l']);
+    expect(level.edges).toHaveLength(1);
+  });
+
+  it('round-trips a level through replaceGraphAt unchanged', () => {
+    const graph = grouped();
+    const restored = replaceGraphAt(graph, ['block'], graphAt(graph, ['block']));
+    expect(restored.nodes).toEqual(graph.nodes);
+    expect(restored.edges).toEqual(graph.edges);
+    expect(restored.subgraphs!.block.nodes).toEqual(graph.subgraphs!.block.nodes);
+  });
+
+  it('writes an edit made at a level back into the owning definition', () => {
+    const graph = grouped();
+    const level = graphAt(graph, ['block']);
+    const edited = { ...level, nodes: [...level.nodes, node('extra', 'ReLU')] };
+    const merged = replaceGraphAt(graph, ['block'], edited);
+    // 外层图不受影响，改动只落在那个子图定义里。
+    expect(merged.nodes).toEqual(graph.nodes);
+    expect(merged.subgraphs!.block.nodes.map(n => n.id)).toContain('extra');
+  });
+
+  it('addresses a nested level through a two-step path', () => {
+    const inner: SubgraphDef = { id: 'inner', name: 'inner', origin: 'manual', nodes: [node('l', 'Linear', { out_features: 4 })], edges: [] };
+    const outer: SubgraphDef = { id: 'outer', name: 'outer', origin: 'manual', nodes: [node('x', 'Group', {}, { subgraph: 'inner' }), node('a', 'ReLU')], edges: [edge('x', 'a')] };
+    const nested: Graph = {
+      version: 1, name: 'nested',
+      nodes: [node('i', 'Input', { shape: [2, 4] }), node('g', 'Group', {}, { subgraph: 'outer' }), node('o', 'Output')],
+      edges: [edge('i', 'g'), edge('g', 'o')],
+      subgraphs: { inner, outer },
+    };
+    expect(graphAt(nested, ['outer']).nodes.map(n => n.id).sort()).toEqual(['a', 'x']);
+    expect(graphAt(nested, ['outer', 'inner']).nodes.map(n => n.id)).toEqual(['l']);
+  });
+
+  it('reports the trail from the root to the current level', () => {
+    const graph = grouped();
+    const trail = breadcrumb(graph, ['block']);
+    expect(trail[0].label).toBe(graph.name);
+    expect(trail[trail.length - 1].label).toBe('Linear + ReLU');
+    expect(breadcrumb(graph, [])).toHaveLength(1);
+  });
+
+  it('keeps the root accounting after an in-level edit', () => {
+    const graph = grouped(2);
+    const level = graphAt(graph, ['block']);
+    // 在块里加一个保形状的 Linear，参数账必须整体上移。
+    const edited = { ...level, nodes: [...level.nodes, node('l2', 'Linear', { out_features: 4 })], edges: [...level.edges, edge('a', 'l2')] };
+    const merged = replaceGraphAt(graph, ['block'], edited);
+    const before = analyze(graph).parameters, after = analyze(merged).parameters;
+    // 每个实例多一个 Linear(4x4+4)=20，共两个实例。
+    expect(after).toBe(before + 2 * 20);
+  });
+
+  it('rejects a path that does not exist', () => {
+    expect(() => graphAt(grouped(), ['ghost'])).toThrow(SubgraphError);
   });
 });
