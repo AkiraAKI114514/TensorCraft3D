@@ -104,7 +104,37 @@ jobs:
       - name: Check Windows startup entry points
         run: ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_startup.py -v
       - name: Run core browser regressions in Microsoft Edge
-        run: npm run test:e2e -- e2e/editing.spec.ts e2e/history.spec.ts e2e/importExamples.spec.ts e2e/inference.spec.ts e2e/attentionInference.spec.ts e2e/trainedInference.spec.ts e2e/language.spec.ts e2e/errorBoundary.spec.ts e2e/runtime.spec.ts e2e/imageExport.spec.ts
+        id: e2e
+        # Run the regressions, then report what failed in the job summary instead of stopping at
+        # "exit code 1". The summary is readable without downloading artifacts, which is what
+        # makes a Windows-only failure diagnosable from outside the runner.
+        continue-on-error: true
+        shell: bash
+        run: |
+          npm run test:e2e -- e2e/editing.spec.ts e2e/history.spec.ts e2e/importExamples.spec.ts e2e/inference.spec.ts e2e/attentionInference.spec.ts e2e/trainedInference.spec.ts e2e/language.spec.ts e2e/errorBoundary.spec.ts e2e/runtime.spec.ts e2e/imageExport.spec.ts 2>&1 | tee e2e-output.txt
+          exit "${PIPESTATUS[0]}"
+      - name: Summarize browser failures
+        if: steps.e2e.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo '## Edge regression failures'
+            echo '### Failing tests'
+            echo '```'
+            grep -oE '^[[:space:]]+[0-9]+\) .*' e2e-output.txt | head -40 || true
+            echo '```'
+            echo '### Totals'
+            echo '```'
+            grep -E '^[[:space:]]+[0-9]+ (passed|failed|flaky)' e2e-output.txt | tail -5 || true
+            echo '```'
+            echo '### First error'
+            echo '```'
+            grep -B 2 -A 25 -m 1 'Error:' e2e-output.txt | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail the job when regressions failed
+        if: steps.e2e.outcome == 'failure'
+        run: exit 1
       - name: Upload browser failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
