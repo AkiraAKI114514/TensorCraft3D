@@ -199,7 +199,7 @@ function World(props: Props) {
     <OrbitControls ref={controls} makeDefault enableDamping={false} minZoom={1.5} maxZoom={180} />
     {routes.map(route => {
       const flow = { start: route.start, end: route.end, control1: route.control1, control2: route.control2 };
-      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? '#7095a6' : '#e26969'} /><ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} /></>}</group>;
+      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? '#7095a6' : '#e26969'} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
     })}
     {props.graph.nodes.map(n => {
       const pos = positions[n.id], dims = contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded);
