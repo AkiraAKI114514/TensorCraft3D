@@ -1,5 +1,5 @@
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer, type Edge } from './types';
@@ -78,8 +78,35 @@ function NodeOutline({ dims, color }: { dims: [number, number, number]; color: s
   return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={0.85} /></lineSegments>;
 }
 
+// 每节点一个 <Html> 标签是最重的成本：它们不受 three.js 视锥剔除约束，节点一多就
+// 全是常驻 DOM。按缩放分三档，远景只留骨架，这是「低缩放聚合」的渲染侧。
+type Detail = 'far' | 'mid' | 'near';
+const DETAIL_THRESHOLDS: [number, number] = [16, 42];
+
+function useDetailTier(): Detail {
+  const camera = useThree(state => state.camera);
+  const [tier, setTier] = useState<Detail>('near');
+  // 分档必须量化：useFrame 每帧都跑，而缩放值在拖拽时每帧都变，
+  // 直接 setState 会让整个场景每帧重渲染。
+  useFrame(() => {
+    const zoom = (camera as THREE.OrthographicCamera).zoom;
+    const next: Detail = zoom < DETAIL_THRESHOLDS[0] ? 'far' : zoom < DETAIL_THRESHOLDS[1] ? 'mid' : 'near';
+    setTier(current => (current === next ? current : next));
+  });
+  return tier;
+}
+
+/** 远景只标注骨架：结构块、输入输出和当前选中项，其余算子的标签不建立 DOM。 */
+function labelVisible(node: Layer, tier: Detail, selectedId: string | null, hovered: string | null): boolean {
+  if (tier === 'near') return true;
+  if (node.op === 'Group' || node.op === 'Input' || node.op === 'Output') return true;
+  if (node.id === selectedId || node.id === hovered) return true;
+  return tier === 'mid' && repeatOf(node) > 1;
+}
+
 function World(props: Props) {
   const { gl, camera, scene, size } = useThree();
+  const detail = useDetailTier();
   // Keep label roots in one DOM container when the canvas event target changes.
   const labelPortal = useMemo(() => ({ current: gl.domElement.parentElement! }), [gl]);
   const controls = useRef<any>(null);
@@ -186,7 +213,7 @@ function World(props: Props) {
         </mesh>
         <NodeOutline dims={dims} color={selected ? '#223b43' : color} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.48, 40]} /><meshBasicMaterial color="#233f47" transparent opacity={0.7} /></mesh>}
-        <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong><span>{shapeText(props.analysis.layers[n.id]?.output)}</span></div></Html>
+        {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
       </group>;
     })}
   </>;
