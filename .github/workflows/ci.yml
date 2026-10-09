@@ -68,9 +68,9 @@ jobs:
     name: Windows startup and browser checks
     runs-on: windows-latest
     needs: frontend
-    # The Edge regressions take about 23 minutes on a hosted Windows runner, so the previous
-    # 25-minute cap left no headroom and the job was killed mid-run instead of reporting a
-    # result. The cap is raised so a slow runner finishes rather than being cancelled.
+    # A healthy Edge regression run is about 21 minutes on a hosted Windows runner, which left
+    # the previous 25-minute cap with little margin for a shared runner. The cap is 40 now so a
+    # slow run reports a result instead of being killed before it can say what failed.
     timeout-minutes: 40
     env:
       CUDA_VISIBLE_DEVICES: '-1'
