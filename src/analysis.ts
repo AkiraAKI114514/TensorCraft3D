@@ -1,4 +1,5 @@
-import { OPS, MAX_REPEAT, repeatOf, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
+import { OPS, MAX_REPEAT, MAX_SUBGRAPH_DEPTH, GROUP_OP, isGroup, repeatOf, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
+import { expandGraph, topLevelId, SubgraphError } from './subgraph';
 import { ATTENTION_TYPES, attentionConfig, incomingEdges, isCrossAttention, crossInputRole, edgeKey, edgeOutputShape, isAttention, isProjectionPort, projectionPorts } from './attentionConfig';
 
 export const product = (values: number[]) => values.reduce((a, b) => a * b, 1);
@@ -14,6 +15,8 @@ export function validateGraph(value: unknown): Graph {
     if (!n || typeof n.id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.id) || ids.has(n.id) || !OPS.includes(n.op) || typeof n.name !== 'string' || n.name.length > 120 || !n.params || typeof n.params !== 'object' || Array.isArray(n.params)) throw new Error('节点数据或 ID 无效');
     if (!n.position || !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y)) throw new Error('节点坐标无效');
     if (n.repeat !== undefined && (!Number.isInteger(n.repeat) || n.repeat < 1 || n.repeat > MAX_REPEAT)) throw new Error(`节点 repeat 必须是 1–${MAX_REPEAT} 的整数`);
+    if (n.op === GROUP_OP) { if (typeof n.subgraph !== 'string' || !n.subgraph) throw new Error('结构块实例必须指定 subgraph'); }
+    else if (n.subgraph !== undefined) throw new Error('只有结构块实例可以指定 subgraph');
     for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= (n.op === 'ConstantAdd' && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
@@ -23,10 +26,66 @@ export function validateGraph(value: unknown): Graph {
     if (typeof e.id !== 'string' || edgeIds.has(e.id) || pairs.has(pair) || !ids.has(e.source) || !ids.has(e.target) || e.source === e.target || (e.targetPort !== undefined && !['query', 'context'].includes(e.targetPort) && !isProjectionPort(e.targetPort)) || (e.sourcePort !== undefined && !isProjectionPort(e.sourcePort))) throw new Error('连线无效或重复');
     edgeIds.add(e.id); pairs.add(pair);
   });
+  const subgraphs = g.subgraphs ?? {};
+  if (Object.keys(subgraphs).length > 64) throw new Error('子图数量超过 64 个');
+  for (const [name, def] of Object.entries(subgraphs)) {
+    if (!def || typeof def.name !== 'string' || !Array.isArray(def.nodes) || !Array.isArray(def.edges) || !['auto', 'manual'].includes(def.origin)) throw new Error(`子图 ${name} 定义无效`);
+    if (def.nodes.length > 128 || def.edges.length > 512) throw new Error(`子图 ${name} 超过限制（128 层 / 512 连线）`);
+    let depth = 0;
+    const probe = new Set<string>([name]);
+    const walk = (key: string) => { if (depth > MAX_SUBGRAPH_DEPTH) throw new Error(`子图嵌套超过 ${MAX_SUBGRAPH_DEPTH} 层`); const target = subgraphs[key]; if (!target) return; depth += 1; for (const inner of target.nodes) if (inner.op === GROUP_OP && inner.subgraph) { if (probe.has(inner.subgraph)) throw new Error(`子图 ${inner.subgraph} 形成循环引用`); probe.add(inner.subgraph); walk(inner.subgraph); probe.delete(inner.subgraph); } depth -= 1; };
+    walk(name);
+  }
+  for (const n of g.nodes) if (n.op === GROUP_OP && n.subgraph && !subgraphs[n.subgraph]) throw new Error(`节点 ${n.id} 指向不存在的子图 ${n.subgraph}`);
   return structuredClone(g);
 }
 
+/**
+ * 子图实例先展开成等价的纯算子图，再走下面这条从未见过 `Group` 的既有路径。
+ * 结果按顶层节点聚合回来，所以界面看到的是少数几个块，而记账来自展开后的真实算子。
+ */
 export function analyze(graph: Graph): Analysis {
+  if (graph.subgraphs && graph.nodes.some(isGroup)) {
+    let expanded: Graph;
+    try { expanded = expandGraph(graph); }
+    catch (error) {
+      return { layers: {}, order: [], diagnostics: [{ id: 'SUBGRAPH', level: 'error', code: 'SUBGRAPH', message: (error as Error).message }], parameters: 0, activationBytes: 0, valid: false };
+    }
+    return collapseAnalysis(analyzeExpanded(expanded));
+  }
+  return analyzeExpanded(graph);
+}
+
+/** 把展开后的逐算子结果按顶层节点合并：参数求和，诊断归位并去重。 */
+function collapseAnalysis(analysis: Analysis): Analysis {
+  const layers: Record<string, LayerInfo> = {}, order: string[] = [];
+  for (const id of analysis.order) {
+    const top = topLevelId(id);
+    if (layers[top]) continue;
+    layers[top] = { input: [], output: [], parameters: 0, repeat: 1 };
+    order.push(top);
+  }
+  for (const id of analysis.order) {
+    const info = analysis.layers[id], top = topLevelId(id);
+    if (!info || !layers[top]) continue;
+    const target = layers[top];
+    if (!target.output.length) target.input = info.input;
+    target.output = info.output;
+    target.parameters += info.parameters;
+  }
+  const seen = new Set<string>();
+  const diagnostics = analysis.diagnostics.flatMap(d => {
+    if (!d.nodeId) return [d];
+    const remapped = { ...d, nodeId: topLevelId(d.nodeId) };
+    const key = `${remapped.code}|${remapped.nodeId}|${remapped.message}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [remapped];
+  });
+  return { layers, order, diagnostics, parameters: analysis.parameters, activationBytes: analysis.activationBytes, valid: analysis.valid };
+}
+
+function analyzeExpanded(graph: Graph): Analysis {
   const layers: Record<string, LayerInfo> = {}, diagnostics: Diagnostic[] = [], order: string[] = [];
   const add = (code: string, message: string, nodeId?: string, level: Diagnostic['level'] = 'error') => diagnostics.push({ id: `${code}_${nodeId || diagnostics.length}`, code, message, nodeId, level });
   const indegree = new Map(graph.nodes.map(n => [n.id, graph.edges.filter(e => e.target === n.id).length]));

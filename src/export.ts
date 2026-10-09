@@ -1,4 +1,5 @@
 import { analyze } from './analysis';
+import { expandGraph } from './subgraph';
 import { repeatOf, type Graph } from './types';
 import { attentionConfig, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import attentionRuntime from '../backend/attention.py?raw';
@@ -10,15 +11,17 @@ export function download(content: string | Blob, name: string, mime = 'text/plai
 }
 
 export function generatePython(graph: Graph) {
-  const analysis = analyze(graph);
+  // 子图实例先展开：生成的模型必须真的含有块内的每个算子，而不是一个哨兵节点。
+  const expanded = expandGraph(graph);
+  const analysis = analyze(expanded);
   if (!analysis.valid) throw new Error('请先修复形状或连线错误后导出代码');
   const constructors: string[] = [], forward: string[] = [];
-  const modelInputs = graph.nodes.filter(n => n.op === 'Input');
+  const modelInputs = expanded.nodes.filter(n => n.op === 'Input');
   for (const id of analysis.order) {
-    const node = graph.nodes.find(n => n.id === id)!;
+    const node = expanded.nodes.find(n => n.id === id)!;
     const p = node.params, info = analysis.layers[id];
     const value = (e: Graph['edges'][number]) => e.sourcePort ? `ports[${JSON.stringify(e.source)}][${JSON.stringify(e.sourcePort)}]` : `values[${JSON.stringify(e.source)}]`;
-    const edges = incomingEdges(graph, node), inputs = edges.filter(e => !isProjectionPort(e.targetPort)).map(value);
+    const edges = incomingEdges(expanded, node), inputs = edges.filter(e => !isProjectionPort(e.targetPort)).map(value);
     const key = JSON.stringify(id);
     let expr = '';
     if (node.op === 'Input') { forward.push(`        values[${key}] = ${modelInputs.length === 1 ? `x[${key}] if isinstance(x, dict) else x` : `x[${key}]`}`); continue; }
@@ -113,12 +116,12 @@ export function generatePython(graph: Graph) {
     } else if (repeat === 1) forward.push(`        values[${key}] = self.layers[${key}](${inputs.join(', ')})`);
     else forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in self.layers[${key}]:\n            values[${key}] = instance(values[${key}]${inputs.slice(1).map(i => `, ${i}`).join('')})`);
   }
-  const output = graph.nodes.find(n => n.op === 'Output')!;
-  const helper = (graph.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (graph.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
+  const output = expanded.nodes.find(n => n.op === 'Output')!;
+  const helper = (expanded.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
-  for (const node of graph.nodes.filter(n => n.op === 'Embedding')) {
-    const edge = graph.edges.find(e => e.target === node.id && !e.targetPort);
-    if (edge && graph.nodes.find(n => n.id === edge.source)?.op === 'Input') {
+  for (const node of expanded.nodes.filter(n => n.op === 'Embedding')) {
+    const edge = expanded.edges.find(e => e.target === node.id && !e.targetPort);
+    if (edge && expanded.nodes.find(n => n.id === edge.source)?.op === 'Input') {
       embeddingInputs.set(edge.source, Number(node.params.num_embeddings ?? 100));
     }
   }
