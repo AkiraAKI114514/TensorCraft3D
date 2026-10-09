@@ -88,7 +88,9 @@ describe('repeat folding export roundtrip', () => {
     }
     // Parameters equal the analyzer's count, and the single-instance node is untouched.
     expect(analysis.parameters).toBe(20 * repeat + 10);
-  });
+    // Every case spawns a Python interpreter that imports torch, so the 5s default is too tight
+    // on a cold CI runner; the rest of the repo's exec-based tests set an explicit timeout too.
+  }, 30000);
 
   it('round-trips a folded Conv2d whose output shape matches its input', () => {
     const { analysis, code, result } = roundtrip(foldedConv(4));
@@ -96,7 +98,7 @@ describe('repeat folding export roundtrip', () => {
     expect(analysis.parameters).toBe(148 * 4);
     expect(code.match(/nn\.Conv2d\(4, 4,/g)).toHaveLength(4);
     expect(result).toContain('matched');
-  });
+  }, 30000);
 
   it('keeps repeat=1 exports byte-identical to a project without the field', () => {
     expect(generatePython(foldedLinear(1))).toBe(generatePython({ ...foldedLinear(1), nodes: foldedLinear(1).nodes.map(({ repeat: _repeat, ...node }) => node) }));
@@ -110,5 +112,7 @@ describe('repeat folding export roundtrip', () => {
     expect(code.match(/nn\.Linear\(4, 4\)/g)).toHaveLength(200);
     expect(code).toContain('for instance in self.layers["n1"]:');
     expect(result).toContain('matched');
-  });
+    // 200 instances means a much larger graph for Python to build and analyse, so this gets a
+    // wider budget than the small cases above.
+  }, 60000);
 });

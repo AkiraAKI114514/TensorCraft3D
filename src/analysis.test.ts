@@ -258,7 +258,9 @@ print("matched", list(value.shape))
       expect(result).toContain('matched');
       expect(analysis.layers.layer_1.output).toEqual(shape);
     }
-  });
+    // Each case spawns a Python interpreter that imports torch, so the 5s default is too
+    // tight on a cold CI runner; the other exec-based tests pass an explicit timeout too.
+  }, 30000);
 });
 
 describe('training alerts', () => {
