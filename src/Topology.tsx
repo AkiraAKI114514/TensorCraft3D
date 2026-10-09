@@ -2,19 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { ReactFlow, Background, Controls, MiniMap, Panel, Handle, Position, BaseEdge, useUpdateNodeInternals, type ReactFlowInstance, type Edge, type EdgeProps, type NodeProps, type Node, type Connection, type NodeChange, type EdgeChange, MarkerType } from '@xyflow/react';
 import { Plus, Trash2 } from 'lucide-react';
 import '@xyflow/react/dist/style.css';
-import { COLORS, type Graph, type Analysis } from './types';
+import { COLORS, repeatOf, type Graph, type Analysis } from './types';
 import { shapeText } from './analysis';
 import { residualEdges } from './graphRoutes';
 import { RESIDUAL_COLOR } from './flowGeometry';
 import { crossInputRole, isCrossAttention, isProjectionPort, projectionPorts, projectionLabel } from './attentionConfig';
 import { useI18n } from './i18n';
-type LayerNode = Node<{ name: string; op: string; color: string; shape: string; error: boolean; cross: boolean; ports: ReturnType<typeof projectionPorts> }, 'layer'>;
+type LayerNode = Node<{ name: string; op: string; color: string; shape: string; error: boolean; cross: boolean; repeat: number; ports: ReturnType<typeof projectionPorts> }, 'layer'>;
 function Layer({ id, data, selected }: NodeProps<LayerNode>) {
   const updateInternals = useUpdateNodeInternals();
   useEffect(() => updateInternals(id), [id, data.ports.length, data.cross, updateInternals]);
   return <div className={`flow-layer ${selected ? 'selected' : ''} ${data.error ? 'error' : ''}`} style={{ borderTopColor: data.color }}>
     {data.op !== 'Input' && (data.cross ? <><Handle id="query" type="target" position={Position.Left} style={{ top: '32%', background: '#319cac' }} /><Handle id="context" type="target" position={Position.Left} style={{ top: '75%', background: '#a17cbb' }} /></> : <Handle type="target" position={Position.Left} />)}
-    <span className="node-op">{data.op}</span><strong>{data.name}</strong><code>{data.shape}</code>
+    <span className="node-op">{data.op}</span><strong>{data.name}</strong>{data.repeat > 1 && <span className="repeat-badge">×{data.repeat}</span>}<code>{data.shape}</code>
     {data.cross && <small className="cross-ports">Q · Query / KV · Context</small>}
     {data.ports.length > 0 && <div className="projection-handles">{data.ports.map(port => <div key={port.id} className="projection-handle"><Handle id={port.id} type="target" position={Position.Left} /><span>{port.label}</span><Handle id={port.id} type="source" position={Position.Right} /></div>)}</div>}
     {data.op !== 'Output' && <Handle type="source" position={Position.Right} />}
@@ -30,7 +30,7 @@ export default function Topology({ graph, analysis, selected, onSelect, onChange
   const { t } = useI18n();
   const [instance, setInstance] = useState<ReactFlowInstance<LayerNode> | null>(null);
   useEffect(() => { void instance?.fitView({ padding: 0.2, duration: 160 }); }, [instance, graph.nodes.length]);
-  const nodes = useMemo(() => graph.nodes.map(n => ({ id: n.id, type: 'layer' as const, position: n.position, selected: n.id === selected, data: { name: n.name, op: n.op, color: COLORS[n.op], shape: shapeText(analysis.layers[n.id]?.output), error: analysis.diagnostics.some(d => d.level === 'error' && d.nodeId === n.id), cross: isCrossAttention(n), ports: projectionPorts(n) } })), [graph, analysis, selected]);
+  const nodes = useMemo(() => graph.nodes.map(n => ({ id: n.id, type: 'layer' as const, position: n.position, selected: n.id === selected, data: { name: n.name, op: n.op, color: COLORS[n.op], shape: shapeText(analysis.layers[n.id]?.output), error: analysis.diagnostics.some(d => d.level === 'error' && d.nodeId === n.id), cross: isCrossAttention(n), repeat: repeatOf(n), ports: projectionPorts(n) } })), [graph, analysis, selected]);
   const shortcuts = residualEdges(graph);
   const edges = graph.edges.map(e => {
     const residual = shortcuts.has(e.id), source = graph.nodes.find(n => n.id === e.source), target = graph.nodes.find(n => n.id === e.target);

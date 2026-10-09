@@ -1,4 +1,4 @@
-import { OPS, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
+import { OPS, MAX_REPEAT, repeatOf, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
 import { ATTENTION_TYPES, attentionConfig, incomingEdges, isCrossAttention, crossInputRole, edgeKey, edgeOutputShape, isAttention, isProjectionPort, projectionPorts } from './attentionConfig';
 
 export const product = (values: number[]) => values.reduce((a, b) => a * b, 1);
@@ -13,6 +13,7 @@ export function validateGraph(value: unknown): Graph {
   g.nodes.forEach(n => {
     if (!n || typeof n.id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.id) || ids.has(n.id) || !OPS.includes(n.op) || typeof n.name !== 'string' || n.name.length > 120 || !n.params || typeof n.params !== 'object' || Array.isArray(n.params)) throw new Error('节点数据或 ID 无效');
     if (!n.position || !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y)) throw new Error('节点坐标无效');
+    if (n.repeat !== undefined && (!Number.isInteger(n.repeat) || n.repeat < 1 || n.repeat > MAX_REPEAT)) throw new Error(`节点 repeat 必须是 1–${MAX_REPEAT} 的整数`);
     for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= (n.op === 'ConstantAdd' && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
@@ -201,11 +202,19 @@ export function analyze(graph: Graph): Analysis {
         if (input.some(s => s.length !== output.length || s.some((v, i) => i !== dim && v !== output[i]))) throw new Error('Concat 非拼接维度必须一致');
         output[dim] = input.reduce((sum, s) => sum + s[dim], 0);
       }
-      if (product(output) > 16e6 || count > 50e6) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
-      layers[id] = { input, output, parameters: count }; parameters += count; activationBytes += product(output) * 4;
+      // 折叠层代表 repeat 个同构实例：形状不变，参数与激活按实例数放大。
+      const repeat = repeatOf(n);
+      // 串联 N 个实例只有在算子把输入形状映射回自身时才可执行，否则第 2 个实例收到
+      // 前一个的输出就会维度不匹配。后端 graph.py 必须给出同样的判断。
+      if (repeat > 1 && input.length && output.join(',') !== input[0].join(',')) throw new Error('repeat > 1 需要该算子保持输入形状不变');
+      if (product(output) > 16e6 || count * repeat > 50e6) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
+      layers[id] = { input, output, parameters: count * repeat, repeat };
+      parameters += count * repeat; activationBytes += product(output) * 4 * repeat;
       if (n.op === 'Linear' && n.id !== graph.edges.find(e => e.target === outputNode?.id)?.source && input[0].at(-1)! >= 128 && output.at(-1)! < input[0].at(-1)! * 0.1) add('BOTTLENECK', '隐藏层特征维度骤降超过 90%，可能丢失信息', id, 'warning');
-      depth[id] = ['Add', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + (['Conv2d', 'Linear'].includes(n.op) ? 1 : 0);
-      if (depth[id] === 8) add('DEEP_NO_SKIP', '连续 8 个参数层缺少残差路径，存在梯度衰减风险', id, 'warning');
+      // 折叠层在拓扑上是 repeat 个串联实例，深度必须整段累计，否则深层网络的梯度衰减会被漏报。
+      const step = ['Conv2d', 'Linear'].includes(n.op) ? repeat : 0;
+      depth[id] = ['Add', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + step;
+      if (depth[id] >= 8) add('DEEP_NO_SKIP', '连续 8 个参数层缺少残差路径，存在梯度衰减风险', id, 'warning');
       if (outputNode && !ancestors.has(id)) add(n.op === 'Input' ? 'INPUT_UNUSED' : 'UNUSED', '此层未连接到模型输出', id, n.op === 'Input' ? 'error' : 'warning');
       if (n.op === 'Output' && graph.edges.some(e => e.source === id)) throw new Error('输出层不能连接下游');
     } catch (e) { add('SHAPE', (e as Error).message, id); }

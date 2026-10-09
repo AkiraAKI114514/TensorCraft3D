@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Boxes, Plus, Play, Pause, RotateCcw, RotateCw, Focus, Download, Upload, Camera, Code2, Network, Cuboid, ChevronDown, ChevronRight, ArrowLeft, ArrowRight, Trash2, X, Check, CircleAlert, TriangleAlert, Activity, Settings2, Maximize2, FileJson, CheckCircle2, Cpu, MoreHorizontal, Square, LoaderCircle, FolderOpen, Save, CircleHelp, Layers3 } from 'lucide-react';
 import type { Connection } from '@xyflow/react';
 import { analyze, diagnoseMetrics, formatNumber, shapeText, validateGraph } from './analysis';
-import { COLORS, DEFAULTS, OPS, type Graph, type Op, type Metric, type TrainingConfig } from './types';
+import { COLORS, DEFAULTS, MAX_REPEAT, OPS, type Graph, type Op, type Metric, type TrainingConfig } from './types';
 import { PRESETS } from './presets';
 import { download, safeFilename } from './export';
 import CodeExport from './CodeExport';
@@ -81,6 +81,13 @@ export default function App() {
   useEffect(() => { if (selectedProjection) { const layer = graph.nodes.find(n => n.id === selectedProjection.nodeId); if (!layer || !projectionPorts(layer).some(p => p.id === selectedProjection.port)) setSelectedProjection(null); } }, [graph, selectedProjection]);
   const updateParam = (key: string, value: number | number[] | string) => {
     if (!node) return;
+    // `repeat` is a layer-level field rather than an operator parameter; the
+    // Parameters panel routes it through the same callback under this key.
+    if (key === 'repeat') {
+      const repeat = Math.min(MAX_REPEAT, Math.max(1, Math.round(Number(value) || 1)));
+      commit({ ...graph, nodes: graph.nodes.map(n => { if (n.id !== node.id) return n; if (repeat === 1) { const copy = { ...n }; delete copy.repeat; return copy; } return { ...n, repeat }; }) });
+      return;
+    }
     const params = { ...node.params, [key]: value };
     if (node.op === 'ConstantAdd' && key === 'sequence_dim' && value === 'fixed') delete params.sequence_dim;
     delete params.qkv_count;

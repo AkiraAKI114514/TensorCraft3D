@@ -34,6 +34,13 @@ def bilinear_graph(in2_features=16, second_shape=(4, 16)):
     return {"version": 1, "nodes": nodes, "edges": [{"source": "layer_0", "target": "layer_1"}, {"source": "second", "target": "layer_1"}, {"source": "layer_1", "target": "layer_2"}]}
 
 
+def folded_mlp_graph(repeat):
+    specs = [("Input", {"shape": [1, 4]}), ("Linear", {"out_features": 4}), ("ReLU", {}), ("Linear", {"out_features": 2}), ("Output", {})]
+    nodes = [{"id": f"layer_{i}", "op": op, "params": params} for i, (op, params) in enumerate(specs)]
+    nodes[1]["repeat"] = repeat
+    return {"version": 1, "nodes": nodes, "edges": [{"source": f"layer_{i}", "target": f"layer_{i+1}"} for i in range(4)]}
+
+
 class TrainingTests(unittest.TestCase):
     def test_bilinear_uses_in2_features_for_shape_and_the_real_module(self):
         import torch
@@ -102,6 +109,41 @@ class TrainingTests(unittest.TestCase):
         self.assertLess(metrics[-1]["trainLoss"], metrics[0]["trainLoss"])
         self.assertTrue(metrics[0]["layerGradients"])
         self.assertEqual(metrics[0]["source"], "training")
+        self.assertEqual(messages[-1], {"type": "done", "reason": "completed"})
+
+    def test_folded_repeat_instantiates_independent_layers_that_match_the_analyzer(self):
+        import torch
+        baseline_model, _ = build_model(folded_mlp_graph(1))
+        for repeat in (2, 3):
+            with self.subTest(repeat=repeat):
+                graph = folded_mlp_graph(repeat)
+                info = analyze_graph(graph)
+                model, _ = build_model(graph)
+                # The analyzer reports count * repeat; the model must materialise
+                # exactly that many independent parameters (no weight sharing).
+                self.assertEqual(info["totalParameters"], 20 * repeat + 10)
+                self.assertEqual(sum(p.numel() for p in model.parameters()), info["totalParameters"])
+                # repeat > 1 folds into a ModuleList of N distinct modules.
+                self.assertIsInstance(model.layers["layer_1"], torch.nn.ModuleList)
+                self.assertEqual(len(model.layers["layer_1"]), repeat)
+                self.assertNotEqual(model.layers["layer_1"][0].weight.data_ptr(), model.layers["layer_1"][1].weight.data_ptr())
+                output = model(torch.randn(5, 4))
+                self.assertEqual(tuple(output.shape), (5, 2))
+                output.square().sum().backward()
+                self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+        # An explicit repeat of 1 keeps the historical bare-module layout.
+        self.assertIsInstance(baseline_model.layers["layer_1"], torch.nn.Linear)
+        self.assertEqual(analyze_graph(folded_mlp_graph(1))["totalParameters"], 30)
+
+    def test_folded_repeat_trains_and_reports_parameters(self):
+        messages = []
+        config = {"epochs": 2, "learningRate": 0.01, "batchSize": 16, "samples": 64, "device": "cpu", "dataset": "synthetic", "validationFraction": 0.2, "earlyStopping": False, "patience": 5}
+        graph = folded_mlp_graph(3)
+        train(graph, config, messages.append, threading.Event())
+        metrics = [m["metric"] for m in messages if m["type"] == "metric"]
+        self.assertEqual(len(metrics), 2)
+        self.assertIn("layer_1", metrics[0]["layerGradients"])
+        self.assertGreater(metrics[0]["layerGradients"]["layer_1"], 0)
         self.assertEqual(messages[-1], {"type": "done", "reason": "completed"})
 
     def test_stop_is_honored(self):

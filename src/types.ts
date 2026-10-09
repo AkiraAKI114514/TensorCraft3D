@@ -12,11 +12,14 @@ export const OPS = [
 ] as const;
 export type Op = typeof OPS[number];
 export type Params = Record<string, number | string | number[]>;
-export interface Layer { id: string; name: string; op: Op; params: Params; position: { x: number; y: number }; }
+/** `repeat` 把一层同构块折叠成 N 个实例：形状不变，参数与激活按 N 计。缺省 1，旧项目无需迁移。 */
+export const MAX_REPEAT = 1024;
+export const repeatOf = (layer: { repeat?: number }) => layer.repeat ?? 1;
+export interface Layer { id: string; name: string; op: Op; params: Params; position: { x: number; y: number }; repeat?: number; }
 export interface Edge { id: string; source: string; target: string; sourcePort?: string; targetPort?: string; }
 export interface Graph { version: 1; name: string; nodes: Layer[]; edges: Edge[]; }
 export interface Diagnostic { id: string; level: 'error' | 'warning' | 'info'; code: string; message: string; nodeId?: string; }
-export interface LayerInfo { input: number[][]; output: number[]; parameters: number; }
+export interface LayerInfo { input: number[][]; output: number[]; parameters: number; repeat: number; }
 export interface Analysis { layers: Record<string, LayerInfo>; order: string[]; diagnostics: Diagnostic[]; parameters: number; activationBytes: number; valid: boolean; }
 export interface Metric { epoch: number; trainLoss: number; valLoss: number; accuracy: number; gradNorm: number; layerGradients?: Record<string, number>; deadRelu?: Record<string, number>; source: 'demo' | 'training' | 'import'; }
 export interface TrainingConfig { epochs: number; learningRate: number; batchSize: number; samples: number; device: 'auto' | 'cpu' | 'cuda'; dataset: 'synthetic' | 'csv'; csv?: string; validationFraction: number; earlyStopping: boolean; patience: number; }

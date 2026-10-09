@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 
 import { Canvas, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
-import { COLORS, type Graph, type Analysis, type Diagnostic, type Layer, type Edge } from './types';
+import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer, type Edge } from './types';
 import { shapeText } from './analysis';
 import { EdgeLine, ParticleEdge, ResidualFlow, flowCurve } from './Flow';
 import AttentionModule, { SceneText } from './AttentionModule';
@@ -51,7 +51,9 @@ function nodePort(node: Layer, position: THREE.Vector3, side: 'input' | 'output'
 function layerLabel(node: Layer, dims: [number, number, number], selected: string | null, head: number | null, expanded: boolean) {
   const headPosition = selected === node.id && head !== null && isAttention(node.op) ? attentionLayout(node, expanded).heads[head] : undefined;
   const attn = headPosition ? attentionLayout(node, expanded) : null, meta = head !== null ? attn?.headMeta[head] : undefined;
-  return { position: new THREE.Vector3(headPosition?.[0] ?? 0, headPosition ? headPosition[1] - 2.45 : -dims[1] / 2 - 0.6, 0), name: `${node.name}${meta ? ` · ${attn!.branches > 1 ? `B${meta.branch + 1} · ` : ''}H${meta.head + 1}` : ''}` };
+  // A folded layer stacks `repeat` identical instances; the ×N badge flags it.
+  const repeat = repeatOf(node);
+  return { position: new THREE.Vector3(headPosition?.[0] ?? 0, headPosition ? headPosition[1] - 2.45 : -dims[1] / 2 - 0.6, 0), name: `${node.name}${repeat > 1 ? ` ×${repeat}` : ''}${meta ? ` · ${attn!.branches > 1 ? `B${meta.branch + 1} · ` : ''}H${meta.head + 1}` : ''}` };
 }
 
 function boxCorners(box: THREE.Box3) {
@@ -66,6 +68,14 @@ function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: 
   // Leave room for the scene title and the bottom playback controls.
   camera.zoom = Math.min(Math.max(100, width - 70) / (dimensions.x + 1.5), Math.max(100, height - 145) / (dimensions.y + 1), 110);
   camera.updateProjectionMatrix();
+}
+
+// 盒子轮廓的边几何体必须缓存：写在 JSX 里的 new THREE.BoxGeometry(...dims) 会在每次渲染时
+// 重新分配并重算 EdgesGeometry，节点一多就是每帧的分配风暴。
+function NodeOutline({ dims, color }: { dims: [number, number, number]; color: string }) {
+  const geometry = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(dims[0], dims[1], dims[2])), [dims[0], dims[1], dims[2]]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={0.85} /></lineSegments>;
 }
 
 function World(props: Props) {
@@ -174,7 +184,7 @@ function World(props: Props) {
         <mesh userData={{ exportMesh: true }}>
           <boxGeometry args={dims} /><meshStandardMaterial color={color} transparent opacity={selected || hover === n.id ? 0.78 : 0.48} roughness={0.28} metalness={0.12} emissive={color} emissiveIntensity={issue ? 0.5 : selected ? 0.16 : 0} />
         </mesh>
-        <lineSegments raycast={() => {}}><edgesGeometry args={[new THREE.BoxGeometry(...dims)]} /><lineBasicMaterial color={selected ? '#223b43' : color} transparent opacity={0.85} /></lineSegments>{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
+        <NodeOutline dims={dims} color={selected ? '#223b43' : color} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.48, 40]} /><meshBasicMaterial color="#233f47" transparent opacity={0.7} /></mesh>}
         <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong><span>{shapeText(props.analysis.layers[n.id]?.output)}</span></div></Html>
       </group>;

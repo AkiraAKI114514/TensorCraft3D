@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { analyze, diagnoseMetrics, validateGraph } from './analysis';
+import { analyze, diagnoseMetrics, product, validateGraph } from './analysis';
 import { PRESETS } from './presets';
 import { generatePython } from './export';
-import { DEFAULTS, type Metric, type Params } from './types';
+import { DEFAULTS, MAX_REPEAT, repeatOf, type Graph, type Metric, type Params } from './types';
 
 describe('model contracts', () => {
   it.each(['cnn', 'mlp', 'residual'])('infers a valid %s model', preset => {
@@ -113,6 +113,65 @@ describe('model contracts', () => {
     const input = PRESETS.blank();
     input.nodes.push({ ...input.nodes[0], id: 'input2' });
     expect(analyze(input).diagnostics.some(d => d.code === 'INPUT_UNUSED')).toBe(true);
+  });
+});
+
+describe('repeat folding', () => {
+  const foldedLinear = (repeat?: number): Graph => {
+    const graph = PRESETS.blank();
+    graph.nodes[0].params.shape = [2, 4];
+    graph.nodes.splice(1, 0,
+      { id: 'hidden', name: 'Hidden', op: 'Linear', params: { out_features: 4 }, position: { x: 100, y: 100 }, ...(repeat === undefined ? {} : { repeat }) },
+      { id: 'act', name: 'Act', op: 'ReLU', params: {}, position: { x: 200, y: 100 } },
+      { id: 'head', name: 'Head', op: 'Linear', params: { out_features: 2 }, position: { x: 300, y: 100 } });
+    graph.edges = [
+      { id: 'e0', source: 'layer_0', target: 'hidden' },
+      { id: 'e1', source: 'hidden', target: 'act' },
+      { id: 'e2', source: 'act', target: 'head' },
+      { id: 'e3', source: 'head', target: 'layer_1' },
+    ];
+    return graph;
+  };
+
+  it('treats an absent repeat as one instance and keeps legacy output byte-identical', () => {
+    expect(repeatOf({})).toBe(1);
+    const baseline = analyze(foldedLinear());
+    expect(baseline.valid).toBe(true);
+    expect(baseline.parameters).toBe(30);
+    expect(baseline.layers.hidden).toEqual({ input: [[2, 4]], output: [2, 4], parameters: 20, repeat: 1 });
+    // repeat: 1 and repeat: undefined must be indistinguishable to the analyzer, the
+    // parameter totals and the generated Python (no drift for existing projects).
+    expect(analyze(foldedLinear(1))).toEqual(baseline);
+    expect(generatePython(foldedLinear(1))).toBe(generatePython(foldedLinear()));
+  });
+
+  it('scales parameters and activation memory by N while preserving shapes', () => {
+    const baseline = analyze(foldedLinear());
+    for (const repeat of [2, 3, 17, MAX_REPEAT]) {
+      const analysis = analyze(foldedLinear(repeat));
+      expect(analysis.valid).toBe(true);
+      expect(analysis.layers.hidden.parameters).toBe(20 * repeat);
+      expect(analysis.layers.hidden.repeat).toBe(repeat);
+      expect(analysis.layers.head.parameters).toBe(10);
+      expect(analysis.parameters).toBe(20 * repeat + 10);
+      // Instances are chained, so the folded node's output shape is unchanged.
+      expect(analysis.layers.hidden.output).toEqual(baseline.layers.hidden.output);
+      expect(analysis.layers.head.output).toEqual(baseline.layers.head.output);
+      expect(analysis.activationBytes).toBe(baseline.activationBytes + product([2, 4]) * 4 * (repeat - 1));
+    }
+  });
+
+  it('rejects repeats that are zero, negative, fractional or above MAX_REPEAT', () => {
+    for (const repeat of [0, -1, MAX_REPEAT + 1, 2.5, 1e9]) {
+      expect(() => validateGraph(foldedLinear(repeat))).toThrow(/repeat/);
+    }
+    expect(() => validateGraph(foldedLinear(MAX_REPEAT))).not.toThrow();
+  });
+
+  it('counts a folded parameter layer as N steps of depth', () => {
+    const folded = foldedLinear(7);
+    expect(analyze(folded).diagnostics.some(d => d.code === 'DEEP_NO_SKIP' && d.nodeId === 'head')).toBe(true);
+    expect(analyze(foldedLinear()).diagnostics.some(d => d.code === 'DEEP_NO_SKIP')).toBe(false);
   });
 });
 

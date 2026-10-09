@@ -1,18 +1,22 @@
 import { useI18n } from './i18n';
 import { ATTENTION_TYPES, attentionConfig, isAttention } from './attentionConfig';
-import { DEFAULTS, type Layer } from './types';
+import { DEFAULTS, MAX_REPEAT, repeatOf, type Layer } from './types';
 
 export default function Parameters({ node, disabled, onUpdate }: { node: Layer; disabled: boolean; onUpdate: (key: string, value: number | number[] | string) => void }) {
   const { t } = useI18n();
-  if (node.op === 'Input') return <label className="field-label">{t('输入形状')}<input key={node.id} defaultValue={(node.params.shape as number[]).join(', ')} disabled={disabled} onBlur={e => onUpdate('shape', e.target.value.split(/[,×x\s]+/).filter(Boolean).map(Number))} /></label>;
+  // `repeat` lives on the layer itself, not in `params`, so it is rendered as an
+  // independent field ahead of every operator's own parameters.
+  const repeatField = <label className="parameter-field" key="repeat"><span title={t('重复实例数')}>{t('重复实例数')}</span><input type="number" aria-label={t('重复实例数')} disabled={disabled} value={repeatOf(node)} min={1} max={MAX_REPEAT} step={1} onChange={e => onUpdate('repeat', Math.min(MAX_REPEAT, Math.max(1, Math.round(Number(e.target.value) || 1))))} /></label>;
+  if (node.op === 'Input') return <>{repeatField}<label className="field-label">{t('输入形状')}<input key={node.id} defaultValue={(node.params.shape as number[]).join(', ')} disabled={disabled} onBlur={e => onUpdate('shape', e.target.value.split(/[,×x\s]+/).filter(Boolean).map(Number))} /></label></>;
   if (node.op === 'ConstantAdd') return <>
+    {repeatField}
     {(['shape', 'values'] as const).map(key => <label className="field-label" key={`${node.id}_${key}`}>{key}<textarea aria-label={key} disabled={disabled} defaultValue={JSON.stringify(node.params[key])} key={JSON.stringify(node.params[key])} rows={key === 'values' ? 4 : 2} onBlur={e => { try { const value: unknown = JSON.parse(e.target.value); if (Array.isArray(value) && value.every(v => typeof v === 'number' && Number.isFinite(v))) onUpdate(key, value); else e.target.value = JSON.stringify(node.params[key]); } catch { e.target.value = JSON.stringify(node.params[key]); } }} /></label>)}
     <label className="field-label">sequence_dim<select aria-label="sequence_dim" disabled={disabled} value={node.params.sequence_dim === undefined ? 'fixed' : String(node.params.sequence_dim)} onChange={e => onUpdate('sequence_dim', e.target.value === 'fixed' ? 'fixed' : Number(e.target.value))}><option value="fixed">{t('固定常量')}</option>{[1, 2, 3, 4].map(dim => <option key={dim} value={dim}>{dim}</option>)}</select></label>
   </>;
   const attention = isAttention(node.op), cfg = attentionConfig(node.params);
   const params = { ...DEFAULTS[node.op], ...(node.op === 'Transformer' ? { norm_first: 1, activation: 'gelu' } : {}), ...node.params, ...(attention ? { kv_heads: cfg.kvHeads, branches: cfg.branches, attention_type: cfg.type } : {}) };
-  if (!Object.keys(params).length) return <p className="muted-text">{t('此算子无可配置参数')}</p>;
-  return <>{Object.entries(params).filter(([key]) => key !== 'qkv_count').map(([key, value]) => key === 'attention_type' ?
+  if (!Object.keys(params).length) return <>{repeatField}<p className="muted-text">{t('此算子无可配置参数')}</p></>;
+  return <>{repeatField}{Object.entries(params).filter(([key]) => key !== 'qkv_count').map(([key, value]) => key === 'attention_type' ?
     <label className="field-label" key={key}>attention_type<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}>{Object.entries(ATTENTION_TYPES).map(([type, label]) => <option key={type} value={type}>{label}</option>)}</select></label> : key === 'activation' ?
     <label className="field-label" key={key}>activation<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}><option value="gelu">GELU</option><option value="relu">ReLU</option></select></label> : key === 'norm_first' ?
     <label className="field-label" key={key}>{t('LayerNorm 位置')}<select aria-label={key} disabled={disabled} value={Number(value)} onChange={e => onUpdate(key, Number(e.target.value))}><option value={1}>{t('Pre-Norm · 相加前')}</option><option value={0}>{t('Post-Norm · 相加后')}</option></select></label> :

@@ -1,5 +1,5 @@
 import { analyze } from './analysis';
-import type { Graph } from './types';
+import { repeatOf, type Graph } from './types';
 import { attentionConfig, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import attentionRuntime from '../backend/attention.py?raw';
 import tensorRuntime from '../backend/tensor_ops.py?raw';
@@ -99,11 +99,19 @@ export function generatePython(graph: Graph) {
       case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
       case 'Concat': forward.push(`        values[${key}] = torch.cat([${inputs.join(', ')}], dim=${p.dim ?? 1})`); continue;
     }
-    constructors.push(`            ${key}: ${expr},`);
+    // repeat = N folds N isomorphic instances into one node. They are chained,
+    // not weight-shared, so the export must materialise N distinct layers to
+    // keep sum(p.numel()) equal to analysis.parameters. A single instance keeps
+    // the historical `id: layer` shape so old exports stay byte-identical.
+    const repeat = repeatOf(node);
+    if (repeat === 1) constructors.push(`            ${key}: ${expr},`);
+    else constructors.push(`            ${key}: nn.ModuleList([${Array.from({ length: repeat }, () => `\n                ${expr},`).join('')}\n            ]),`);
     if (isAttention(node.op)) {
       const overrides = `{${edges.filter(e => isProjectionPort(e.targetPort)).map(e => `${JSON.stringify(e.targetPort)}: ${value(e)}`).join(', ')}}`;
-      forward.push(`        values[${key}], ports[${key}] = self.layers[${key}].forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrides})`);
-    } else forward.push(`        values[${key}] = self.layers[${key}](${inputs.join(', ')})`);
+      if (repeat === 1) forward.push(`        values[${key}], ports[${key}] = self.layers[${key}].forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrides})`);
+      else forward.push(`        values[${key}] = ${value(edges.filter(e => !isProjectionPort(e.targetPort))[0])}\n        for instance in self.layers[${key}]:\n            values[${key}], ports[${key}] = instance.forward_with_ports(values[${key}], ${inputs[1] ?? 'None'}, overrides=${overrides})`);
+    } else if (repeat === 1) forward.push(`        values[${key}] = self.layers[${key}](${inputs.join(', ')})`);
+    else forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in self.layers[${key}]:\n            values[${key}] = instance(values[${key}]${inputs.slice(1).map(i => `, ${i}`).join('')})`);
   }
   const output = graph.nodes.find(n => n.op === 'Output')!;
   const helper = (graph.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (graph.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');

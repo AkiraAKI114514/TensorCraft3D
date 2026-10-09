@@ -15,6 +15,7 @@ _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "
 _DROPOUTS = {"Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"}
 _CONVS = {"Conv1d": 3, "Conv2d": 4, "Conv3d": 5}
 _TRANSPOSE_CONVS = {"ConvTranspose1d": 3, "ConvTranspose2d": 4, "ConvTranspose3d": 5}
+MAX_REPEAT = 1024
 _POOLS = {"MaxPool1d": 3, "MaxPool2d": 4, "MaxPool3d": 5, "AvgPool1d": 3, "AvgPool2d": 4, "AvgPool3d": 5}
 _ADAPTIVE_POOLS = {
     "AdaptiveAvgPool1d": 3, "AdaptiveAvgPool2d": 4, "AdaptiveAvgPool3d": 5,
@@ -34,6 +35,12 @@ def analyze_graph(graph):
         if not isinstance(node, dict) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,63}", str(node.get("id", ""))) or node["id"] in by_id or node.get("op") not in OPS or not isinstance(node.get("params"), dict):
             raise ValueError("Invalid node, operation or duplicate ID")
         by_id[node["id"]] = node
+        repeat = node.get("repeat")
+        # JavaScript's JSON.parse cannot distinguish 2 from 2.0, while Python's json.loads
+        # yields a float for 2.0. Since the wire format is produced by the frontend, accept
+        # any integral number and reject only genuine non-integers.
+        if repeat is not None and (isinstance(repeat, bool) or not isinstance(repeat, (int, float)) or not isfinite(repeat) or repeat != int(repeat) or not 1 <= repeat <= MAX_REPEAT):
+            raise ValueError(f"{node['id']}: repeat must be an integer in 1-{MAX_REPEAT}")
     incoming = {key: [] for key in by_id}
     outgoing = {key: [] for key in by_id}
     pairs = set()
@@ -296,8 +303,15 @@ def analyze_graph(graph):
                 if len(parents) < 2 or any(len(s) != len(shape) or any(v != shape[i] for i, v in enumerate(s) if i != dim) for s in in_shapes): raise ValueError(f"{key}: Concat dimensions must match")
                 shape[dim] = sum(s[dim] for s in in_shapes)
             elif op == "Output" and outgoing[key]: raise ValueError("Output cannot have outgoing edges")
-        if prod(shape) > 16_000_000 or count > 50_000_000: raise ValueError(f"{key}: layer exceeds local memory limits")
-        shapes[key] = shape; parameters[key] = count; total += count; activation += prod(shape[1:]) * 4
+        # A folded layer stands for `repeat` isomorphic instances: shapes are unchanged, but
+        # parameters and activation memory scale with the instance count. Chaining N instances
+        # only executes when the op maps its input shape to itself.
+        repeat = int(node.get("repeat", 1))
+        if repeat > 1 and in_shapes and list(shape) != list(in_shapes[0]):
+            raise ValueError(f"{key}: repeat > 1 requires a shape-preserving op")
+        if prod(shape) > 16_000_000 or count * repeat > 50_000_000: raise ValueError(f"{key}: layer exceeds local memory limits")
+        shapes[key] = shape; parameters[key] = count * repeat
+        total += count * repeat; activation += prod(shape[1:]) * 4 * repeat
     if total > 50_000_000: raise ValueError("Model exceeds 50M parameters")
     if len({shapes[n["id"]][0] for n in inputs}) != 1: raise ValueError("All model inputs must have the same batch dimension")
     return {"order": order, "shapes": shapes, "portShapes": port_shapes, "baseEdges": base_edges, "overrideEdges": override_edges, "incoming": incoming, "parameters": parameters, "totalParameters": total, "activationBytesPerSample": activation, "input": inputs[0]["id"], "inputs": [n["id"] for n in inputs], "output": outputs[0]["id"], "nodes": nodes}
