@@ -101,4 +101,14 @@ describe('repeat folding export roundtrip', () => {
   it('keeps repeat=1 exports byte-identical to a project without the field', () => {
     expect(generatePython(foldedLinear(1))).toBe(generatePython({ ...foldedLinear(1), nodes: foldedLinear(1).nodes.map(({ repeat: _repeat, ...node }) => node) }));
   });
+
+  it('round-trips an operator folded past the import node budget', () => {
+    // 200 instances export as a 200-entry ModuleList. Re-importing it must fold straight back
+    // to one repeat=200 node; without that the graph would need 200 nodes and be refused.
+    const { analysis, code, result } = roundtrip(foldedLinear(200));
+    expect(analysis.valid).toBe(true);
+    expect(code.match(/nn\.Linear\(4, 4\)/g)).toHaveLength(200);
+    expect(code).toContain('for instance in self.layers["n1"]:');
+    expect(result).toContain('matched');
+  });
 });

@@ -26,6 +26,8 @@ export const diagnosticEnglish: Record<string, string> = {
   '卷积核或池化核大于输入，输出尺寸为零': 'The convolution or pooling kernel is larger than the input, producing a zero-sized output',
   'LayerNorm normalized_shape 必须是正整数或正整数数组': 'LayerNorm normalized_shape must be a positive integer or an array of positive integers',
   'LayerNorm normalized_shape 必须匹配输入尾部维度': 'LayerNorm normalized_shape must match the trailing input dimensions',
+  'RMSNorm normalized_shape 必须是正整数或正整数数组': 'RMSNorm normalized_shape must be a positive integer or an array of positive integers',
+  'RMSNorm normalized_shape 必须匹配输入尾部维度': 'RMSNorm normalized_shape must match the trailing input dimensions',
   'GroupNorm 需要 NCHW 类输入': 'GroupNorm requires an NCHW-like input',
   'num_channels 必须能被 num_groups 整除': 'num_channels must be divisible by num_groups',
   '自适应池化 output_size 无效': 'Adaptive pooling output_size is invalid',

@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator
 
-from .graph import analyze_graph
+from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_INPUT_ELEMENTS = 4_000_000
@@ -153,11 +153,13 @@ def _embedding_inputs(info: dict[str, Any]) -> dict[str, int]:
 def _prepare_graph(graph: dict[str, Any], selected: list[str] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, int]]:
     # Analyze the submitted graph first: rewriting B must not make an invalid source valid.
     analyze_graph(graph)
-    copied = copy.deepcopy(graph)
+    # Folded blocks carry no operator semantics, so inference expands them into the real
+    # operators before the single-sample batch rewrite below touches every node.
+    copied = expand_subgraphs(copy.deepcopy(graph))
     for node in copied["nodes"]:
         if node["op"] == "Input":
             node["params"]["shape"] = [1, *node["params"]["shape"][1:]]
-    inference_info = analyze_graph(copied)
+    inference_info = analyze_expanded_graph(copied)
     _validate_limits(inference_info, "Single-sample graph", selected)
     return copied, inference_info, _embedding_inputs(inference_info)
 

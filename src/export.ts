@@ -42,6 +42,9 @@ export function generatePython(graph: Graph) {
       case 'InstanceNorm2d':
       case 'InstanceNorm3d': expr = `nn.${node.op}(${info.input[0][1]}${node.op.startsWith('InstanceNorm') ? `, affine=${Number(p.affine ?? 1) ? 'True' : 'False'}, track_running_stats=${Number(p.track_running_stats ?? 0) ? 'True' : 'False'}` : ''})`; break;
       case 'LayerNorm': { const normalized = Array.isArray(p.normalized_shape) ? `(${p.normalized_shape.join(', ')})` : `${p.normalized_shape ?? info.input[0].at(-1)}`; expr = `nn.LayerNorm(${normalized}, eps=${p.eps ?? 1e-5}, elementwise_affine=${Number(p.elementwise_affine ?? 1) ? 'True' : 'False'})`; break; }
+      // nn.RMSNorm ships in torch >= 2.4 (the project pins >= 2.6), so the export needs no helper
+      // class and stays trivially re-importable, exactly like nn.LayerNorm above. It has no bias.
+      case 'RMSNorm': { const normalized = Array.isArray(p.normalized_shape) ? `(${p.normalized_shape.join(', ')})` : `${p.normalized_shape ?? info.input[0].at(-1)}`; expr = `nn.RMSNorm(${normalized}, eps=${p.eps ?? 1e-5}, elementwise_affine=${Number(p.elementwise_affine ?? 1) ? 'True' : 'False'})`; break; }
       case 'GroupNorm': expr = `nn.GroupNorm(${p.num_groups ?? 1}, ${info.input[0][1]}, affine=${Number(p.affine ?? 1) ? 'True' : 'False'})`; break;
       case 'MaxPool1d':
       case 'MaxPool2d':

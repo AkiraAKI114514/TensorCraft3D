@@ -41,6 +41,13 @@ def folded_mlp_graph(repeat):
     return {"version": 1, "nodes": nodes, "edges": [{"source": f"layer_{i}", "target": f"layer_{i+1}"} for i in range(4)]}
 
 
+def rmsnorm_mlp(params=None, repeat=None, shape=(5, 4)):
+    specs = [("Input", {"shape": list(shape)}), ("RMSNorm", {"normalized_shape": shape[-1], **(params or {})}), ("Output", {})]
+    nodes = [{"id": f"layer_{i}", "op": op, "params": dict(p)} for i, (op, p) in enumerate(specs)]
+    if repeat is not None: nodes[1]["repeat"] = repeat
+    return {"version": 1, "nodes": nodes, "edges": [{"source": f"layer_{i}", "target": f"layer_{i+1}"} for i in range(2)]}
+
+
 class TrainingTests(unittest.TestCase):
     def test_bilinear_uses_in2_features_for_shape_and_the_real_module(self):
         import torch
@@ -134,6 +141,64 @@ class TrainingTests(unittest.TestCase):
         # An explicit repeat of 1 keeps the historical bare-module layout.
         self.assertIsInstance(baseline_model.layers["layer_1"], torch.nn.Linear)
         self.assertEqual(analyze_graph(folded_mlp_graph(1))["totalParameters"], 30)
+
+    def test_rmsnorm_builds_a_real_module_and_matches_the_analyzer(self):
+        import torch
+        from torch import nn
+        for affine in (1, 0):
+            with self.subTest(elementwise_affine=affine):
+                graph = rmsnorm_mlp({"normalized_shape": 4, "elementwise_affine": affine})
+                info = analyze_graph(graph)
+                model, _ = build_model(graph)
+                layer = model.layers["layer_1"]
+                self.assertIsInstance(layer, nn.RMSNorm)
+                # RMSNorm never carries a bias attribute at all, affine or not; weight appears
+                # only when elementwise_affine is on.
+                self.assertFalse(hasattr(layer, "bias"))
+                self.assertEqual(layer.weight is not None, bool(affine))
+                # weight only: one parameter per normalized element, and none when affine is off.
+                self.assertEqual(info["totalParameters"], sum(p.numel() for p in model.parameters()))
+                self.assertEqual(info["parameters"]["layer_1"], 4 if affine else 0)
+                value = model(torch.randn(5, 4, requires_grad=True))
+                self.assertEqual(tuple(value.shape), (5, 4))
+                value.square().sum().backward()
+                for parameter in model.parameters():
+                    self.assertIsNotNone(parameter.grad)
+                    self.assertTrue(torch.isfinite(parameter.grad).all())
+
+    def test_rmsnorm_scales_by_the_root_mean_square_without_centering_the_mean(self):
+        import torch
+        from torch import nn
+        graph = rmsnorm_mlp({"normalized_shape": 4})
+        model, _ = build_model(graph)
+        layer = model.layers["layer_1"]
+        with torch.no_grad():
+            layer.weight.copy_(torch.ones(4))
+        x = torch.randn(3, 4)
+        expected = x * x.pow(2).mean(-1, keepdim=True).add(1e-5).rsqrt()
+        torch.testing.assert_close(layer(x), expected)
+        # The defining difference from LayerNorm: no mean subtraction, and no bias to shift the output.
+        with torch.no_grad():
+            shifted = x + torch.tensor([5.0, -3.0, 2.0, 1.0])
+        self.assertFalse(torch.allclose(layer(x), layer(shifted), atol=1e-4))
+        self.assertFalse(torch.allclose(layer(x), nn.LayerNorm(4, elementwise_affine=False)(x), atol=1e-4))
+
+    def test_folded_rmsnorm_instantiates_independent_layers_that_match_the_analyzer(self):
+        import torch
+        for repeat in (2, 3):
+            with self.subTest(repeat=repeat):
+                graph = rmsnorm_mlp({"normalized_shape": 4}, repeat=repeat)
+                info = analyze_graph(graph)
+                model, _ = build_model(graph)
+                self.assertEqual(info["totalParameters"], 4 * repeat)
+                self.assertEqual(sum(p.numel() for p in model.parameters()), info["totalParameters"])
+                self.assertIsInstance(model.layers["layer_1"], torch.nn.ModuleList)
+                self.assertEqual(len(model.layers["layer_1"]), repeat)
+                self.assertNotEqual(model.layers["layer_1"][0].weight.data_ptr(), model.layers["layer_1"][1].weight.data_ptr())
+                output = model(torch.randn(5, 4))
+                self.assertEqual(tuple(output.shape), (5, 4))
+                output.square().sum().backward()
+                self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
 
     def test_folded_repeat_trains_and_reports_parameters(self):
         messages = []

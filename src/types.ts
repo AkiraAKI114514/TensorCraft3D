@@ -3,7 +3,7 @@ import { RESIDUAL_COLOR } from './flowGeometry';
 export const OPS = [
   'Input', 'Output',
   'Conv1d', 'Conv2d', 'Conv3d', 'ConvTranspose1d', 'ConvTranspose2d', 'ConvTranspose3d', 'Linear', 'Bilinear',
-  'BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'LayerNorm', 'GroupNorm', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d',
+  'BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'LayerNorm', 'RMSNorm', 'GroupNorm', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d',
   'ReLU', 'GELU', 'Sigmoid', 'Tanh', 'SiLU', 'LeakyReLU', 'ELU', 'SELU', 'Softplus', 'Softmax', 'LogSoftmax', 'PReLU', 'Hardsigmoid', 'Hardswish', 'Mish', 'Softsign', 'Identity',
   'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d',
   'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d', 'AdaptiveMaxPool1d', 'AdaptiveMaxPool2d', 'AdaptiveMaxPool3d',
@@ -33,7 +33,7 @@ const shape1d = { kernel_size: 3, stride: 1, padding: 1 };
 const pool1d = { kernel_size: 2, stride: 2, padding: 0 };
 export const COLORS: Record<Op, string> = {
   Input: '#7d91a8', Output: '#657788', Conv1d: '#29aa92', Conv2d: '#29aa92', Conv3d: '#29aa92', ConvTranspose1d: '#3b9c8b', ConvTranspose2d: '#3b9c8b', ConvTranspose3d: '#3b9c8b', Linear: '#e48369', Bilinear: '#e48369',
-  BatchNorm1d: '#bc8cc8', BatchNorm2d: '#bc8cc8', BatchNorm3d: '#bc8cc8', LayerNorm: '#bc8cc8', GroupNorm: '#bc8cc8', InstanceNorm1d: '#bc8cc8', InstanceNorm2d: '#bc8cc8', InstanceNorm3d: '#bc8cc8',
+  BatchNorm1d: '#bc8cc8', BatchNorm2d: '#bc8cc8', BatchNorm3d: '#bc8cc8', LayerNorm: '#bc8cc8', RMSNorm: '#bc8cc8', GroupNorm: '#bc8cc8', InstanceNorm1d: '#bc8cc8', InstanceNorm2d: '#bc8cc8', InstanceNorm3d: '#bc8cc8',
   ReLU: '#e8b84b', GELU: '#e8b84b', Sigmoid: '#e8b84b', Tanh: '#e8b84b', SiLU: '#e8b84b', LeakyReLU: '#e8b84b', ELU: '#e8b84b', SELU: '#e8b84b', Softplus: '#e8b84b', Softmax: '#e8b84b', LogSoftmax: '#e8b84b', PReLU: '#e8b84b', Hardsigmoid: '#e8b84b', Hardswish: '#e8b84b', Mish: '#e8b84b', Softsign: '#e8b84b', Identity: '#8e97a7',
   MaxPool1d: '#5299cf', MaxPool2d: '#5299cf', MaxPool3d: '#5299cf', AvgPool1d: '#5299cf', AvgPool2d: '#5299cf', AvgPool3d: '#5299cf', AdaptiveAvgPool1d: '#5299cf', AdaptiveAvgPool2d: '#5299cf', AdaptiveAvgPool3d: '#5299cf', AdaptiveMaxPool1d: '#5299cf', AdaptiveMaxPool2d: '#5299cf', AdaptiveMaxPool3d: '#5299cf',
   Flatten: '#8e97a7', Unsqueeze: '#8e97a7', Squeeze: '#8e97a7', Slice: '#8e97a7', Select: '#8e97a7', ConstantAdd: '#5299cf', Dropout: '#bc8cc8', Dropout1d: '#bc8cc8', Dropout2d: '#bc8cc8', Dropout3d: '#bc8cc8', AlphaDropout: '#bc8cc8', Embedding: '#d073a8', Upsample: '#5299cf',
@@ -43,7 +43,7 @@ export const DEFAULTS: Record<Op, Params> = {
   Input: { shape: [1, 3, 32, 32] }, Output: {},
   Conv1d: { out_channels: 16, kernel_size: 3, stride: 1, padding: 1 }, Conv2d: { out_channels: 16, kernel_size: 3, stride: 1, padding: 1 }, Conv3d: { out_channels: 16, kernel_size: 3, stride: 1, padding: 1 }, ConvTranspose1d: { out_channels: 16, kernel_size: 4, stride: 2, padding: 1 }, ConvTranspose2d: { out_channels: 16, kernel_size: 4, stride: 2, padding: 1 }, ConvTranspose3d: { out_channels: 16, kernel_size: 4, stride: 2, padding: 1 },
   Linear: { out_features: 10 }, Bilinear: { in2_features: 16, out_features: 10 },
-  BatchNorm1d: {}, BatchNorm2d: {}, BatchNorm3d: {}, LayerNorm: { normalized_shape: 64, eps: 1e-5, elementwise_affine: 1 }, GroupNorm: { num_groups: 1 }, InstanceNorm1d: {}, InstanceNorm2d: {}, InstanceNorm3d: {},
+  BatchNorm1d: {}, BatchNorm2d: {}, BatchNorm3d: {}, LayerNorm: { normalized_shape: 64, eps: 1e-5, elementwise_affine: 1 }, RMSNorm: { normalized_shape: 64, eps: 1e-5, elementwise_affine: 1 }, GroupNorm: { num_groups: 1 }, InstanceNorm1d: {}, InstanceNorm2d: {}, InstanceNorm3d: {},
   ReLU: {}, GELU: {}, Sigmoid: {}, Tanh: {}, SiLU: {}, LeakyReLU: { negative_slope: 0.01 }, ELU: { alpha: 1 }, SELU: {}, Softplus: { beta: 1, threshold: 20 }, Softmax: { dim: -1 }, LogSoftmax: { dim: -1 }, PReLU: { num_parameters: 1, init: 0.25 }, Hardsigmoid: {}, Hardswish: {}, Mish: {}, Softsign: {}, Identity: {},
   MaxPool1d: pool1d, MaxPool2d: { ...pool1d }, MaxPool3d: { ...pool1d }, AvgPool1d: pool1d, AvgPool2d: { ...pool1d }, AvgPool3d: { ...pool1d },
   AdaptiveAvgPool1d: { output_size: 1 }, AdaptiveAvgPool2d: { output_size: 1 }, AdaptiveAvgPool3d: { output_size: 1 }, AdaptiveMaxPool1d: { output_size: 1 }, AdaptiveMaxPool2d: { output_size: 1 }, AdaptiveMaxPool3d: { output_size: 1 },

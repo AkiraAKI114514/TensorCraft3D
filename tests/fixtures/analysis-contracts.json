@@ -589,6 +589,70 @@
         ]
       },
       "expected": { "valid": true, "outputShape": [1, 2], "parameters": 1266 }
+    },
+    {
+      "id": "rmsnorm_affine",
+      "graph": {
+        "version": 1, "name": "RMSNorm",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "RMS", "op": "RMSNorm", "params": { "normalized_shape": 8, "eps": 1e-5, "elementwise_affine": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 8 }
+    },
+    {
+      "id": "rmsnorm_without_affine",
+      "graph": {
+        "version": 1, "name": "RMSNorm without affine",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "RMS", "op": "RMSNorm", "params": { "normalized_shape": 8, "elementwise_affine": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 0 }
+    },
+    {
+      "id": "rmsnorm_multi_dimension_suffix",
+      "graph": {
+        "version": 1, "name": "RMSNorm over a two-dimensional suffix",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 3, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "RMS", "op": "RMSNorm", "params": { "normalized_shape": [3, 4] }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 3, 4], "parameters": 12 }
+    },
+    {
+      "id": "folded_rmsnorm_repeat_is_shape_preserving",
+      "graph": {
+        "version": 1, "name": "Folded RMSNorm",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "RMS", "op": "RMSNorm", "params": { "normalized_shape": 8 }, "position": { "x": 100, "y": 0 }, "repeat": 3 },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 24 }
     }
   ]
 }

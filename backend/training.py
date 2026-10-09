@@ -3,13 +3,17 @@ import csv
 import io
 import math
 import uuid
-from .graph import analyze_graph
+from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
 
 def build_model(graph):
     import torch
     from torch import nn
-    info = analyze_graph(graph)
+    # A graph may carry folded blocks; training and inference need the real operators, so the
+    # instances are expanded first. Analysis then runs on that same expanded graph, which is
+    # what the forward loop below iterates.
+    graph = expand_subgraphs(graph)
+    info = analyze_expanded_graph(graph)
     from .attention import TensorLabAttention, TensorLabTransformer
     from .tensor_ops import TensorLabConstantAdd
     class GraphModel(nn.Module):
@@ -37,6 +41,13 @@ def build_model(graph):
                         normalized = p.get("normalized_shape", in_shape[1:])
                         normalized = tuple(int(v) for v in normalized) if isinstance(normalized, list) else int(normalized)
                         return nn.LayerNorm(normalized, eps=float(p.get("eps", 1e-5)), elementwise_affine=bool(p.get("elementwise_affine", 1)))
+                    elif op == "RMSNorm":
+                        # nn.RMSNorm has no bias and does not center the mean; it scales by the root
+                        # mean square only. Requires torch >= 2.4, which requirements-training pins.
+                        if not hasattr(nn, "RMSNorm"): raise ValueError("RMSNorm requires torch >= 2.4")
+                        normalized = p.get("normalized_shape", in_shape[1:])
+                        normalized = tuple(int(v) for v in normalized) if isinstance(normalized, list) else int(normalized)
+                        return nn.RMSNorm(normalized, eps=float(p.get("eps", 1e-5)), elementwise_affine=bool(p.get("elementwise_affine", 1)))
                     elif op == "GroupNorm": return nn.GroupNorm(int(p.get("num_groups", 1)), in_shape[1], affine=bool(p.get("affine", 1)))
                     elif op in ("MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d"):
                         cls = getattr(nn, op); return cls(int(p.get("kernel_size", 2)), int(p.get("stride", 2)), int(p.get("padding", 0)))
@@ -194,6 +205,7 @@ def train(graph, config, emit, stop, retain_model=None):
     from torch import nn
     torch.set_num_threads(min(4, torch.get_num_threads()))
     torch.manual_seed(42)
+    graph = expand_subgraphs(graph)
     info = analyze_graph(graph)
     output_shape = info["shapes"][info["output"]]
     if len(output_shape) != 2 or not 2 <= output_shape[1] <= 256: raise ValueError("Training requires classification logits [B,2..256]")

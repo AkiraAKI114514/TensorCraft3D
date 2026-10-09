@@ -3,7 +3,7 @@ from math import prod, isfinite
 
 OPS = {
     "Input", "Output", "Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear",
-    "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d",
+    "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "RMSNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d",
     "ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity",
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
@@ -18,6 +18,9 @@ _TRANSPOSE_CONVS = {"ConvTranspose1d": 3, "ConvTranspose2d": 4, "ConvTranspose3d
 MAX_REPEAT = 1024
 MAX_SUBGRAPH_DEPTH = 16
 EXPAND_SEP = "/"
+# Backstop for the expanded graph only; the authored graph keeps the 128-node budget.
+EXPANDED_NODE_LIMIT = 20_000
+EXPANDED_EDGE_LIMIT = 60_000
 _POOLS = {"MaxPool1d": 3, "MaxPool2d": 4, "MaxPool3d": 5, "AvgPool1d": 3, "AvgPool2d": 4, "AvgPool3d": 5}
 _ADAPTIVE_POOLS = {
     "AdaptiveAvgPool1d": 3, "AdaptiveAvgPool2d": 4, "AdaptiveAvgPool3d": 5,
@@ -102,38 +105,35 @@ def expand_subgraphs(graph):
     return {"version": 1, "name": graph.get("name", ""), "nodes": nodes, "edges": edges}
 
 
-def analyze_graph(graph):
+def analyze_expanded_graph(graph):
+    """Validate and account for a graph whose subgraph instances are already expanded."""
     import re
     if not isinstance(graph, dict) or graph.get("version") != 1:
         raise ValueError("Unsupported graph version")
-    # The authored graph carries the strict contract: real node ids, real ops, and a
-    # declared subgraph on every Group node. Expansion below derives ids such as
-    # `g/0/attn`, which the id pattern deliberately does not admit, so the strict pass
-    # has to happen on the authored graph rather than on the expanded one.
-    authored_nodes, authored_edges = graph.get("nodes"), graph.get("edges")
-    if not isinstance(authored_nodes, list) or not isinstance(authored_edges, list) or not 2 <= len(authored_nodes) <= 128 or len(authored_edges) > 512:
-        raise ValueError("Graph must have 2-128 nodes and at most 512 edges")
-    authored = {}
-    for node in authored_nodes:
-        if not isinstance(node, dict) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,63}", str(node.get("id", ""))) or node["id"] in authored or node.get("op") not in OPS or not isinstance(node.get("params"), dict):
-            raise ValueError("Invalid node, operation or duplicate ID")
-        if node["op"] == "Group":
-            if not isinstance(node.get("subgraph"), str) or not node["subgraph"]:
-                raise ValueError(f"{node['id']}: Group requires a subgraph name")
-        elif node.get("subgraph") is not None:
-            raise ValueError(f"{node['id']}: only Group nodes may declare a subgraph")
-        authored[node["id"]] = node
-    for edge in authored_edges:
-        if not isinstance(edge, dict) or edge.get("source") not in authored or edge.get("target") not in authored:
-            raise ValueError("Invalid or duplicate edge")
-
-    graph = expand_subgraphs(graph)
     nodes, edges = graph.get("nodes"), graph.get("edges")
+    # The 128-node budget applies to the authored graph, which is all a user ever edits. A
+    # folded block expands back into one copy of its body per instance, so the expanded graph
+    # is legitimately larger than what was authored; holding it to the authored budget would
+    # make folding useless for exactly the models it exists for. This pair is a backstop
+    # against pathological repeats, not a user-facing limit.
+    if not isinstance(nodes, list) or not isinstance(edges, list) or not 2 <= len(nodes) <= EXPANDED_NODE_LIMIT or len(edges) > EXPANDED_EDGE_LIMIT:
+        raise ValueError(f"Graph must have 2-{EXPANDED_NODE_LIMIT} expanded nodes and at most {EXPANDED_EDGE_LIMIT} edges")
     by_id = {}
     for node in nodes:
-        if not isinstance(node, dict) or node.get("op") not in OPS or node["id"] in by_id:
+        # Expanded ids look like `import_1/0/n0`: the separator is derived, not authored, so the
+        # strict authored-id pattern deliberately does not apply here (analyze_graph checks it).
+        if not isinstance(node, dict) or node["id"] in by_id or node.get("op") not in OPS - {"Group"} or not isinstance(node.get("params"), dict):
             raise ValueError("Invalid node, operation or duplicate ID")
         by_id[node["id"]] = node
+    seen = set()
+    for edge in edges:
+        if not isinstance(edge, dict) or edge.get("source") not in by_id or edge.get("target") not in by_id or edge["source"] == edge["target"]:
+            raise ValueError("Invalid or duplicate edge")
+        pair = (edge["source"], edge["target"], edge.get("sourcePort"), edge.get("targetPort"))
+        if pair in seen: raise ValueError("Invalid or duplicate edge")
+        seen.add(pair)
+
+    for node in nodes:
         repeat = node.get("repeat")
         # JavaScript's JSON.parse cannot distinguish 2 from 2.0, while Python's json.loads
         # yields a float for 2.0. Since the wire format is produced by the frontend, accept
@@ -259,12 +259,14 @@ def analyze_graph(graph):
                 if len(shape) not in expected_ranks: raise ValueError(f"{key}: {op} requires {expected_ranks}D channel input")
                 if op.startswith("BatchNorm"): count = shape[1] * 2
                 elif p.get("affine", 1): count = shape[1] * 2
-            elif op == "LayerNorm":
+            elif op in ("LayerNorm", "RMSNorm"):
                 normalized = p.get("normalized_shape")
                 normalized = normalized if isinstance(normalized, list) else [normalized]
                 if not normalized or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in normalized): raise ValueError(f"{key}: normalized_shape must be positive integers")
                 if len(normalized) > len(shape) - 1 or shape[-len(normalized):] != normalized: raise ValueError(f"{key}: normalized_shape must match the input suffix")
-                if int(p.get("elementwise_affine", 1)): count = 2 * prod(normalized)
+                # RMSNorm has no bias and no mean centering, so it owns a single weight per
+                # normalized element; LayerNorm owns weight and bias. Must mirror src/analysis.ts.
+                if int(p.get("elementwise_affine", 1)): count = (2 if op == "LayerNorm" else 1) * prod(normalized)
             elif op == "GroupNorm":
                 if len(shape) < 3: raise ValueError(f"{key}: GroupNorm requires NCHW-like input")
                 groups = integer("num_groups", 1, maximum=shape[1])
@@ -414,3 +416,31 @@ def analyze_graph(graph):
     if total > 50_000_000: raise ValueError("Model exceeds 50M parameters")
     if len({shapes[n["id"]][0] for n in inputs}) != 1: raise ValueError("All model inputs must have the same batch dimension")
     return {"order": order, "shapes": shapes, "portShapes": port_shapes, "baseEdges": base_edges, "overrideEdges": override_edges, "incoming": incoming, "parameters": parameters, "totalParameters": total, "activationBytesPerSample": activation, "input": inputs[0]["id"], "inputs": [n["id"] for n in inputs], "output": outputs[0]["id"], "nodes": nodes}
+
+
+def analyze_graph(graph):
+    import re
+    if not isinstance(graph, dict) or graph.get("version") != 1:
+        raise ValueError("Unsupported graph version")
+    # The authored graph carries the strict contract: real node ids, real ops, and a
+    # declared subgraph on every Group node. Expansion below derives ids such as
+    # `g/0/attn`, which the id pattern deliberately does not admit, so the strict pass
+    # has to happen on the authored graph rather than on the expanded one.
+    authored_nodes, authored_edges = graph.get("nodes"), graph.get("edges")
+    if not isinstance(authored_nodes, list) or not isinstance(authored_edges, list) or not 2 <= len(authored_nodes) <= 128 or len(authored_edges) > 512:
+        raise ValueError("Graph must have 2-128 nodes and at most 512 edges")
+    authored = {}
+    for node in authored_nodes:
+        if not isinstance(node, dict) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,63}", str(node.get("id", ""))) or node["id"] in authored or node.get("op") not in OPS or not isinstance(node.get("params"), dict):
+            raise ValueError("Invalid node, operation or duplicate ID")
+        if node["op"] == "Group":
+            if not isinstance(node.get("subgraph"), str) or not node["subgraph"]:
+                raise ValueError(f"{node['id']}: Group requires a subgraph name")
+        elif node.get("subgraph") is not None:
+            raise ValueError(f"{node['id']}: only Group nodes may declare a subgraph")
+        authored[node["id"]] = node
+    for edge in authored_edges:
+        if not isinstance(edge, dict) or edge.get("source") not in authored or edge.get("target") not in authored:
+            raise ValueError("Invalid or duplicate edge")
+
+    return analyze_expanded_graph(expand_subgraphs(graph))

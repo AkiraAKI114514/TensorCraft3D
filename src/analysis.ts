@@ -151,11 +151,14 @@ function analyzeExpanded(graph: Graph): Analysis {
         output = [output[0], channels, ...spatial];
       } else if (['BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d'].includes(n.op)) {
         const dimensions = Number(n.op.match(/([123])d$/)?.[1] || 2); const ranks = n.op === 'BatchNorm1d' ? [2, 3] : [dimensions + 2]; if (!ranks.includes(output.length)) throw new Error(`${n.op} 需要 ${ranks.join(' 或 ')} 维通道输入`); if (n.op.startsWith('BatchNorm') || Number(n.params.affine ?? 1)) count = output[1] * 2;
-      } else if (n.op === 'LayerNorm') {
+      } else if (n.op === 'LayerNorm' || n.op === 'RMSNorm') {
         const raw = n.params.normalized_shape, normalized: number[] = (Array.isArray(raw) ? raw : [raw]).map(Number);
-        if (!normalized.length || !normalized.every(v => Number.isInteger(v) && v > 0)) throw new Error('LayerNorm normalized_shape 必须是正整数或正整数数组');
-        if (normalized.length > output.length - 1 || output.slice(-normalized.length).join(',') !== normalized.join(',')) throw new Error('LayerNorm normalized_shape 必须匹配输入尾部维度');
-        if (Number(n.params.elementwise_affine ?? 1)) count = product(normalized) * 2;
+        // LayerNorm and RMSNorm share normalized_shape validation (both match the trailing
+        // input dims); they differ only in parameter count: LayerNorm owns weight + bias,
+        // RMSNorm owns weight only (no bias, no mean centering).
+        if (!normalized.length || !normalized.every(v => Number.isInteger(v) && v > 0)) throw new Error(`${n.op} normalized_shape 必须是正整数或正整数数组`);
+        if (normalized.length > output.length - 1 || output.slice(-normalized.length).join(',') !== normalized.join(',')) throw new Error(`${n.op} normalized_shape 必须匹配输入尾部维度`);
+        if (Number(n.params.elementwise_affine ?? 1)) count = product(normalized) * (n.op === 'LayerNorm' ? 2 : 1);
       } else if (n.op === 'GroupNorm') {
         if (output.length < 3) throw new Error('GroupNorm 需要 NCHW 类输入'); const groups = integer('num_groups', 1, 1, output[1]); if (output[1] % groups) throw new Error('num_channels 必须能被 num_groups 整除'); if (Number(n.params.affine ?? 1)) count = output[1] * 2;
       } else if (n.op.startsWith('AdaptiveAvgPool') || n.op.startsWith('AdaptiveMaxPool')) {

@@ -80,4 +80,44 @@ class RepeatFoldTests(unittest.TestCase):
                 self.assertEqual(info["totalParameters"], 20 * int(repeat) + 10)
 
 
+def rmsnorm_graph(params=None, repeat=None, shape=(2, 8)):
+    nodes = [
+        {"id": "n0", "op": "Input", "params": {"shape": list(shape)}},
+        {"id": "n1", "op": "RMSNorm", "params": {"normalized_shape": shape[-1], **(params or {})}},
+        {"id": "n2", "op": "Output", "params": {}},
+    ]
+    if repeat is not None: nodes[1]["repeat"] = repeat
+    return {"version": 1, "nodes": nodes, "edges": [{"source": "n0", "target": "n1"}, {"source": "n1", "target": "n2"}]}
+
+
+class RMSNormGraphTests(unittest.TestCase):
+    def test_rmsnorm_owns_a_single_weight_and_preserves_shapes(self):
+        info = analyze_graph(rmsnorm_graph())
+        self.assertEqual(info["shapes"]["n2"], [2, 8])
+        self.assertEqual(info["parameters"]["n1"], 8)
+        self.assertEqual(info["totalParameters"], 8)
+        # LayerNorm doubles the count with its bias; RMSNorm must not, since it has none.
+        layernorm = rmsnorm_graph(); layernorm["nodes"][1]["op"] = "LayerNorm"
+        self.assertEqual(analyze_graph(layernorm)["parameters"]["n1"], 16)
+
+    def test_rmsnorm_drops_parameters_without_elementwise_affine(self):
+        self.assertEqual(analyze_graph(rmsnorm_graph({"elementwise_affine": 0}))["totalParameters"], 0)
+        multi = rmsnorm_graph({"normalized_shape": [3, 4]}, shape=(2, 3, 4))
+        self.assertEqual(analyze_graph(multi)["totalParameters"], 12)
+
+    def test_rmsnorm_normalized_shape_must_match_the_input_suffix(self):
+        with self.assertRaisesRegex(ValueError, "normalized_shape"):
+            analyze_graph(rmsnorm_graph({"normalized_shape": 4}))
+        with self.assertRaisesRegex(ValueError, "normalized_shape"):
+            analyze_graph(rmsnorm_graph({"normalized_shape": 0}))
+
+    def test_folded_rmsnorm_scales_parameters_without_changing_shape(self):
+        baseline = analyze_graph(rmsnorm_graph())
+        for repeat in (1, 2, 3, MAX_REPEAT):
+            with self.subTest(repeat=repeat):
+                info = analyze_graph(rmsnorm_graph(repeat=repeat))
+                self.assertEqual(info["parameters"]["n1"], 8 * repeat)
+                self.assertEqual(info["shapes"]["n2"], baseline["shapes"]["n2"])
+
+
 if __name__ == "__main__": unittest.main()
