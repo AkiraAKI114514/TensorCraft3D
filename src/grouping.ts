@@ -206,3 +206,90 @@ export function dissolveAutoGroups(graph: Graph): { graph: Graph; groups: number
 }
 
 export const groupColor = COLORS.Group;
+
+/** 用同一套可折叠判据检查一组节点，返回错误原因或可用的边界。 */
+function inspectSelection(graph: Graph, members: string[]): { entry: string; exit: string } | string {
+  if (members.length < 2) return '至少选择两个节点';
+  const inside = new Set(members);
+  if (inside.size !== members.length) return '选择中包含重复节点';
+  if (members.some(id => !graph.nodes.some(n => n.id === id))) return '选择中包含不存在的节点';
+  const internalIn = new Set<string>(), internalOut = new Set<string>();
+  for (const edge of graph.edges) {
+    if (!inside.has(edge.source) || !inside.has(edge.target)) continue;
+    internalIn.add(edge.target);
+    internalOut.add(edge.source);
+  }
+  const entries = members.filter(id => !internalIn.has(id));
+  const exits = members.filter(id => !internalOut.has(id));
+  const externallyIn = new Set(graph.edges.filter(e => inside.has(e.target) && !inside.has(e.source)).map(e => e.target));
+  const externallyOut = new Set(graph.edges.filter(e => inside.has(e.source) && !inside.has(e.target)).map(e => e.source));
+  if (externallyIn.size === 1 && externallyOut.size === 1 && externallyIn.has(entries[0]) && externallyOut.has(exits[0])) return { entry: entries[0], exit: exits[0] };
+  // 只被外部连到一个节点的选择是常见的操作失误，单独给出更具体的原因。
+  if (externallyIn.size > 1) return '外部有多条连线指向块内不同节点，块必须只有唯一入口';
+  if (externallyOut.size > 1) return '块内多个节点有对外连线，块必须只有唯一出口';
+  if (entries.length !== 1 || exits.length !== 1) return '选择的节点必须构成唯一入口和唯一出口';
+  return '块内不能有多余的入口或出口连接';
+}
+
+/**
+ * 手动把一组节点折成一个块实例。
+ *
+ * 与自动识别共用同一套判据与同一个数据结构，所以下游分不出一个块是哪种来源。
+ * 区别只在 origin：手动组永远不会被自动过程解散。
+ */
+export function manualGroup(graph: Graph, members: string[], name?: string): { graph: Graph; id: string } | { error: string } {
+  const checked = inspectSelection(graph, members);
+  if (typeof checked === 'string') return { error: checked };
+  const { entry, exit } = checked;
+  const byId = new Map(graph.nodes.map(n => [n.id, n]));
+  const inside = new Set(members);
+  const ordered = topologicalOrder(graph).filter(id => inside.has(id));
+  const existing = Object.keys(graph.subgraphs ?? {}).filter(key => /^manual_\d+$/.test(key)).length;
+  let key = `manual_${existing + 1}`;
+  while (graph.subgraphs?.[key]) key = `manual_${Number(key.split('_')[1]) + 1}`;
+  const position = new Map(ordered.map((id, i) => [id, i]));
+  const definition: SubgraphDef = {
+    id: key, name: name?.trim() ? name.trim().slice(0, 120) : `Group ${existing + 1}`, origin: 'manual',
+    nodes: ordered.map((id, i) => ({ ...byId.get(id)!, id: `n${i}`, position: { x: i * 210, y: 100 } })),
+    edges: graph.edges.filter(e => inside.has(e.source) && inside.has(e.target))
+      .map(e => ({ ...e, id: `e_${e.id}`, source: `n${position.get(e.source)!}`, target: `n${position.get(e.target)!}` })),
+  };
+  const anchor = byId.get(entry)!;
+  const group: Layer = { id: `block_${key}`, name: definition.name, op: 'Group', params: {}, position: { ...anchor.position }, subgraph: key };
+  const nodes = graph.nodes.filter(n => !inside.has(n.id)).concat(group);
+  const edges: Edge[] = [];
+  for (const edge of graph.edges) {
+    const sourceIn = inside.has(edge.source), targetIn = inside.has(edge.target);
+    if (sourceIn && targetIn) continue;
+    const source = sourceIn ? group.id : edge.source;
+    const target = targetIn ? group.id : edge.target;
+    if (edges.some(e => e.source === source && e.target === target && e.sourcePort === edge.sourcePort && e.targetPort === edge.targetPort)) continue;
+    edges.push({ ...edge, source, target });
+  }
+  return { graph: { ...graph, nodes, edges, subgraphs: { ...(graph.subgraphs ?? {}), [key]: definition } }, id: group.id };
+}
+
+/** 解散一个块实例，把它内部节点内联回当前层级。手动组也能解散，这是用户的显式操作。 */
+export function dissolveGroup(graph: Graph, groupId: string): { graph: Graph } | { error: string } {
+  const group = graph.nodes.find(n => n.id === groupId);
+  if (!group || !isGroup(group) || !group.subgraph) return { error: '选中的不是结构块实例' };
+  const definition = graph.subgraphs?.[group.subgraph];
+  if (!definition) return { error: '结构块定义缺失' };
+  const entry = definition.nodes.find(n => !definition.edges.some(e => e.target === n.id)) ?? definition.nodes[0];
+  const exit = definition.nodes.find(n => !definition.edges.some(e => e.source === n.id)) ?? definition.nodes[definition.nodes.length - 1];
+  // 内联节点必须换一套 id：子图内部的 id 在整张图里不唯一，直接内联会和别的块撞名。
+  const renamed = new Map(definition.nodes.map(n => [n.id, `${groupId}_${n.id}`]));
+  const nodes = graph.nodes.filter(n => n.id !== groupId).concat(
+    definition.nodes.map(n => ({ ...n, id: renamed.get(n.id)!, position: { x: group.position.x + n.position.x, y: group.position.y + n.position.y } })),
+  );
+  const edges: Edge[] = [
+    ...graph.edges.filter(e => e.source !== groupId && e.target !== groupId),
+    ...definition.edges.map(e => ({ ...e, id: `${groupId}_${e.id}`, source: renamed.get(e.source)!, target: renamed.get(e.target)! })),
+    ...graph.edges.filter(e => e.source === groupId).map(e => ({ ...e, id: `${groupId}_out_${e.id}`, source: renamed.get(exit.id)! })),
+    ...graph.edges.filter(e => e.target === groupId).map(e => ({ ...e, id: `${groupId}_in_${e.id}`, target: renamed.get(entry.id)! })),
+  ];
+  const remaining = { ...(graph.subgraphs ?? {}) };
+  // 只有没有其它实例再引用它时才能删掉定义。
+  if (!nodes.some(n => isGroup(n) && n.subgraph === group.subgraph)) delete remaining[group.subgraph];
+  return { graph: { ...graph, nodes, edges, subgraphs: Object.keys(remaining).length ? remaining : undefined } };
+}

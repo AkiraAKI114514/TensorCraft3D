@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { analyze } from './analysis';
-import { autoGroup, dissolveAutoGroups } from './grouping';
+import { autoGroup, dissolveAutoGroups, dissolveGroup, manualGroup } from './grouping';
 import type { Edge, Graph, Layer } from './types';
 
 const node = (id: string, op: Layer['op'], params: Layer['params'] = {}): Layer => ({ id, name: id, op, params, position: { x: 0, y: 0 } });
@@ -78,6 +78,48 @@ describe('autoGroup', () => {
     const expanded = analyze(graph);
     expect(expanded.valid).toBe(true);
     expect(expanded.diagnostics.filter(d => d.level === 'error')).toHaveLength(0);
+  });
+});
+
+describe('manualGroup', () => {
+  const chain = (): Graph => ({ version: 1, name: 'chain', nodes: [node('i', 'Input', { shape: [2, 4] }), node('l', 'Linear', { out_features: 4 }), node('a', 'ReLU'), node('o', 'Output')], edges: [edge('i', 'l'), edge('l', 'a'), edge('a', 'o')] });
+
+  it('folds a hand-picked run and keeps accounting identical', () => {
+    const graph = chain();
+    const result = manualGroup(graph, ['l', 'a'], 'Hand Block');
+    expect('graph' in result).toBe(true);
+    const grouped = (result as { graph: Graph }).graph;
+    expect(grouped.nodes.filter(n => n.op === 'Group')).toHaveLength(1);
+    expect(grouped.subgraphs!.manual_1.origin).toBe('manual');
+    expect(grouped.subgraphs!.manual_1.name).toBe('Hand Block');
+    expect(analyze(grouped).parameters).toBe(analyze(graph).parameters);
+  });
+
+  it('refuses a selection that is not a single-entry single-exit run', () => {
+    // 只选 l：它是入口，但 a 不在块内，于是出边和入边各自唯一——这里选 l 单独一个应当被拒绝（不足两个节点）。
+    const graph = chain();
+    expect(manualGroup(graph, ['l'])).toHaveProperty('error');
+  });
+
+  it('refuses a selection whose outside edges land on more than one node', () => {
+    // i→l0 与 s→add 是两条来自块外的边，落在块内不同节点上：块会有两个入口，必须拒绝。
+    const graph: Graph = { version: 1, name: 'two-in', nodes: [node('i', 'Input', { shape: [2, 4] }), node('s', 'Input', { shape: [2, 4] }), node('l0', 'Linear', { out_features: 4 }), node('add', 'Add'), node('o', 'Output')], edges: [edge('i', 'l0'), edge('l0', 'add'), edge('s', 'add'), edge('add', 'o')] };
+    expect(manualGroup(graph, ['l0', 'add'])).toHaveProperty('error');
+  });
+
+  it('round-trips: manual group then dissolve restores the accounting', () => {
+    const graph = chain();
+    const grouped = (manualGroup(graph, ['l', 'a']) as { graph: Graph; id: string });
+    const dissolved = dissolveGroup(grouped.graph, grouped.id);
+    expect('graph' in dissolved).toBe(true);
+    const restored = (dissolved as { graph: Graph }).graph;
+    expect(restored.nodes.some(n => n.op === 'Group')).toBe(false);
+    expect(analyze(restored).parameters).toBe(analyze(graph).parameters);
+    expect(restored.edges).toHaveLength(graph.edges.length);
+  });
+
+  it('rejects dissolving a node that is not a block', () => {
+    expect(dissolveGroup(chain(), 'l')).toHaveProperty('error');
   });
 });
 
