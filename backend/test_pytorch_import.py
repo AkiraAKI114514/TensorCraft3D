@@ -85,6 +85,56 @@ class PyTorchImportTests(unittest.TestCase):
             "return self.wide(x) * self.narrow(x)")
         self.reject(code, input_shapes={"x": [2, 4, 8]})
 
+    def test_matmul_lowers_to_einsum(self):
+        # `a @ b` carries no new IR surface: it becomes an Einsum node with a synthesized
+        # equation, so both analyzers keep using the contraction rule they already share.
+        code = module_source(
+            "self.to_q = nn.Linear(8, 8)\nself.to_k = nn.Linear(8, 8)",
+            "return self.to_q(x) @ self.to_k(x).transpose(-2, -1)")
+        result, model = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+        equations = [n["params"]["equation"] for n in result["graph"]["nodes"] if n["op"] == "Einsum"]
+        # Two contractions: the transpose, then the matmul. Equations are verified
+        # numerically against `q @ k.transpose(-2, -1)` below rather than by eye.
+        self.assertEqual(equations, ["abc->acb", "acb,abd->acd"])
+        left, right = torch.randn(2, 4, 8), torch.randn(2, 4, 8)
+        self.assertTrue(torch.allclose(left @ right.transpose(-2, -1), torch.einsum(equations[1], left, torch.einsum(equations[0], right))))
+        output = model(torch.randn(2, 4, 8)); output.sum().backward()
+        self.assertEqual(list(output.shape), [2, 4, 4])
+        self.assertTrue(all(p.grad is not None for p in model.parameters()))
+
+    def test_matmul_spellings_agree(self):
+        # torch.matmul / torch.bmm / Tensor.matmul must resolve the same way as `@`;
+        # dispatching these on the attribute before the path would misread `torch` as a tensor.
+        for forward in (
+            "return torch.matmul(self.q(x), self.k(x).transpose(-2, -1))",
+            "return self.q(x).matmul(self.k(x).transpose(-2, -1))",
+        ):
+            code = module_source("self.q = nn.Linear(8, 8)\nself.k = nn.Linear(8, 8)", forward)
+            result, _ = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+            equations = [n["params"]["equation"] for n in result["graph"]["nodes"] if n["op"] == "Einsum"]
+            self.assertEqual(equations, ["abc->acb", "acb,abd->acd"], forward)
+
+    def test_matmul_rejects_mismatched_contraction(self):
+        # Both operands are [2,4,8]; the last axis of the left must equal the second-to-last
+        # of the right, so this is a real error rather than something to broadcast.
+        code = module_source("self.q = nn.Linear(8, 8)\nself.k = nn.Linear(8, 8)", "return self.q(x) @ self.k(x)")
+        self.reject(code, input_shapes={"x": [2, 4, 8]})
+
+    def test_bmm_requires_rank_three(self):
+        code = module_source("self.q = nn.Linear(8, 8)\nself.k = nn.Linear(8, 8)", "return torch.bmm(self.q(x), self.k(x))")
+        self.reject(code, input_shapes={"x": [2, 4, 8]})
+
+    def test_transpose_and_permute_lower_to_einsum(self):
+        code = module_source(
+            "self.proj = nn.Linear(8, 8)",
+            "return self.proj(x).permute(0, 2, 1).transpose(1, 2)")
+        result, model = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+        # Each op relabels its own input from `abc`, so a swap of the last two axes reads
+        # `abc->acb` both times; the compositions cancel and the shape returns to [2,4,8].
+        equations = [n["params"]["equation"] for n in result["graph"]["nodes"] if n["op"] == "Einsum"]
+        self.assertEqual(equations, ["abc->acb", "abc->acb"])
+        self.assertEqual(list(model(torch.randn(2, 4, 8)).shape), [2, 4, 8])
+
     def test_einsum_contraction_imports_and_runs(self):
         # Scaled attention written out by hand: both contractions are explicit `->` form.
         code = module_source(

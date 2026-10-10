@@ -16,6 +16,42 @@ def unparse(node):
     return ast.unparse(node) if node is not None else ""
 
 
+_LABELS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def matmul_equation(left_rank, right_rank):
+    """Explicit einsum equation equivalent to `a @ b` for static ranks.
+
+    torch.matmul contracts the left operand's last axis with the right operand's
+    second-to-last and broadcasts the remaining leading axes. Expressing that as an
+    equation keeps matmul inside the existing Einsum op rather than adding a second
+    contraction path whose shape rule could drift away from the one both analyzers
+    already agree on.
+    """
+    if left_rank < 2 or right_rank < 2:
+        raise ValueError("matmul requires rank 2 or higher on both operands")
+    left_batch, right_batch = left_rank - 2, right_rank - 2
+    # torch broadcasts batch axes here; require matching rank and let einsum_shape
+    # compare the sizes, so a silent broadcast cannot slip through.
+    if left_batch and right_batch and left_batch != right_batch:
+        raise ValueError("matmul batch ranks must match")
+    batch = max(left_batch, right_batch)
+    if batch + 3 > len(_LABELS): raise ValueError("matmul rank is too high")
+    leading = _LABELS[:batch]
+    contracted, left_free, right_free = _LABELS[batch], _LABELS[batch + 1], _LABELS[batch + 2]
+    # A side without batch axes simply omits the leading labels.
+    left = (leading if left_batch else "") + left_free + contracted
+    right = (leading if right_batch else "") + contracted + right_free
+    return f"{left},{right}->{leading}{left_free}{right_free}"
+
+
+def permutation_equation(rank, order):
+    """Explicit einsum equation for an axis permutation, e.g. `bsd->bds`."""
+    if sorted(order) != list(range(rank)): raise ValueError("permutation must cover every axis exactly once")
+    labels = _LABELS[:rank]
+    return f"{labels}->{''.join(labels[index] for index in order)}"
+
+
 class ImportIssue(ValueError):
     def __init__(self, message, node=None, code="UNSUPPORTED"):
         super().__init__(message)
@@ -663,6 +699,20 @@ class Parser:
             return result, ports
         return result
 
+    def contract(self, left, right, node):
+        """Lower `a @ b` into the existing Einsum op instead of a parallel contraction path."""
+        left_shape, right_shape = self.tensor_shape(left, node), self.tensor_shape(right, node)
+        try:
+            equation = matmul_equation(len(left_shape), len(right_shape))
+        except ValueError as error:
+            raise ImportIssue(f"matmul 无效：{error}", node) from error
+        shapes = [left_shape, right_shape]
+        try:
+            einsum_shape(equation, shapes)
+        except ValueError as error:
+            raise ImportIssue(f"matmul 形状无效：{error}", node) from error
+        return self.add("Einsum", {"equation": equation}, [(left, None), (right, None)], "矩阵乘法", node)
+
     def shape_operation(self, call, env, attrs, method=False):
         kind = call.func.attr if method else self.path(call.func).split(".")[-1]
         names = ["dim"] if method else ["input", "dim"]
@@ -873,6 +923,8 @@ class Parser:
             if isinstance(expression.op, ast.Mult) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 # Element-wise gating (`gate * value`), the shape of a SwiGLU/GLU feed-forward.
                 return self.add("Multiply", {}, [(left, None), (right, None)], "逐元素相乘", expression)
+            if isinstance(expression.op, ast.MatMult) and isinstance(left, Tensor) and isinstance(right, Tensor):
+                return self.contract(left, right, expression)
             raise ImportIssue("不支持此张量运算", expression)
         if isinstance(expression, ast.Call):
             function = expression.func
@@ -994,6 +1046,40 @@ class Parser:
                 return self.apply(self.module(fake, env), [source], {}, "Flatten", expression)
             if isinstance(function, ast.Attribute) and function.attr in ("unsqueeze", "squeeze"):
                 return self.shape_operation(expression, env, attrs, method=True)
+            if isinstance(function, ast.Attribute) and function.attr in ("transpose", "permute"):
+                if expression.keywords: raise ImportIssue("transpose/permute 不支持关键字参数", expression)
+                source = self.expr(function.value, env, attrs)
+                rank = len(self.tensor_shape(source, expression))
+                dims = [self.literal(argument, env) for argument in expression.args]
+                if len(dims) == 1 and isinstance(dims[0], (list, tuple)): dims = list(dims[0])
+                if not dims or any(type(dimension) is not int for dimension in dims):
+                    raise ImportIssue(f"{function.attr} 需要整数维度常量", expression)
+                if function.attr == "transpose":
+                    if len(dims) != 2: raise ImportIssue("transpose 需要恰好两个维度", expression)
+                    order = list(range(rank))
+                    first, second = (dimension % rank for dimension in dims)
+                    order[first], order[second] = order[second], order[first]
+                else:
+                    if len(dims) != rank: raise ImportIssue("permute 必须覆盖全部维度", expression)
+                    order = [dimension % rank for dimension in dims]
+                try: equation = permutation_equation(rank, order)
+                except ValueError as error: raise ImportIssue(f"维度置换无效：{error}", expression) from error
+                return self.add("Einsum", {"equation": equation}, [(source, None)], "维度置换", expression)
+            if path in ("torch.matmul", "torch.functional.matmul", "torch.bmm", "torch.functional.bmm"):
+                # Must be dispatched on the full path before the attribute branch below, or
+                # `torch.matmul(...)` is misread as a method call on a tensor named `torch`.
+                if expression.keywords or len(expression.args) != 2: raise ImportIssue(f"{path} 需要两个张量参数", expression)
+                left, right = (self.expr(argument, env, attrs) for argument in expression.args)
+                if path.endswith("bmm"):
+                    for operand in (left, right):
+                        if len(self.tensor_shape(operand, expression)) != 3: raise ImportIssue("bmm 需要两个三维张量", expression)
+                return self.contract(left, right, expression)
+            if isinstance(function, ast.Attribute) and function.attr in ("matmul", "bmm"):
+                if expression.keywords or len(expression.args) != 1: raise ImportIssue(f"{function.attr} 需要一个张量参数", expression)
+                if function.attr == "bmm":
+                    rank = len(self.tensor_shape(self.expr(function.value, env, attrs), expression))
+                    if rank != 3: raise ImportIssue("bmm 需要两个三维张量", expression)
+                return self.contract(self.expr(function.value, env, attrs), self.expr(expression.args[0], env, attrs), expression)
             if isinstance(function, ast.Attribute) and function.attr in ("view", "reshape"):
                 # A very common flatten spelling; arbitrary reshapes require a new op.
                 dimensions = expression.args
