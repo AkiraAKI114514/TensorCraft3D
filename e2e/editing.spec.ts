@@ -48,6 +48,16 @@ async function clickAndCheckCenter(page: Page, selector: string, op?: string) {
   expect(Math.abs(after.y - after.height / 2), `${selector} should be centered vertically`).toBeLessThan(3);
 }
 
+// These two loops export an SVG and locate a module's centre for every case, which
+// means two full layout passes plus a download interception per test. Under software
+// rendering on a shared Windows runner that runs several times slower than locally:
+// cases measured at 15s here have been reported past two minutes there. The 90s
+// default is not enough headroom, and a timeout here reports a false failure rather
+// than a real regression — `centers attention scores-0` already exceeded it at 2.0m
+// on f76037c, before any of the viewport work. Budget them explicitly, the same way
+// the Python-spawning source tests do.
+const sceneCaseTimeout = 180_000;
+
 const focusCases: [string, string[][]][] = [
   ['cnn', [['layer_0', 'Input'], ['layer_1', 'Conv2d'], ['layer_2', 'BatchNorm2d'], ['layer_3', 'ReLU'], ['layer_4', 'MaxPool2d'], ['layer_7', 'AdaptiveAvgPool2d'], ['layer_8', 'Flatten'], ['layer_9', 'Linear'], ['layer_10', 'Output']]],
   ['mlp', [['layer_3', 'Dropout'], ['layer_5', 'GELU']]],
@@ -55,6 +65,7 @@ const focusCases: [string, string[][]][] = [
 ];
 
 for (const [preset, entries] of focusCases) for (const [id, op] of entries) test(`centers ${preset} ${id} (${op}) when clicked`, async ({ page }) => {
+  test.setTimeout(sceneCaseTimeout);
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
   await page.goto('/');
   await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
@@ -65,6 +76,7 @@ for (const [preset, entries] of focusCases) for (const [id, op] of entries) test
 });
 
 for (const part of ['b0:q0', 'b0:k0', 'b0:v0', 'b0:q1', 'b0:q2', 'b0:q3', 'FFN', 'Concat · Wᵒ', 'Add1', 'Add2', 'LN1', 'LN2', 'scores-0', 'weighted-0', 'input', 'head-input', 'head-output']) test(`centers attention ${part} when clicked`, async ({ page }) => {
+  test.setTimeout(sceneCaseTimeout);
   const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
   await page.goto('/');
   await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
