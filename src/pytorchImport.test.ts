@@ -11,7 +11,7 @@ function roundtrip(graph: Graph) {
 }
 
 describe('PyTorch code imports', () => {
-  it.each(['cnn', 'mlp', 'residual', 'transformer', 'mqa', 'gqa', 'cross_attention'])('reimports exported %s with identical computation', preset => {
+  it.each(['cnn', 'mlp', 'residual', 'transformer', 'mqa', 'gqa', 'cross_attention', 'decoder'])('reimports exported %s with identical computation', preset => {
     const original = PRESETS[preset](), imported = roundtrip(original);
     expect(validateGraph(imported)).toEqual(imported);
     expect(analyze(imported).valid).toBe(true);

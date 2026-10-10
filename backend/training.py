@@ -95,6 +95,10 @@ def build_model(graph):
                 if op == "Input": values[key] = x[key] if isinstance(x, dict) else x
                 elif op == "Output": values[key] = args[0]
                 elif op == "Add": values[key] = sum(args)
+                elif op == "Multiply":
+                    product = args[0]
+                    for value in args[1:]: product = product * value
+                    values[key] = product
                 elif op == "Concat": values[key] = torch.cat(args, dim=int(node["params"].get("dim", 1)))
                 elif op == "Unsqueeze": values[key] = torch.unsqueeze(args[0], int(node["params"].get("dim", 0)))
                 elif op == "Squeeze":

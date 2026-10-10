@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Concat", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Concat", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
@@ -217,7 +217,7 @@ def analyze_expanded_graph(graph):
         else:
             cross = op in ("Transformer", "MultiHeadAttention") and p.get("attention_type") == "cross"
             required_inputs = 2 if cross or op == "Bilinear" else 1
-            if not parents or (op not in ("Add", "Concat") and len(parents) != required_inputs): raise ValueError(f"{key}: invalid input count")
+            if not parents or (op not in ("Add", "Multiply", "Concat") and len(parents) != required_inputs): raise ValueError(f"{key}: invalid input count")
             shape = list(in_shapes[0])
             if op in _TRANSPOSE_CONVS:
                 rank = _TRANSPOSE_CONVS[op]
@@ -399,6 +399,8 @@ def analyze_expanded_graph(graph):
                     count = num_parameters
             elif op == "Add":
                 if len(parents) < 2 or any(s != shape for s in in_shapes): raise ValueError(f"{key}: Add input shapes must match")
+            elif op == "Multiply":
+                if len(parents) < 2 or any(s != shape for s in in_shapes): raise ValueError(f"{key}: Multiply input shapes must match")
             elif op == "Concat":
                 dim = integer("dim", 1, maximum=len(shape) - 1)
                 if len(parents) < 2 or any(len(s) != len(shape) or any(v != shape[i] for i, v in enumerate(s) if i != dim) for s in in_shapes): raise ValueError(f"{key}: Concat dimensions must match")

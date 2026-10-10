@@ -567,7 +567,7 @@ class Parser:
         node = next(n for n in self.graph["nodes"] if n["id"] == tensor.node)
         # Shape-preserving ops and the folded-block instance pass their declared dimension
         # upstream; a `Group` node is transparent, so a body's expectation reaches the Input.
-        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Group"):
+        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Multiply", "Group"):
             for edge in self.graph["edges"]:
                 if edge["target"] == node["id"]: self.hint(Tensor(edge["source"], edge.get("sourcePort")), module)
         if node["op"] != "Input" or node["params"]["shape"]: return
@@ -870,6 +870,9 @@ class Parser:
                     raise ImportIssue("静态参数运算无效", expression) from error
             if isinstance(expression.op, ast.Add) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 return self.add("Add", {}, [(left, None), (right, None)], "残差相加", expression)
+            if isinstance(expression.op, ast.Mult) and isinstance(left, Tensor) and isinstance(right, Tensor):
+                # Element-wise gating (`gate * value`), the shape of a SwiGLU/GLU feed-forward.
+                return self.add("Multiply", {}, [(left, None), (right, None)], "逐元素相乘", expression)
             raise ImportIssue("不支持此张量运算", expression)
         if isinstance(expression, ast.Call):
             function = expression.func

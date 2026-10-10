@@ -37,7 +37,7 @@ function layout(graph: Graph, analysis: Analysis, expanded: boolean) {
 
 function contentsDimensions(shape: number[] | undefined, op: string, node?: Layer, expanded = false): [number, number, number] {
   if (node && isAttention(op)) return attentionLayout(node, expanded).dimensions;
-  if (op === 'Add') return [0.3, 0.3, 0.3];
+  if (op === 'Add' || op === 'Multiply') return [0.3, 0.3, 0.3];
   if (!shape) return [0.5, 1, 1];
   if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
   return [['ReLU', 'GELU', 'Dropout', 'Flatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
@@ -160,14 +160,14 @@ function World(props: Props) {
     const attention = isAttention(node.op) ? attentionLayout(node, props.expanded) : null;
     const headPoint = head !== undefined ? attention?.heads[head] : undefined;
     const focusBox = new THREE.Box3().setFromCenterAndSize(target, new THREE.Vector3(...contentsDimensions(props.analysis.layers[id]?.output, node.op, node, props.expanded)));
-    if (node.op === 'Add') routes.filter(route => route.target === id).forEach(route => {
+    if (node.op === 'Add' || node.op === 'Multiply') routes.filter(route => route.target === id).forEach(route => {
       flowCurve(route).getPoints(40).forEach(p => focusBox.expandByPoint(p));
       props.graph.nodes.filter(n => positions[n.id].x >= route.start.x && positions[n.id].x <= route.end.x).forEach(n => focusBox.union(new THREE.Box3().setFromCenterAndSize(positions[n.id], new THREE.Vector3(...contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded)))));
     });
     const center = headPoint ? target.clone().add(new THREE.Vector3(...headPoint)) : target.clone();
     const radius = attention ? qkvRadius(attention.qkvCount) : 0;
     const dims = headPoint ? new THREE.Vector3(2.1, Math.max(5, radius * 2 + 2.8), Math.max(4.4, radius * 2 + 1.3)) : new THREE.Vector3(...contentsDimensions(props.analysis.layers[id]?.output, node.op, node, props.expanded));
-    centerView(center, dims, attention ? (headPoint ? new THREE.Vector3(24, 5, 18) : new THREE.Vector3(18, 7, 24)) : new THREE.Vector3(4, 8, 12), node.op === 'Add' ? focusBox : undefined);
+    centerView(center, dims, attention ? (headPoint ? new THREE.Vector3(24, 5, 18) : new THREE.Vector3(18, 7, 24)) : new THREE.Vector3(4, 8, 12), node.op === 'Add' || node.op === 'Multiply' ? focusBox : undefined);
   };
   useEffect(() => {
     const context = gl.getContext(), ext = context.getExtension('WEBGL_debug_renderer_info');
@@ -211,7 +211,7 @@ function World(props: Props) {
         <mesh userData={{ exportMesh: true }}>
           <boxGeometry args={dims} /><meshStandardMaterial color={color} transparent opacity={selected || hover === n.id ? 0.78 : 0.48} roughness={0.28} metalness={0.12} emissive={color} emissiveIntensity={issue ? 0.5 : selected ? 0.16 : 0} />
         </mesh>
-        <NodeOutline dims={dims} color={selected ? '#223b43' : color} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
+        <NodeOutline dims={dims} color={selected ? '#223b43' : color} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.48, 40]} /><meshBasicMaterial color="#233f47" transparent opacity={0.7} /></mesh>}
         {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
       </group>;

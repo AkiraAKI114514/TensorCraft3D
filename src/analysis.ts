@@ -121,7 +121,7 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (parents.length !== 2 || new Set(inputEdges.map(e => crossInputRole(graph, n, e.id))).size !== 2) throw new Error('Cross-Attention 需要两个输入：一个 Query 和一个 Context');
       } else {
         if (inputEdges.some(e => e.targetPort)) throw new Error('Query / Context 端口只适用于 Cross-Attention');
-        if (!['Input', 'Add', 'Concat', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add 或 Concat');
+        if (!['Input', 'Add', 'Multiply', 'Concat', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply 或 Concat');
         if (n.op === 'Bilinear' && parents.length !== 2) throw new Error('Bilinear 需要两个输入');
       }
       let output = [...(input[0] || [])], count = 0;
@@ -259,6 +259,8 @@ function analyzeExpanded(graph: Graph): Analysis {
         const dim = Number(n.params.dim ?? -1); if (!Number.isInteger(dim) || dim < -output.length || dim >= output.length) throw new Error('dim 超出输入维度');
       } else if (n.op === 'Add') {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Add 至少需要两个完全相同形状的输入');
+      } else if (n.op === 'Multiply') {
+        if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Multiply 至少需要两个完全相同形状的输入');
       } else if (n.op === 'Concat') {
         if (input.length < 2) throw new Error('Concat 至少需要两个输入'); const dim = integer('dim', 1, 1, output.length - 1);
         if (input.some(s => s.length !== output.length || s.some((v, i) => i !== dim && v !== output[i]))) throw new Error('Concat 非拼接维度必须一致');
@@ -275,7 +277,7 @@ function analyzeExpanded(graph: Graph): Analysis {
       if (n.op === 'Linear' && n.id !== graph.edges.find(e => e.target === outputNode?.id)?.source && input[0].at(-1)! >= 128 && output.at(-1)! < input[0].at(-1)! * 0.1) add('BOTTLENECK', '隐藏层特征维度骤降超过 90%，可能丢失信息', id, 'warning');
       // 折叠层在拓扑上是 repeat 个串联实例，深度必须整段累计，否则深层网络的梯度衰减会被漏报。
       const step = ['Conv2d', 'Linear'].includes(n.op) ? repeat : 0;
-      depth[id] = ['Add', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + step;
+      depth[id] = ['Add', 'Multiply', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + step;
       if (depth[id] >= 8) add('DEEP_NO_SKIP', '连续 8 个参数层缺少残差路径，存在梯度衰减风险', id, 'warning');
       if (outputNode && !ancestors.has(id)) add(n.op === 'Input' ? 'INPUT_UNUSED' : 'UNUSED', '此层未连接到模型输出', id, n.op === 'Input' ? 'error' : 'warning');
       if (n.op === 'Output' && graph.edges.some(e => e.source === id)) throw new Error('输出层不能连接下游');
