@@ -30,6 +30,7 @@ These patterns are supported **within the restrictions below**, not as arbitrary
 | Residual addition | `x + residual` | Both runtime tensors must have identical shapes; general broadcasting and inplace `+=` are unsupported. |
 | Element-wise gating | `x * y` | Both runtime tensors must have identical shapes, matching `torch.mul`. This is the shape of a GLU/SwiGLU feed-forward gate. Scalar multipliers and general broadcasting are unsupported. |
 | Concatenation | `torch.cat([a, b], dim=1)`, `torch.concat(...)` | A static list/tuple and a positive non-batch axis; other dimensions must match. Specify `dim`: default batch concatenation is unsupported. |
+| Einsum contractions | `torch.einsum("bsd,btd->bst", q, k)` | Explicit `->` form with a literal equation string. Labels shared between operands must have equal sizes, output labels must appear in an input, and each subscript must match its operand's rank. Implicit-output equations, ellipsis, repeated output labels and an arbitrary number of operands are unsupported. |
 | Convolution | Conv1d/2d/3d, ConvTranspose1d/2d/3d | Bias enabled, `groups=1`, `dilation=1`, zero padding mode, uniform spatial tuples. Ordinary Conv accepts the PyTorch default `padding=0`. |
 | Dense layers | Linear, Bilinear | Bias enabled. Linear acts on the last dimension. Bilinear takes two `[B,F]` inputs with the declared second-input width. |
 | BatchNorm | BatchNorm1d/2d/3d | Default epsilon/momentum, affine and running statistics enabled. BN1d accepts `[B,C]` and `[B,C,L]`; BN2d/3d require ranks 4/5. |

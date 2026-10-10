@@ -208,6 +208,8 @@ export function generatePython(graph: Graph) {
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
         case 'Multiply': forward.push(`        values[${key}] = ${inputs.join(' * ')}`); continue;
         case 'Concat': forward.push(`        values[${key}] = torch.cat([${inputs.join(', ')}], dim=${p.dim ?? 1})`); continue;
+        // `torch.einsum` is native, so unlike ConstantAdd this needs no embedded runtime helper.
+        case 'Einsum': forward.push(`        values[${key}] = torch.einsum(${JSON.stringify(p.equation)}, ${inputs.join(', ')})`); continue;
       }
       const repeat = repeatOf(node);
       const overrides = isAttention(node.op) ? edges.filter(e => isProjectionPort(e.targetPort)) : [];

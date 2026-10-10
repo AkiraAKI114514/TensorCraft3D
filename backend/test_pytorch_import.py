@@ -85,6 +85,39 @@ class PyTorchImportTests(unittest.TestCase):
             "return self.wide(x) * self.narrow(x)")
         self.reject(code, input_shapes={"x": [2, 4, 8]})
 
+    def test_einsum_contraction_imports_and_runs(self):
+        # Scaled attention written out by hand: both contractions are explicit `->` form.
+        code = module_source(
+            "self.to_q = nn.Linear(8, 8)\nself.to_k = nn.Linear(8, 8)\nself.to_v = nn.Linear(8, 8)\nself.out = nn.Linear(8, 8)",
+            "q, k, v = self.to_q(x), self.to_k(x), self.to_v(x)\n"
+            "weights = F.softmax(torch.einsum('bsd,btd->bst', q, k), dim=-1)\n"
+            "return self.out(torch.einsum('bst,btd->bsd', weights, v))")
+        result, model = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+        self.assertEqual([n["op"] for n in result["graph"]["nodes"]].count("Einsum"), 2)
+        equations = [n["params"]["equation"] for n in result["graph"]["nodes"] if n["op"] == "Einsum"]
+        self.assertEqual(equations, ["bsd,btd->bst", "bst,btd->bsd"])
+        output = model(torch.randn(2, 4, 8)); output.sum().backward()
+        self.assertEqual(list(output.shape), [2, 4, 8])
+        self.assertTrue(all(p.grad is not None for p in model.parameters()))
+
+    def test_einsum_rejects_implicit_and_invalid_equations(self):
+        # An implicit-output equation infers its result from alphabetical label order,
+        # and a repeated output label has no single size the analyzer could report.
+        for equation in ("bsd,btd", "bsd,btd->bss", "bsd->bst"):
+            code = module_source(
+                "self.proj = nn.Linear(8, 8)",
+                f"return torch.einsum({equation!r}, self.proj(x), self.proj(x))",
+                inputs="x")
+            self.reject(code, input_shapes={"x": [2, 4, 8]})
+
+    def test_einsum_rejects_mismatched_contraction_sizes(self):
+        # `d` is shared between operands, so unequal widths are a real contraction error
+        # rather than something broadcasting could absorb.
+        code = module_source(
+            "self.wide = nn.Linear(8, 16)\nself.thin = nn.Linear(8, 8)",
+            "return torch.einsum('bsd,btd->bst', self.wide(x), self.thin(x))")
+        self.reject(code, input_shapes={"x": [2, 4, 8]})
+
     def test_static_modulelist_nested_custom_defaults_and_model_selection(self):
         code = '''from torch import nn
 class Block(nn.Module):
