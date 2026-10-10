@@ -59,7 +59,11 @@ export default function Topology({ graph, analysis, selected, onSelect, onChange
     if (updated !== graph) onChange(updated);
   };
   const edgeChanges = (changes: EdgeChange[]) => { if (disabled) return; const deleted = changes.filter(c => c.type === 'remove').map(c => c.id); if (deleted.length) onChange({ ...graph, edges: graph.edges.filter(e => !deleted.includes(e.id)) }); };
-  return <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={setInstance} onNodesChange={changes} onEdgesChange={edgeChanges} onConnect={onConnect} onNodeClick={(_, n) => onSelect(n.id)} onPaneClick={() => onSelect(null)} onSelectionChange={selectionChanged} nodesDraggable={!disabled} nodesConnectable={!disabled} fitView minZoom={0.15} maxZoom={2} deleteKeyCode={disabled ? null : 'Delete'} onlyRenderVisibleElements proOptions={{ hideAttribution: true }}>
+  // 不要启用 `onlyRenderVisibleElements`：它与上面那个 `fitView` effect 互相加强成死锁。
+  // `fitView` 只按「已测量」的节点算包围盒，而卸载的节点没有测量值；一旦某次 fit 只覆盖少数
+  // 节点，画布就会放大到 maxZoom，可见集合随之更小，下一次 fit 又更小——最终整个模型只剩
+  // 两三个节点留在视口里。逐个节点挂载省下的开销远不值得让图「消失」。
+  return <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={setInstance} onNodesChange={changes} onEdgesChange={edgeChanges} onConnect={onConnect} onNodeClick={(_, n) => onSelect(n.id)} onPaneClick={() => onSelect(null)} onSelectionChange={selectionChanged} nodesDraggable={!disabled} nodesConnectable={!disabled} fitView minZoom={0.15} maxZoom={2} deleteKeyCode={disabled ? null : 'Delete'} proOptions={{ hideAttribution: true }}>
     <Panel position="top-left" className="topology-toolbar">
       <div className="topology-actions"><button className="button subtle" disabled={disabled} onClick={() => onAddObject('Input')}><Plus size={13} />{t('添加输入对象')}</button><button className="button subtle" disabled={disabled} onClick={() => onAddObject('Output')}><Plus size={13} />{t('添加输出对象')}</button><button className="button subtle" disabled={disabled || !selected} onClick={onRemoveSelected}><Trash2 size={13} />{t('删除选中对象')}</button><span className="toolbar-separator" /><button className="button subtle" disabled={disabled || picked.length < 2} onClick={() => onGroup(picked)}><Layers3 size={13} />{t('组成结构块 · {count}', { count: picked.length })}</button><button className="button subtle" disabled={disabled || !selectedGroup} onClick={() => selectedGroup && onDissolve(selectedGroup.id)}><Ungroup size={13} />{t('解散结构块')}</button></div>
       <span>{t('Shift 框选或点选多个节点后组成结构块；结构块可进入查看内部。箭头连线自由连线；错误原因见右侧诊断。')}</span>
