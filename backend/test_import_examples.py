@@ -24,7 +24,7 @@ def parse_example(example):
 
 class ImportExampleTests(unittest.TestCase):
     def test_static_import_matches_manifest_without_executing_source(self):
-        self.assertEqual({example["filename"] for example in MANIFEST}, {"cnn.py", "residual.py", "mqa.py", "gqa.py", "cross_attention.py"})
+        self.assertEqual({example["filename"] for example in MANIFEST}, {"cnn.py", "residual.py", "mqa.py", "gqa.py", "cross_attention.py", "grouped_stack.py"})
         for example in MANIFEST:
             with self.subTest(filename=example["filename"]):
                 with patch("builtins.exec", side_effect=AssertionError("executed source")), patch("builtins.eval", side_effect=AssertionError("evaluated source")):

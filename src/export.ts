@@ -34,6 +34,8 @@ export function generatePython(graph: Graph) {
   const definitions: string[] = [];
   // 同名子图共享一个块类；入口形状不同则无法共享，该块退回扁平展开。
   const classMemo = new Map<string, { className: string; body: string }>();
+  // 重复注意力同样共享一个包装类：它们的构造表达式逐字相同，所以只发射一份代码。
+  const attentionClassMemo = new Map<string, string>();
 
   /**
    * 把一个块发射成可复用的 `nn.Module` 子类。
@@ -206,17 +208,48 @@ export function generatePython(graph: Graph) {
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
         case 'Concat': forward.push(`        values[${key}] = torch.cat([${inputs.join(', ')}], dim=${p.dim ?? 1})`); continue;
       }
+      const repeat = repeatOf(node);
+      const overrides = isAttention(node.op) ? edges.filter(e => isProjectionPort(e.targetPort)) : [];
+      // A folded `Group` stands in for `count` identical instances, so the importer replays the
+      // loop body once and resolves every index to that one node. The body therefore has to be a
+      // plain single-input call; a port read or a projection override has no single node to hang
+      // off, so an attention that uses either keeps the old, non-foldable shape.
+      const portReaders = isAttention(node.op) && level.edges.some(e => e.source === node.id && e.sourcePort);
+      let declared = expr;
       // repeat = N folds N isomorphic instances into one node. They are chained,
       // not weight-shared, so the export must materialise N distinct layers to
       // keep sum(p.numel()) equal to analysis.parameters. A single instance keeps
       // the historical `id: layer` shape so old exports stay byte-identical.
-      const repeat = repeatOf(node);
-      declare(node.id, expr, repeat);
+      //
+      // A repeated non-attention op is a bare expression in a `nn.ModuleList`, and the importer
+      // folds that. Attention is different: it is driven through `forward_with_ports`, and the
+      // importer's Group branch only accepts a single positional argument, so a loop that calls
+      // `instance.forward_with_ports(x, None, overrides=...)` is rejected outright. Wrap the
+      // repeated attention in a one-operator class whose `forward` is the plain single-input
+      // call; the class also exposes `forward_with_ports` so a downstream port consumer still
+      // reads the same ports.
+      // A repeated attention is only wrappable when it takes a single input. The wrapper's
+      // `forward(self, x)` has one slot, so a Cross-Attention's Query/Context pair cannot go
+      // through it — and the importer's Group branch accepts one positional argument anyway, so
+      // such a call could never fold. Those keep the old `forward_with_ports` loop, which at
+      // least still runs standalone; wrapping them silently dropped the context input.
+      const wrapped = isAttention(node.op) && repeat > 1 && inputs.length === 1 && !overrides.length && !portReaders;
+      if (wrapped) {
+        let className = attentionClassMemo.get(expr);
+        if (!className) {
+          className = `TensorLabRepeatedAttention_${attentionClassMemo.size}`;
+          attentionClassMemo.set(expr, className);
+          definitions.push(`class ${className}(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.attention = ${expr}\n\n    def forward(self, x):\n        return self.attention(x)\n\n    def forward_with_ports(self, x, context=None, overrides=None):\n        return self.attention.forward_with_ports(x, context, overrides=overrides)\n`);
+        }
+        declared = `${className}()`;
+      }
+      declare(node.id, declared, repeat);
       const accessor = attr(node.id);
       if (isAttention(node.op)) {
-        const overrides = `{${edges.filter(e => isProjectionPort(e.targetPort)).map(e => `${JSON.stringify(e.targetPort)}: ${value(e)}`).join(', ')}}`;
-        if (repeat === 1) forward.push(`        values[${key}], ports[${key}] = ${accessor}.forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrides})`);
-        else forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in ${accessor}:\n            values[${key}], ports[${key}] = instance.forward_with_ports(values[${key}], ${inputs[1] ?? 'None'}, overrides=${overrides})`);
+        const overrideMap = `{${overrides.map(e => `${JSON.stringify(e.targetPort)}: ${value(e)}`).join(', ')}}`;
+        if (repeat === 1) forward.push(`        values[${key}], ports[${key}] = ${accessor}.forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrideMap})`);
+        else if (wrapped) forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in ${accessor}:\n            values[${key}] = instance(values[${key}])`);
+        else forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in ${accessor}:\n            values[${key}], ports[${key}] = instance.forward_with_ports(values[${key}], ${inputs[1] ?? 'None'}, overrides=${overrideMap})`);
       } else if (repeat === 1) forward.push(`        values[${key}] = ${accessor}(${inputs.join(', ')})`);
       else forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in ${accessor}:\n            values[${key}] = instance(values[${key}]${inputs.slice(1).map(i => `, ${i}`).join('')})`);
     }
@@ -225,7 +258,7 @@ export function generatePython(graph: Graph) {
 
   // 优先把块发射成可复用类；任何一块不满足条件就整体退回扁平展开，保持既有行为。
   let emitted = emitScope(graph, '', 'moduleDict', null, null, []);
-  if (!emitted) { definitions.length = 0; classMemo.clear(); emitted = emitScope(expanded, '', 'moduleDict', null, null, []); }
+  if (!emitted) { definitions.length = 0; classMemo.clear(); attentionClassMemo.clear(); emitted = emitScope(expanded, '', 'moduleDict', null, null, []); }
   if (!emitted) throw new Error('请先修复形状或连线错误后导出代码');
   const helper = (expanded.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();

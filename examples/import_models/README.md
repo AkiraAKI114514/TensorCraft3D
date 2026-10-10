@@ -1,6 +1,6 @@
 # PyTorch import examples
 
-These five tiny models are reproducible fixtures for the bounded static importer. Each model is a two-logit classifier: the expected output shape is explicitly `[2, 2]` for the manifest test batch. Run commands from the repository root so the `backend` package and TensorLab attention helpers resolve.
+These six tiny models are reproducible fixtures for the bounded static importer. Each model is a two-logit classifier: the expected output shape is explicitly `[2, 2]` for the manifest test batch. Run commands from the repository root so the `backend` package and TensorLab attention helpers resolve.
 
 ## Model matrix
 
@@ -11,8 +11,11 @@ These five tiny models are reproducible fixtures for the bounded static importer
 | `mqa.py` / `MQAClassifier` | `x: [2, 4, 16]` | `[2, 2]` | `TensorLabAttention` multi-query attention (`kv_heads=1`) |
 | `gqa.py` / `GQAClassifier` | `x: [2, 4, 16]` | `[2, 2]` | `TensorLabTransformer` grouped-query attention (`kv_heads=2`) |
 | `cross_attention.py` / `CrossAttentionClassifier` | `query: [2, 4, 16]`; `context: [2, 6, 16]` | `[2, 2]` | `nn.MultiheadAttention(batch_first=True)` with separate Query and Context |
+| `grouped_stack.py` / `GroupedStackClassifier` | `x: [2, 8, 4]` | `[2, 2]` | repeated-block folding: `nn.ModuleList([Block(d) for _ in range(4)])` where each `Block` holds its own `nn.ModuleList([NormBlock(d) for _ in range(3)])`, all folded into one `Group` node (`repeat=4`) wrapping a nested `Group` (`repeat=3`) |
 
 The complete support matrix, parser flags, unsupported semantics, and resource limits are documented in [`docs/pytorch-import-support.md`](../../docs/pytorch-import-support.md). `manifest.json` is the machine-readable version of this table and is consumed by `backend/test_import_examples.py`.
+
+`grouped_stack.py` is the fixture for the repeated-block path: importing it yields seven top-level nodes (`Input`, `Conv1d`, `Group`, `AdaptiveAvgPool1d`, `Flatten`, `Linear`, `Output`) and two nested subgraph definitions, one per folded container, instead of the 4 x 3 flat operator cascade the source describes. Its repeated `Block`/`NormBlock` body holds no trainable layers on purpose, because the fixture tests map weights onto top-level nodes only; a folded body that does carry weights is covered by the export round-trip contract in `src/exportBlock.test.ts`.
 
 ## Run the reference models
 
@@ -24,6 +27,7 @@ python -m examples.import_models.residual        # ResidualClassifier: [2,3,8,8]
 python -m examples.import_models.mqa             # MQAClassifier: [2,4,16] -> [2,2]
 python -m examples.import_models.gqa             # GQAClassifier: [2,4,16] -> [2,2]
 python -m examples.import_models.cross_attention # CrossAttentionClassifier: query [2,4,16], context [2,6,16] -> [2,2]
+python -m examples.import_models.grouped_stack     # GroupedStackClassifier: [2,8,4] -> [2,2]
 ```
 
 ## Parse a model source
