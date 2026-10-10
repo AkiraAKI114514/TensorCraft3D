@@ -699,6 +699,12 @@ class Parser:
             return result, ports
         return result
 
+    def scale(self, tensor, factor, node):
+        """Lower `tensor * c` / `tensor / c` into a single-input Scale node."""
+        if not math.isfinite(factor): raise ImportIssue("缩放系数必须是有限数值", node)
+        if abs(factor) > 3.4028234663852886e38: raise ImportIssue("缩放系数超出 float32 范围", node)
+        return self.add("Scale", {"factor": factor}, [(tensor, None)], "缩放", node)
+
     def contract(self, left, right, node):
         """Lower `a @ b` into the existing Einsum op instead of a parallel contraction path."""
         left_shape, right_shape = self.tensor_shape(left, node), self.tensor_shape(right, node)
@@ -925,6 +931,20 @@ class Parser:
                 return self.add("Multiply", {}, [(left, None), (right, None)], "逐元素相乘", expression)
             if isinstance(expression.op, ast.MatMult) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 return self.contract(left, right, expression)
+            # One runtime tensor paired with a statically-reduced number: the attention scale
+            # `q @ k.T / math.sqrt(d)`. `expr` has already folded the scalar, whatever its
+            # spelling (literal, module constant, `self.scale`, math.sqrt, unary minus).
+            left_tensor, right_tensor = isinstance(left, Tensor), isinstance(right, Tensor)
+            if left_tensor != right_tensor:
+                number = right if left_tensor else left
+                tensor = left if left_tensor else right
+                if isinstance(number, (int, float)) and not isinstance(number, bool):
+                    if isinstance(expression.op, ast.Mult): return self.scale(tensor, number, expression)
+                    if isinstance(expression.op, ast.Div) and left_tensor:
+                        if number == 0: raise ImportIssue("不支持除以零的缩放", expression)
+                        return self.scale(tensor, 1 / number, expression)
+                    # `c / x` is a per-element reciprocal, `x + c` is affine, `x // c` floors each
+                    # element. None of those is a scale, so they keep the generic rejection.
             raise ImportIssue("不支持此张量运算", expression)
         if isinstance(expression, ast.Call):
             function = expression.func

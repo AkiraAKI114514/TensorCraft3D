@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Concat", "Einsum", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Concat", "Einsum", "Scale", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
@@ -433,6 +433,10 @@ def analyze_expanded_graph(graph):
                 dim = integer("dim", 1, maximum=len(shape) - 1)
                 if len(parents) < 2 or any(len(s) != len(shape) or any(v != shape[i] for i, v in enumerate(s) if i != dim) for s in in_shapes): raise ValueError(f"{key}: Concat dimensions must match")
                 shape[dim] = sum(s[dim] for s in in_shapes)
+            elif op == "Scale":
+                factor = p.get("factor")
+                if type(factor) is not float and type(factor) is not int: raise ValueError(f"{key}: Scale requires a numeric factor")
+                if not isfinite(factor) or abs(factor) > 3.4028234663852886e38: raise ValueError(f"{key}: Scale factor is out of float32 range")
             elif op == "Einsum":
                 equation = p.get("equation")
                 try:

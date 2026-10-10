@@ -8,7 +8,7 @@ from .training import build_model
 
 
 def module_source(init, forward, name="Net", inputs="x"):
-    return f"from torch import nn\nimport torch\nimport torch.nn.functional as F\nclass {name}(nn.Module):\n    def __init__(self):\n        super().__init__()\n" + "".join(f"        {line}\n" for line in init.splitlines()) + f"    def forward(self, {inputs}):\n" + "".join(f"        {line}\n" for line in forward.splitlines())
+    return f"from torch import nn\nimport torch\nimport torch.nn.functional as F\nimport math\nclass {name}(nn.Module):\n    def __init__(self):\n        super().__init__()\n" + "".join(f"        {line}\n" for line in init.splitlines()) + f"    def forward(self, {inputs}):\n" + "".join(f"        {line}\n" for line in forward.splitlines())
 
 
 class PyTorchImportTests(unittest.TestCase):
@@ -134,6 +134,51 @@ class PyTorchImportTests(unittest.TestCase):
         equations = [n["params"]["equation"] for n in result["graph"]["nodes"] if n["op"] == "Einsum"]
         self.assertEqual(equations, ["abc->acb", "abc->acb"])
         self.assertEqual(list(model(torch.randn(2, 4, 8)).shape), [2, 4, 8])
+
+    def test_scalar_scale_imports_as_scale(self):
+        # The standard attention scale. `expr` folds math.sqrt and a constructor attribute
+        # into one number, so the node carries a concrete factor rather than an expression.
+        code = module_source(
+            "self.head_dim = 16\nself.to_q = nn.Linear(8, 8)\nself.to_k = nn.Linear(8, 8)",
+            "scores = self.to_q(x) @ self.to_k(x).transpose(-2, -1) / math.sqrt(self.head_dim)\n"
+            "return scores")
+        result, model = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+        scales = [n["params"]["factor"] for n in result["graph"]["nodes"] if n["op"] == "Scale"]
+        self.assertEqual(scales, [0.25])
+        self.assertEqual(list(model(torch.randn(2, 4, 8)).shape), [2, 4, 4])
+
+    def test_scalar_scale_spellings_agree(self):
+        # Every one of these must land on the same single-input Scale with the same factor.
+        cases = [
+            ("return self.p(x) * 2.0", 2.0),
+            ("return 2.0 * self.p(x)", 2.0),
+            ("return self.p(x) / 4.0", 0.25),
+            ("return self.p(x) * (1.0 / math.sqrt(16))", 0.25),
+            ("return self.p(x) / math.sqrt(16)", 0.25),
+            ("return self.p(x) * -2.0", -2.0),
+            ("return self.p(x) * self.scale", 0.5),
+        ]
+        for forward, expected in cases:
+            code = module_source(
+                "self.scale = 0.5\nself.p = nn.Linear(8, 8)", forward)
+            result, _ = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+            scales = [n["params"]["factor"] for n in result["graph"]["nodes"] if n["op"] == "Scale"]
+            self.assertEqual(scales, [expected], forward)
+
+    def test_scalar_scale_rejects_non_scale_arithmetic(self):
+        # These pair a tensor with a number but are NOT a scale: a reciprocal per element,
+        # an affine shift, and a floor. They must keep the generic rejection.
+        for forward in (
+            "return 2.0 / self.p(x)",
+            "return self.p(x) + 2.0",
+            "return self.p(x) - 2.0",
+        ):
+            code = module_source("self.p = nn.Linear(8, 8)", forward)
+            self.reject(code, input_shapes={"x": [2, 4, 8]})
+
+    def test_scalar_scale_rejects_division_by_zero(self):
+        code = module_source("self.p = nn.Linear(8, 8)", "return self.p(x) / 0.0")
+        self.reject(code, input_shapes={"x": [2, 4, 8]})
 
     def test_einsum_contraction_imports_and_runs(self):
         # Scaled attention written out by hand: both contractions are explicit `->` form.
