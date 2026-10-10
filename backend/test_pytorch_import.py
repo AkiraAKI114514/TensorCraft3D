@@ -64,6 +64,27 @@ class PyTorchImportTests(unittest.TestCase):
         self.assertEqual(list(output.shape), [2, 2])
         self.assertTrue(all(p.grad is not None for p in model.parameters()))
 
+    def test_elementwise_gating_imports_as_multiply(self):
+        # A GLU/SwiGLU feed-forward: one branch is activated, the other gates it element-wise.
+        # Before Multiply existed this failed with "不支持此张量运算", which is what blocked
+        # every gated feed-forward in the importer.
+        code = module_source(
+            "self.gate = nn.Linear(8, 16)\nself.value = nn.Linear(8, 16)\nself.down = nn.Linear(16, 8)",
+            "return self.down(F.silu(self.gate(x)) * self.value(x))")
+        result, model = self.parsed(code, input_shapes={"x": [2, 4, 8]})
+        self.assertEqual([n["op"] for n in result["graph"]["nodes"]], ["Input", "Linear", "SiLU", "Linear", "Multiply", "Linear", "Output"])
+        multiply = next(n for n in result["graph"]["nodes"] if n["op"] == "Multiply")
+        self.assertEqual(len([e for e in result["graph"]["edges"] if e["target"] == multiply["id"]]), 2)
+        output = model(torch.randn(2, 4, 8)); output.sum().backward()
+        self.assertEqual(list(output.shape), [2, 4, 8])
+        self.assertTrue(all(p.grad is not None for p in model.parameters()))
+
+    def test_multiply_rejects_mismatched_shapes(self):
+        code = module_source(
+            "self.wide = nn.Linear(8, 16)\nself.narrow = nn.Linear(8, 8)",
+            "return self.wide(x) * self.narrow(x)")
+        self.reject(code, input_shapes={"x": [2, 4, 8]})
+
     def test_static_modulelist_nested_custom_defaults_and_model_selection(self):
         code = '''from torch import nn
 class Block(nn.Module):

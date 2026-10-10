@@ -206,6 +206,7 @@ export function generatePython(graph: Graph) {
           break;
         }
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
+        case 'Multiply': forward.push(`        values[${key}] = ${inputs.join(' * ')}`); continue;
         case 'Concat': forward.push(`        values[${key}] = torch.cat([${inputs.join(', ')}], dim=${p.dim ?? 1})`); continue;
       }
       const repeat = repeatOf(node);

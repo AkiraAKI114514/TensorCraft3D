@@ -8,7 +8,7 @@ export const OPS = [
   'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d',
   'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d', 'AdaptiveMaxPool1d', 'AdaptiveMaxPool2d', 'AdaptiveMaxPool3d',
   'Flatten', 'Unsqueeze', 'Squeeze', 'Slice', 'Select', 'ConstantAdd', 'Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout', 'Embedding', 'Upsample',
-  'MultiHeadAttention', 'Transformer', 'Add', 'Concat', 'Group'
+  'MultiHeadAttention', 'Transformer', 'Add', 'Multiply', 'Concat', 'Group'
 ] as const;
 export type Op = typeof OPS[number];
 export type Params = Record<string, number | string | number[]>;
@@ -37,7 +37,7 @@ export const COLORS: Record<Op, string> = {
   ReLU: '#e8b84b', GELU: '#e8b84b', Sigmoid: '#e8b84b', Tanh: '#e8b84b', SiLU: '#e8b84b', LeakyReLU: '#e8b84b', ELU: '#e8b84b', SELU: '#e8b84b', Softplus: '#e8b84b', Softmax: '#e8b84b', LogSoftmax: '#e8b84b', PReLU: '#e8b84b', Hardsigmoid: '#e8b84b', Hardswish: '#e8b84b', Mish: '#e8b84b', Softsign: '#e8b84b', Identity: '#8e97a7',
   MaxPool1d: '#5299cf', MaxPool2d: '#5299cf', MaxPool3d: '#5299cf', AvgPool1d: '#5299cf', AvgPool2d: '#5299cf', AvgPool3d: '#5299cf', AdaptiveAvgPool1d: '#5299cf', AdaptiveAvgPool2d: '#5299cf', AdaptiveAvgPool3d: '#5299cf', AdaptiveMaxPool1d: '#5299cf', AdaptiveMaxPool2d: '#5299cf', AdaptiveMaxPool3d: '#5299cf',
   Flatten: '#8e97a7', Unsqueeze: '#8e97a7', Squeeze: '#8e97a7', Slice: '#8e97a7', Select: '#8e97a7', ConstantAdd: '#5299cf', Dropout: '#bc8cc8', Dropout1d: '#bc8cc8', Dropout2d: '#bc8cc8', Dropout3d: '#bc8cc8', AlphaDropout: '#bc8cc8', Embedding: '#d073a8', Upsample: '#5299cf',
-  MultiHeadAttention: '#3c9bb4', Transformer: '#477eae', Add: RESIDUAL_COLOR, Concat: '#d073a8', Group: '#6b8cae'
+  MultiHeadAttention: '#3c9bb4', Transformer: '#477eae', Add: RESIDUAL_COLOR, Multiply: '#c98b3f', Concat: '#d073a8', Group: '#6b8cae'
 };
 export const DEFAULTS: Record<Op, Params> = {
   Input: { shape: [1, 3, 32, 32] }, Output: {},
@@ -48,5 +48,5 @@ export const DEFAULTS: Record<Op, Params> = {
   MaxPool1d: pool1d, MaxPool2d: { ...pool1d }, MaxPool3d: { ...pool1d }, AvgPool1d: pool1d, AvgPool2d: { ...pool1d }, AvgPool3d: { ...pool1d },
   AdaptiveAvgPool1d: { output_size: 1 }, AdaptiveAvgPool2d: { output_size: 1 }, AdaptiveAvgPool3d: { output_size: 1 }, AdaptiveMaxPool1d: { output_size: 1 }, AdaptiveMaxPool2d: { output_size: 1 }, AdaptiveMaxPool3d: { output_size: 1 },
   Flatten: {}, Unsqueeze: { dim: 0 }, Squeeze: { dim: 'all' }, Slice: { dim: 1, start: 'none', end: 'none', step: 1 }, Select: { dim: 1, index: -1 }, ConstantAdd: { shape: [1], values: [0] }, Dropout: { p: 0.3 }, Dropout1d: { p: 0.3 }, Dropout2d: { p: 0.3 }, Dropout3d: { p: 0.3 }, AlphaDropout: { p: 0.3 }, Embedding: { num_embeddings: 100, embedding_dim: 32 }, Upsample: { scale_factor: 2, mode: 'nearest' },
-  MultiHeadAttention: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, dropout: 0.1 }, Transformer: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, ff_dim: 128, dropout: 0.1 }, Add: {}, Concat: { dim: 1 }, Group: {}
+  MultiHeadAttention: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, dropout: 0.1 }, Transformer: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, ff_dim: 128, dropout: 0.1 }, Add: {}, Multiply: {}, Concat: { dim: 1 }, Group: {}
 };

@@ -28,6 +28,7 @@ These patterns are supported **within the restrictions below**, not as arbitrary
 | --- | --- | --- |
 | Static modules and containers | `nn.Module`, `nn.Sequential`, nested custom modules, literal `ModuleList`/`ModuleDict`, static indexing, supported static module factories | No runtime-sized containers or runtime-dependent branches/loops. A factory returning modules is not an arbitrary forward helper. |
 | Residual addition | `x + residual` | Both runtime tensors must have identical shapes; general broadcasting and inplace `+=` are unsupported. |
+| Element-wise gating | `x * y` | Both runtime tensors must have identical shapes, matching `torch.mul`. This is the shape of a GLU/SwiGLU feed-forward gate. Scalar multipliers and general broadcasting are unsupported. |
 | Concatenation | `torch.cat([a, b], dim=1)`, `torch.concat(...)` | A static list/tuple and a positive non-batch axis; other dimensions must match. Specify `dim`: default batch concatenation is unsupported. |
 | Convolution | Conv1d/2d/3d, ConvTranspose1d/2d/3d | Bias enabled, `groups=1`, `dilation=1`, zero padding mode, uniform spatial tuples. Ordinary Conv accepts the PyTorch default `padding=0`. |
 | Dense layers | Linear, Bilinear | Bias enabled. Linear acts on the last dimension. Bilinear takes two `[B,F]` inputs with the declared second-input width. |
