@@ -10,7 +10,7 @@ import TopologyView from './TopologyView';
 describe('localized renderer isolation', () => {
   it('translates lazy-loading placeholders without eagerly importing renderers', () => {
     const graph = PRESETS.mlp(), analysis = analyze(graph);
-    const markup = renderToStaticMarkup(<I18nProvider initialLanguage="en"><SceneView graph={graph} analysis={analysis} selected={null} selectedHead={null} selectedProjection={null} onSelect={() => {}} onSelectProjection={() => {}} onSelectHead={() => {}} rotating playing direction="forward" speed={1} expanded={false} diagnostics={[]} onReady={() => {}} onGpu={() => {}} /><TopologyView graph={graph} analysis={analysis} selected={null} onSelect={() => {}} onChange={() => {}} onConnect={() => {}} onAddObject={() => {}} onRemoveSelected={() => {}} disabled={false} /></I18nProvider>);
+    const markup = renderToStaticMarkup(<I18nProvider initialLanguage="en"><SceneView graph={graph} analysis={analysis} selected={null} selectedHead={null} selectedProjection={null} onSelect={() => {}} onSelectProjection={() => {}} onSelectHead={() => {}} rotating playing direction="forward" speed={1} expanded={false} diagnostics={[]} onReady={() => {}} onGpu={() => {}} /><TopologyView graph={graph} analysis={analysis} selected={null} onSelect={() => {}} onChange={() => {}} onConnect={() => {}} onAddObject={() => {}} onRemoveSelected={() => {}} onGroup={() => {}} onDissolve={() => {}} disabled={false} /></I18nProvider>);
     expect(markup).toContain('Loading 3D renderer…');
     expect(markup).toContain('Loading topology renderer…');
     expect(markup).toContain('aria-live="polite"');

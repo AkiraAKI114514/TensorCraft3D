@@ -3,13 +3,17 @@ import csv
 import io
 import math
 import uuid
-from .graph import analyze_graph
+from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
 
 def build_model(graph):
     import torch
     from torch import nn
-    info = analyze_graph(graph)
+    # A graph may carry folded blocks; training and inference need the real operators, so the
+    # instances are expanded first. Analysis then runs on that same expanded graph, which is
+    # what the forward loop below iterates.
+    graph = expand_subgraphs(graph)
+    info = analyze_expanded_graph(graph)
     from .attention import TensorLabAttention, TensorLabTransformer
     from .tensor_ops import TensorLabConstantAdd
     class GraphModel(nn.Module):
@@ -19,45 +23,61 @@ def build_model(graph):
             self.dead_relu = {}
             for node in graph["nodes"]:
                 key, op, p = node["id"], node["op"], node["params"]
+                repeat = int(node.get("repeat", 1) or 1)
                 edge = info["baseEdges"][key][0] if info["baseEdges"][key] else None
                 in_shape = (info["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else info["shapes"][edge["source"]]) if edge else []
-                if op in ("Conv1d", "Conv2d", "Conv3d"):
-                    cls = getattr(nn, op); module = cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 3)), int(p.get("stride", 1)), int(p.get("padding", 1)), groups=int(p.get("groups", 1)))
-                elif op in ("ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d"):
-                    cls = getattr(nn, op); module = cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 4)), int(p.get("stride", 2)), int(p.get("padding", 1)), int(p.get("output_padding", 0)), groups=int(p.get("groups", 1)))
-                elif op == "Linear": module = nn.Linear(in_shape[-1], int(p.get("out_features", 10)))
-                elif op == "Bilinear": module = nn.Bilinear(in_shape[1], int(p.get("in2_features", 16)), int(p.get("out_features", 10)))
-                elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d"):
-                    module = getattr(nn, op)(in_shape[1])
-                elif op in ("InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d"):
-                    module = getattr(nn, op)(in_shape[1], affine=bool(p.get("affine", 1)), track_running_stats=bool(p.get("track_running_stats", 0)))
-                elif op == "LayerNorm":
-                    normalized = p.get("normalized_shape", in_shape[1:])
-                    normalized = tuple(int(v) for v in normalized) if isinstance(normalized, list) else int(normalized)
-                    module = nn.LayerNorm(normalized, eps=float(p.get("eps", 1e-5)), elementwise_affine=bool(p.get("elementwise_affine", 1)))
-                elif op == "GroupNorm": module = nn.GroupNorm(int(p.get("num_groups", 1)), in_shape[1], affine=bool(p.get("affine", 1)))
-                elif op in ("MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d"):
-                    cls = getattr(nn, op); module = cls(int(p.get("kernel_size", 2)), int(p.get("stride", 2)), int(p.get("padding", 0)))
-                elif op in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d"):
-                    size = p.get("output_size", 1); size = tuple(size) if isinstance(size, list) else size; module = getattr(nn, op)(size)
-                elif op == "Flatten": module = nn.Flatten(1)
-                elif op in ("Unsqueeze", "Squeeze", "Slice", "Select"): continue
-                elif op == "ConstantAdd": module = TensorLabConstantAdd(p["shape"], p["values"], p.get("sequence_dim"))
-                elif op in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): module = getattr(nn, op)(float(p.get("p", 0.3)))
-                elif op == "Embedding": module = nn.Embedding(int(p.get("num_embeddings", 100)), int(p.get("embedding_dim", 32)))
-                elif op == "Upsample":
-                    scale = p.get("scale_factor", 2); scale = tuple(scale) if isinstance(scale, list) else scale; module = nn.Upsample(scale_factor=scale, mode=str(p.get("mode", "nearest")))
-                elif op in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "SELU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"): module = getattr(nn, op)()
-                elif op == "PReLU": module = nn.PReLU(int(p.get("num_parameters", 1)), float(p.get("init", 0.25)))
-                elif op == "LeakyReLU": module = nn.LeakyReLU(float(p.get("negative_slope", 0.01)))
-                elif op == "ELU": module = nn.ELU(float(p.get("alpha", 1.0)))
-                elif op == "Softplus": module = nn.Softplus(float(p.get("beta", 1.0)), float(p.get("threshold", 20.0)))
-                elif op in ("Softmax", "LogSoftmax"): module = getattr(nn, op)(dim=int(p.get("dim", -1)))
-                elif op in ("MultiHeadAttention", "Transformer"):
-                    args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1))}
-                    module = TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
-                else: continue
-                self.layers[key] = module
+                def build():
+                    if op in ("Conv1d", "Conv2d", "Conv3d"):
+                        cls = getattr(nn, op); return cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 3)), int(p.get("stride", 1)), int(p.get("padding", 1)), groups=int(p.get("groups", 1)))
+                    elif op in ("ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d"):
+                        cls = getattr(nn, op); return cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 4)), int(p.get("stride", 2)), int(p.get("padding", 1)), int(p.get("output_padding", 0)), groups=int(p.get("groups", 1)))
+                    elif op == "Linear": return nn.Linear(in_shape[-1], int(p.get("out_features", 10)))
+                    elif op == "Bilinear": return nn.Bilinear(in_shape[1], int(p.get("in2_features", 16)), int(p.get("out_features", 10)))
+                    elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d"):
+                        return getattr(nn, op)(in_shape[1])
+                    elif op in ("InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d"):
+                        return getattr(nn, op)(in_shape[1], affine=bool(p.get("affine", 1)), track_running_stats=bool(p.get("track_running_stats", 0)))
+                    elif op == "LayerNorm":
+                        normalized = p.get("normalized_shape", in_shape[1:])
+                        normalized = tuple(int(v) for v in normalized) if isinstance(normalized, list) else int(normalized)
+                        return nn.LayerNorm(normalized, eps=float(p.get("eps", 1e-5)), elementwise_affine=bool(p.get("elementwise_affine", 1)))
+                    elif op == "RMSNorm":
+                        # nn.RMSNorm has no bias and does not center the mean; it scales by the root
+                        # mean square only. Requires torch >= 2.4, which requirements-training pins.
+                        if not hasattr(nn, "RMSNorm"): raise ValueError("RMSNorm requires torch >= 2.4")
+                        normalized = p.get("normalized_shape", in_shape[1:])
+                        normalized = tuple(int(v) for v in normalized) if isinstance(normalized, list) else int(normalized)
+                        return nn.RMSNorm(normalized, eps=float(p.get("eps", 1e-5)), elementwise_affine=bool(p.get("elementwise_affine", 1)))
+                    elif op == "GroupNorm": return nn.GroupNorm(int(p.get("num_groups", 1)), in_shape[1], affine=bool(p.get("affine", 1)))
+                    elif op in ("MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d"):
+                        cls = getattr(nn, op); return cls(int(p.get("kernel_size", 2)), int(p.get("stride", 2)), int(p.get("padding", 0)))
+                    elif op in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d"):
+                        size = p.get("output_size", 1); size = tuple(size) if isinstance(size, list) else size; return getattr(nn, op)(size)
+                    elif op == "Flatten": return nn.Flatten(1)
+                    elif op in ("Unsqueeze", "Squeeze", "Slice", "Select"): return None
+                    elif op == "ConstantAdd": return TensorLabConstantAdd(p["shape"], p["values"], p.get("sequence_dim"))
+                    elif op in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): return getattr(nn, op)(float(p.get("p", 0.3)))
+                    elif op == "Embedding": return nn.Embedding(int(p.get("num_embeddings", 100)), int(p.get("embedding_dim", 32)))
+                    elif op == "Upsample":
+                        scale = p.get("scale_factor", 2); scale = tuple(scale) if isinstance(scale, list) else scale; return nn.Upsample(scale_factor=scale, mode=str(p.get("mode", "nearest")))
+                    elif op in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "SELU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"): return getattr(nn, op)()
+                    elif op == "PReLU": return nn.PReLU(int(p.get("num_parameters", 1)), float(p.get("init", 0.25)))
+                    elif op == "LeakyReLU": return nn.LeakyReLU(float(p.get("negative_slope", 0.01)))
+                    elif op == "ELU": return nn.ELU(float(p.get("alpha", 1.0)))
+                    elif op == "Softplus": return nn.Softplus(float(p.get("beta", 1.0)), float(p.get("threshold", 20.0)))
+                    elif op in ("Softmax", "LogSoftmax"): return getattr(nn, op)(dim=int(p.get("dim", -1)))
+                    elif op in ("MultiHeadAttention", "Transformer"):
+                        args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1))}
+                        return TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
+                    else: return None
+                try:
+                    module = build()
+                    if module is None: continue
+                    # A folded node owns `repeat` fully independent instances (never one shared module),
+                    # so sum(model.parameters()) equals analyze_graph's count * repeat.
+                    self.layers[key] = nn.ModuleList([module, *(build() for _ in range(repeat - 1))]) if repeat > 1 else module
+                except Exception as exc:
+                    raise ValueError(f"{key}: cannot build {op} with repeat={repeat}: {exc}") from exc
         def forward(self, x, observer=None, attention_observer=None):
             if isinstance(x, dict):
                 if set(x) != set(info["inputs"]): raise ValueError("Input dictionary must contain exactly the model's Input node IDs")
@@ -90,10 +110,24 @@ def build_model(graph):
                     attention_callback = None
                     if attention_observer is not None:
                         attention_callback = lambda stage, branch, tensors, node_id=key: attention_observer(node_id, stage, branch, tensors)
-                    values[key], ports[key] = self.layers[key].forward_with_ports(args[0], args[1] if len(args) > 1 else None, overrides, observer=attention_callback)
-                else:
-                    values[key] = self.layers[key](*args)
-                    if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = float((values[key].detach() == 0).float().mean().item())
+                    instances = self.layers[key]
+                    query, context = args[0], (args[1] if len(args) > 1 else None)
+                    for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
+                        value, ports[key] = instance.forward_with_ports(query, context, overrides, observer=attention_callback)
+                        query = value
+                    values[key] = query
+                elif key in self.layers:
+                    instances = self.layers[key]
+                    # Folded nodes run their independent instances in series; shapes are preserved.
+                    dead = 0.0; value = None
+                    for index, instance in enumerate(instances if isinstance(instances, nn.ModuleList) else (instances,)):
+                        # Later instances consume the previous output as their first operand but still
+                        # need the node's remaining inputs (Bilinear takes two). This must mirror the
+                        # generated export, which chains `instance(value, *other_inputs)`.
+                        value = instance(*args) if index == 0 else instance(value, *args[1:])
+                        if op in ("ReLU", "LeakyReLU"): dead += float((value.detach() == 0).float().mean().item())
+                    values[key] = value
+                    if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = dead
                 observe(key, values[key])
             return values[info["output"]]
     return GraphModel(), info
@@ -171,6 +205,7 @@ def train(graph, config, emit, stop, retain_model=None):
     from torch import nn
     torch.set_num_threads(min(4, torch.get_num_threads()))
     torch.manual_seed(42)
+    graph = expand_subgraphs(graph)
     info = analyze_graph(graph)
     output_shape = info["shapes"][info["output"]]
     if len(output_shape) != 2 or not 2 <= output_shape[1] <= 256: raise ValueError("Training requires classification logits [B,2..256]")

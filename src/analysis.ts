@@ -1,4 +1,5 @@
-import { OPS, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
+import { OPS, MAX_REPEAT, MAX_SUBGRAPH_DEPTH, GROUP_OP, isGroup, repeatOf, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
+import { expandGraph, topLevelId, SubgraphError } from './subgraph';
 import { ATTENTION_TYPES, attentionConfig, incomingEdges, isCrossAttention, crossInputRole, edgeKey, edgeOutputShape, isAttention, isProjectionPort, projectionPorts } from './attentionConfig';
 
 export const product = (values: number[]) => values.reduce((a, b) => a * b, 1);
@@ -13,6 +14,9 @@ export function validateGraph(value: unknown): Graph {
   g.nodes.forEach(n => {
     if (!n || typeof n.id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.id) || ids.has(n.id) || !OPS.includes(n.op) || typeof n.name !== 'string' || n.name.length > 120 || !n.params || typeof n.params !== 'object' || Array.isArray(n.params)) throw new Error('节点数据或 ID 无效');
     if (!n.position || !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y)) throw new Error('节点坐标无效');
+    if (n.repeat !== undefined && (!Number.isInteger(n.repeat) || n.repeat < 1 || n.repeat > MAX_REPEAT)) throw new Error(`节点 repeat 必须是 1–${MAX_REPEAT} 的整数`);
+    if (n.op === GROUP_OP) { if (typeof n.subgraph !== 'string' || !n.subgraph) throw new Error('结构块实例必须指定 subgraph'); }
+    else if (n.subgraph !== undefined) throw new Error('只有结构块实例可以指定 subgraph');
     for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= (n.op === 'ConstantAdd' && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
@@ -22,10 +26,66 @@ export function validateGraph(value: unknown): Graph {
     if (typeof e.id !== 'string' || edgeIds.has(e.id) || pairs.has(pair) || !ids.has(e.source) || !ids.has(e.target) || e.source === e.target || (e.targetPort !== undefined && !['query', 'context'].includes(e.targetPort) && !isProjectionPort(e.targetPort)) || (e.sourcePort !== undefined && !isProjectionPort(e.sourcePort))) throw new Error('连线无效或重复');
     edgeIds.add(e.id); pairs.add(pair);
   });
+  const subgraphs = g.subgraphs ?? {};
+  if (Object.keys(subgraphs).length > 64) throw new Error('子图数量超过 64 个');
+  for (const [name, def] of Object.entries(subgraphs)) {
+    if (!def || typeof def.name !== 'string' || !Array.isArray(def.nodes) || !Array.isArray(def.edges) || !['auto', 'manual'].includes(def.origin)) throw new Error(`子图 ${name} 定义无效`);
+    if (def.nodes.length > 128 || def.edges.length > 512) throw new Error(`子图 ${name} 超过限制（128 层 / 512 连线）`);
+    let depth = 0;
+    const probe = new Set<string>([name]);
+    const walk = (key: string) => { if (depth > MAX_SUBGRAPH_DEPTH) throw new Error(`子图嵌套超过 ${MAX_SUBGRAPH_DEPTH} 层`); const target = subgraphs[key]; if (!target) return; depth += 1; for (const inner of target.nodes) if (inner.op === GROUP_OP && inner.subgraph) { if (probe.has(inner.subgraph)) throw new Error(`子图 ${inner.subgraph} 形成循环引用`); probe.add(inner.subgraph); walk(inner.subgraph); probe.delete(inner.subgraph); } depth -= 1; };
+    walk(name);
+  }
+  for (const n of g.nodes) if (n.op === GROUP_OP && n.subgraph && !subgraphs[n.subgraph]) throw new Error(`节点 ${n.id} 指向不存在的子图 ${n.subgraph}`);
   return structuredClone(g);
 }
 
+/**
+ * 子图实例先展开成等价的纯算子图，再走下面这条从未见过 `Group` 的既有路径。
+ * 结果按顶层节点聚合回来，所以界面看到的是少数几个块，而记账来自展开后的真实算子。
+ */
 export function analyze(graph: Graph): Analysis {
+  if (graph.subgraphs && graph.nodes.some(isGroup)) {
+    let expanded: Graph;
+    try { expanded = expandGraph(graph); }
+    catch (error) {
+      return { layers: {}, order: [], diagnostics: [{ id: 'SUBGRAPH', level: 'error', code: 'SUBGRAPH', message: (error as Error).message }], parameters: 0, activationBytes: 0, valid: false };
+    }
+    return collapseAnalysis(analyzeExpanded(expanded));
+  }
+  return analyzeExpanded(graph);
+}
+
+/** 把展开后的逐算子结果按顶层节点合并：参数求和，诊断归位并去重。 */
+function collapseAnalysis(analysis: Analysis): Analysis {
+  const layers: Record<string, LayerInfo> = {}, order: string[] = [];
+  for (const id of analysis.order) {
+    const top = topLevelId(id);
+    if (layers[top]) continue;
+    layers[top] = { input: [], output: [], parameters: 0, repeat: 1 };
+    order.push(top);
+  }
+  for (const id of analysis.order) {
+    const info = analysis.layers[id], top = topLevelId(id);
+    if (!info || !layers[top]) continue;
+    const target = layers[top];
+    if (!target.output.length) target.input = info.input;
+    target.output = info.output;
+    target.parameters += info.parameters;
+  }
+  const seen = new Set<string>();
+  const diagnostics = analysis.diagnostics.flatMap(d => {
+    if (!d.nodeId) return [d];
+    const remapped = { ...d, nodeId: topLevelId(d.nodeId) };
+    const key = `${remapped.code}|${remapped.nodeId}|${remapped.message}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [remapped];
+  });
+  return { layers, order, diagnostics, parameters: analysis.parameters, activationBytes: analysis.activationBytes, valid: analysis.valid };
+}
+
+function analyzeExpanded(graph: Graph): Analysis {
   const layers: Record<string, LayerInfo> = {}, diagnostics: Diagnostic[] = [], order: string[] = [];
   const add = (code: string, message: string, nodeId?: string, level: Diagnostic['level'] = 'error') => diagnostics.push({ id: `${code}_${nodeId || diagnostics.length}`, code, message, nodeId, level });
   const indegree = new Map(graph.nodes.map(n => [n.id, graph.edges.filter(e => e.target === n.id).length]));
@@ -91,11 +151,14 @@ export function analyze(graph: Graph): Analysis {
         output = [output[0], channels, ...spatial];
       } else if (['BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d'].includes(n.op)) {
         const dimensions = Number(n.op.match(/([123])d$/)?.[1] || 2); const ranks = n.op === 'BatchNorm1d' ? [2, 3] : [dimensions + 2]; if (!ranks.includes(output.length)) throw new Error(`${n.op} 需要 ${ranks.join(' 或 ')} 维通道输入`); if (n.op.startsWith('BatchNorm') || Number(n.params.affine ?? 1)) count = output[1] * 2;
-      } else if (n.op === 'LayerNorm') {
+      } else if (n.op === 'LayerNorm' || n.op === 'RMSNorm') {
         const raw = n.params.normalized_shape, normalized: number[] = (Array.isArray(raw) ? raw : [raw]).map(Number);
-        if (!normalized.length || !normalized.every(v => Number.isInteger(v) && v > 0)) throw new Error('LayerNorm normalized_shape 必须是正整数或正整数数组');
-        if (normalized.length > output.length - 1 || output.slice(-normalized.length).join(',') !== normalized.join(',')) throw new Error('LayerNorm normalized_shape 必须匹配输入尾部维度');
-        if (Number(n.params.elementwise_affine ?? 1)) count = product(normalized) * 2;
+        // LayerNorm and RMSNorm share normalized_shape validation (both match the trailing
+        // input dims); they differ only in parameter count: LayerNorm owns weight + bias,
+        // RMSNorm owns weight only (no bias, no mean centering).
+        if (!normalized.length || !normalized.every(v => Number.isInteger(v) && v > 0)) throw new Error(`${n.op} normalized_shape 必须是正整数或正整数数组`);
+        if (normalized.length > output.length - 1 || output.slice(-normalized.length).join(',') !== normalized.join(',')) throw new Error(`${n.op} normalized_shape 必须匹配输入尾部维度`);
+        if (Number(n.params.elementwise_affine ?? 1)) count = product(normalized) * (n.op === 'LayerNorm' ? 2 : 1);
       } else if (n.op === 'GroupNorm') {
         if (output.length < 3) throw new Error('GroupNorm 需要 NCHW 类输入'); const groups = integer('num_groups', 1, 1, output[1]); if (output[1] % groups) throw new Error('num_channels 必须能被 num_groups 整除'); if (Number(n.params.affine ?? 1)) count = output[1] * 2;
       } else if (n.op.startsWith('AdaptiveAvgPool') || n.op.startsWith('AdaptiveMaxPool')) {
@@ -201,11 +264,19 @@ export function analyze(graph: Graph): Analysis {
         if (input.some(s => s.length !== output.length || s.some((v, i) => i !== dim && v !== output[i]))) throw new Error('Concat 非拼接维度必须一致');
         output[dim] = input.reduce((sum, s) => sum + s[dim], 0);
       }
-      if (product(output) > 16e6 || count > 50e6) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
-      layers[id] = { input, output, parameters: count }; parameters += count; activationBytes += product(output) * 4;
+      // 折叠层代表 repeat 个同构实例：形状不变，参数与激活按实例数放大。
+      const repeat = repeatOf(n);
+      // 串联 N 个实例只有在算子把输入形状映射回自身时才可执行，否则第 2 个实例收到
+      // 前一个的输出就会维度不匹配。后端 graph.py 必须给出同样的判断。
+      if (repeat > 1 && input.length && output.join(',') !== input[0].join(',')) throw new Error('repeat > 1 需要该算子保持输入形状不变');
+      if (product(output) > 16e6 || count * repeat > 50e6) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
+      layers[id] = { input, output, parameters: count * repeat, repeat };
+      parameters += count * repeat; activationBytes += product(output) * 4 * repeat;
       if (n.op === 'Linear' && n.id !== graph.edges.find(e => e.target === outputNode?.id)?.source && input[0].at(-1)! >= 128 && output.at(-1)! < input[0].at(-1)! * 0.1) add('BOTTLENECK', '隐藏层特征维度骤降超过 90%，可能丢失信息', id, 'warning');
-      depth[id] = ['Add', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + (['Conv2d', 'Linear'].includes(n.op) ? 1 : 0);
-      if (depth[id] === 8) add('DEEP_NO_SKIP', '连续 8 个参数层缺少残差路径，存在梯度衰减风险', id, 'warning');
+      // 折叠层在拓扑上是 repeat 个串联实例，深度必须整段累计，否则深层网络的梯度衰减会被漏报。
+      const step = ['Conv2d', 'Linear'].includes(n.op) ? repeat : 0;
+      depth[id] = ['Add', 'Transformer'].includes(n.op) ? 0 : Math.max(0, ...parents.map(p => depth[p] || 0)) + step;
+      if (depth[id] >= 8) add('DEEP_NO_SKIP', '连续 8 个参数层缺少残差路径，存在梯度衰减风险', id, 'warning');
       if (outputNode && !ancestors.has(id)) add(n.op === 'Input' ? 'INPUT_UNUSED' : 'UNUSED', '此层未连接到模型输出', id, n.op === 'Input' ? 'error' : 'warning');
       if (n.op === 'Output' && graph.edges.some(e => e.source === id)) throw new Error('输出层不能连接下游');
     } catch (e) { add('SHAPE', (e as Error).message, id); }

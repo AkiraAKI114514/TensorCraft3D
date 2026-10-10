@@ -1,5 +1,6 @@
 import { analyze } from './analysis';
-import type { Graph } from './types';
+import { expandGraph } from './subgraph';
+import { repeatOf, type Graph } from './types';
 import { attentionConfig, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import attentionRuntime from '../backend/attention.py?raw';
 import tensorRuntime from '../backend/tensor_ops.py?raw';
@@ -10,15 +11,17 @@ export function download(content: string | Blob, name: string, mime = 'text/plai
 }
 
 export function generatePython(graph: Graph) {
-  const analysis = analyze(graph);
+  // 子图实例先展开：生成的模型必须真的含有块内的每个算子，而不是一个哨兵节点。
+  const expanded = expandGraph(graph);
+  const analysis = analyze(expanded);
   if (!analysis.valid) throw new Error('请先修复形状或连线错误后导出代码');
   const constructors: string[] = [], forward: string[] = [];
-  const modelInputs = graph.nodes.filter(n => n.op === 'Input');
+  const modelInputs = expanded.nodes.filter(n => n.op === 'Input');
   for (const id of analysis.order) {
-    const node = graph.nodes.find(n => n.id === id)!;
+    const node = expanded.nodes.find(n => n.id === id)!;
     const p = node.params, info = analysis.layers[id];
     const value = (e: Graph['edges'][number]) => e.sourcePort ? `ports[${JSON.stringify(e.source)}][${JSON.stringify(e.sourcePort)}]` : `values[${JSON.stringify(e.source)}]`;
-    const edges = incomingEdges(graph, node), inputs = edges.filter(e => !isProjectionPort(e.targetPort)).map(value);
+    const edges = incomingEdges(expanded, node), inputs = edges.filter(e => !isProjectionPort(e.targetPort)).map(value);
     const key = JSON.stringify(id);
     let expr = '';
     if (node.op === 'Input') { forward.push(`        values[${key}] = ${modelInputs.length === 1 ? `x[${key}] if isinstance(x, dict) else x` : `x[${key}]`}`); continue; }
@@ -39,6 +42,9 @@ export function generatePython(graph: Graph) {
       case 'InstanceNorm2d':
       case 'InstanceNorm3d': expr = `nn.${node.op}(${info.input[0][1]}${node.op.startsWith('InstanceNorm') ? `, affine=${Number(p.affine ?? 1) ? 'True' : 'False'}, track_running_stats=${Number(p.track_running_stats ?? 0) ? 'True' : 'False'}` : ''})`; break;
       case 'LayerNorm': { const normalized = Array.isArray(p.normalized_shape) ? `(${p.normalized_shape.join(', ')})` : `${p.normalized_shape ?? info.input[0].at(-1)}`; expr = `nn.LayerNorm(${normalized}, eps=${p.eps ?? 1e-5}, elementwise_affine=${Number(p.elementwise_affine ?? 1) ? 'True' : 'False'})`; break; }
+      // nn.RMSNorm ships in torch >= 2.4 (the project pins >= 2.6), so the export needs no helper
+      // class and stays trivially re-importable, exactly like nn.LayerNorm above. It has no bias.
+      case 'RMSNorm': { const normalized = Array.isArray(p.normalized_shape) ? `(${p.normalized_shape.join(', ')})` : `${p.normalized_shape ?? info.input[0].at(-1)}`; expr = `nn.RMSNorm(${normalized}, eps=${p.eps ?? 1e-5}, elementwise_affine=${Number(p.elementwise_affine ?? 1) ? 'True' : 'False'})`; break; }
       case 'GroupNorm': expr = `nn.GroupNorm(${p.num_groups ?? 1}, ${info.input[0][1]}, affine=${Number(p.affine ?? 1) ? 'True' : 'False'})`; break;
       case 'MaxPool1d':
       case 'MaxPool2d':
@@ -99,18 +105,26 @@ export function generatePython(graph: Graph) {
       case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
       case 'Concat': forward.push(`        values[${key}] = torch.cat([${inputs.join(', ')}], dim=${p.dim ?? 1})`); continue;
     }
-    constructors.push(`            ${key}: ${expr},`);
+    // repeat = N folds N isomorphic instances into one node. They are chained,
+    // not weight-shared, so the export must materialise N distinct layers to
+    // keep sum(p.numel()) equal to analysis.parameters. A single instance keeps
+    // the historical `id: layer` shape so old exports stay byte-identical.
+    const repeat = repeatOf(node);
+    if (repeat === 1) constructors.push(`            ${key}: ${expr},`);
+    else constructors.push(`            ${key}: nn.ModuleList([${Array.from({ length: repeat }, () => `\n                ${expr},`).join('')}\n            ]),`);
     if (isAttention(node.op)) {
       const overrides = `{${edges.filter(e => isProjectionPort(e.targetPort)).map(e => `${JSON.stringify(e.targetPort)}: ${value(e)}`).join(', ')}}`;
-      forward.push(`        values[${key}], ports[${key}] = self.layers[${key}].forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrides})`);
-    } else forward.push(`        values[${key}] = self.layers[${key}](${inputs.join(', ')})`);
+      if (repeat === 1) forward.push(`        values[${key}], ports[${key}] = self.layers[${key}].forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrides})`);
+      else forward.push(`        values[${key}] = ${value(edges.filter(e => !isProjectionPort(e.targetPort))[0])}\n        for instance in self.layers[${key}]:\n            values[${key}], ports[${key}] = instance.forward_with_ports(values[${key}], ${inputs[1] ?? 'None'}, overrides=${overrides})`);
+    } else if (repeat === 1) forward.push(`        values[${key}] = self.layers[${key}](${inputs.join(', ')})`);
+    else forward.push(`        values[${key}] = ${inputs[0]}\n        for instance in self.layers[${key}]:\n            values[${key}] = instance(values[${key}]${inputs.slice(1).map(i => `, ${i}`).join('')})`);
   }
-  const output = graph.nodes.find(n => n.op === 'Output')!;
-  const helper = (graph.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (graph.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
+  const output = expanded.nodes.find(n => n.op === 'Output')!;
+  const helper = (expanded.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
-  for (const node of graph.nodes.filter(n => n.op === 'Embedding')) {
-    const edge = graph.edges.find(e => e.target === node.id && !e.targetPort);
-    if (edge && graph.nodes.find(n => n.id === edge.source)?.op === 'Input') {
+  for (const node of expanded.nodes.filter(n => n.op === 'Embedding')) {
+    const edge = expanded.edges.find(e => e.target === node.id && !e.targetPort);
+    if (edge && expanded.nodes.find(n => n.id === edge.source)?.op === 'Input') {
       embeddingInputs.set(edge.source, Number(node.params.num_embeddings ?? 100));
     }
   }

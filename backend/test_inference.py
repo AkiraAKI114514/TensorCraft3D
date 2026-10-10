@@ -29,6 +29,30 @@ class InferenceRuntimeTests(unittest.TestCase):
     def request(self, graph, nodes=None, **kwargs):
         return TensorInferenceRequest(graph=graph, nodeIds=nodes or ["n0", "n1", "n3"], **kwargs)
 
+    @staticmethod
+    def deep_chain(layers=20, size=8):
+        """A long chain whose total activation far exceeds any single layer's."""
+        nodes = [{"id": "n0", "op": "Input", "params": {"shape": [1, size, size]}}]
+        edges = []
+        for index in range(layers):
+            nodes.append({"id": f"n{index + 1}", "op": "ReLU", "params": {}})
+            edges.append({"source": f"n{index}", "target": f"n{index + 1}"})
+        nodes.append({"id": f"n{layers + 1}", "op": "Output", "params": {}})
+        edges.append({"source": f"n{layers}", "target": f"n{layers + 1}"})
+        return {"version": 1, "name": "deep", "nodes": nodes, "edges": edges}
+
+    def test_shallow_inspection_is_budgeted_by_its_ancestor_cone_not_the_whole_model(self):
+        # 20 层每层 256 B 合计 5120 B，但浅层的祖先锥只有 512 B。闸门若按整模型总和计，
+        # 一个只想看第一层的请求会被无关的深层拒绝——这正是大模型单样本检查的瓶颈。
+        graph = self.deep_chain(layers=20, size=8)
+        limit = 1024
+        with patch("backend.inference.MAX_CAPTURE_BYTES", limit):
+            shallow = run_inference(self.request(graph, nodes=["n1"]))
+            self.assertEqual(shallow["tensors"][0]["nodeId"], "n1")
+            # 末层的祖先锥覆盖整条链，仍然必须被拒绝。
+            with self.assertRaisesRegex(ValueError, "64 MB"):
+                run_inference(self.request(graph, nodes=["n20"]))
+
     def test_deterministic_seed_and_batch_reduction(self):
         graph = self.mlp_graph(); original = copy.deepcopy(graph)
         first = run_inference(self.request(graph))

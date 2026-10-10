@@ -8,8 +8,12 @@ import copy
 import math
 import operator
 from dataclasses import dataclass, field
-from .graph import analyze_graph
+from .graph import MAX_REPEAT, EXPAND_SEP, analyze_graph
 from .static_tensors import DynamicStaticSlice, StaticTensor, StaticTensorError, f32, new_budget
+
+
+def unparse(node):
+    return ast.unparse(node) if node is not None else ""
 
 
 class ImportIssue(ValueError):
@@ -29,6 +33,13 @@ class Module:
     attrs: dict = field(default_factory=dict)
     constants: dict = field(default_factory=dict)
     forward: object = None
+    # A container whose children are repeat `count` independent, chained, isomorphic
+    # instances. This is exactly the `repeat` fold the graph IR already understands:
+    # walking the container once produces one `Group` node + one `SubgraphDef` carrying
+    # `count`, instead of `count` flattened copies. That is what lets a 48-block model
+    # fit the 128-node budget. Set only when every instance really is identical and the
+    # instances chain into each other (see Parser.repeat_container).
+    count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +79,15 @@ class Parser:
         self.node_sources = {}
         # Keep functional-operation descriptors alive too; object IDs can be reused.
         self.used_modules = {}
+        # A Group node stands for a whole chain, so the body's final node is not reachable
+        # through `self.graph["edges"]`; these pairs carry it to the fold in `build`.
+        self.group_counts = {}
+        # ids of the nodes each Group application built; the fold moves them into a subgraph.
+        self.group_bodies = {}
+        # flat node id -> expanded id the analyzer reports, for constraint checks after folding.
+        self.group_map = {}
+        # Counts Group applications, so a loop can tell whether index 0 covered all instances.
+        self.group_applies = 0
         self.constraints = []
         self.warnings = []
         self.calls = 0
@@ -112,6 +132,98 @@ class Parser:
         for key in names:
             if key not in values: raise ImportIssue(f"缺少构造参数 {key}", call)
         return values
+
+    def comprehension_count(self, node, env):
+        """A `[layer for _ in range(N)]` list comprehension reduces to just its count.
+
+        Only the generated shape this importer itself emits is accepted: a bound variable,
+        an unused element expression, `range(N)` and no conditionals. The element is parsed
+        by the caller, which is why it is returned rather than built here.
+        """
+        if len(node.generators) != 1: raise ImportIssue("列表推导式只支持单个 for 子句", node)
+        generator = node.generators[0]
+        if generator.is_async or generator.ifs: raise ImportIssue("列表推导式不支持 async 或 if 子句", node)
+        if not isinstance(generator.target, ast.Name): raise ImportIssue("列表推导式的循环变量必须是简单名称", node)
+        # Every instance has to be identical, so the element may not depend on the loop
+        # variable. This is the check that makes `[Block(8) for _ in range(N)]` safe to fold.
+        if any(isinstance(inner, ast.Name) and inner.id == generator.target.id for inner in ast.walk(node.elt)):
+            raise ImportIssue("列表推导式的元素不能依赖循环变量，每个实例必须完全一致", node)
+        iterator = generator.iter
+        if not isinstance(iterator, ast.Call) or self.path(iterator.func) != "range" or len(iterator.args) not in (1, 2) or iterator.keywords:
+            raise ImportIssue("列表推导式只支持 range(N) 或 range(a, b)", iterator)
+        bounds = [self.literal(argument, env) for argument in iterator.args]
+        if any(type(value) is not int for value in bounds): raise ImportIssue("range 的边界必须是整数常量", iterator)
+        start, stop = (0, bounds[0]) if len(bounds) == 1 else (bounds[0], bounds[1])
+        return stop - start
+
+    def repeat_container(self, kind, expression, env, attrs, elements, count):
+        """Parse one written instance and, only if it is safely repeatable, mark it as `count`."""
+        if count < 1 or count > MAX_REPEAT: raise ImportIssue(f"层实例数量需要在 1–{MAX_REPEAT} 之间", expression)
+        if count == 1: return Module(kind, children={"0": self.module(elements[0], env, attrs, 1)}, node=expression)
+        try: unit = self.module(elements[0], env, attrs, 1)
+        except ImportIssue: return Module(kind, children={str(i): self.module(element, env, attrs, 1) for i, element in enumerate(elements)}, node=expression)
+        if self.repeatable(unit): return Module("Group", count=count, children={"0": unit}, node=expression)
+        # Not provably identical, so the instances stay distinct modules. When the source only
+        # wrote one instance there is nothing to fall back to; say why instead of dropping it.
+        if len(elements) == 1:
+            raise ImportIssue("该层无法确认 N 个实例完全一致（可能依赖 __init__ 中的可变状态或按序号生成），无法折叠为结构块；请显式写出每个实例或改为固定配置", expression)
+        return Module(kind, children={str(i): self.module(element, env, attrs, 1) for i, element in enumerate(elements)}, node=expression)
+
+    def repeatable(self, module):
+        """True when one written instance stands in for N isomorphic copies.
+
+        Custom modules carry their own `__init__`/`forward` source, so their internal
+        qualifiers (the `_` of `for _ in range(N)`) are skipped and every child must itself
+        be repeatable. Built-in constructors always build the same layer for the same
+        arguments, so only the container case needs recursion.
+        """
+        if module.kind == "custom":
+            return all(self.repeatable(child) for child in module.attrs.values() if isinstance(child, Module))
+        if module.kind in ("Sequential", "ModuleList", "ModuleDict"):
+            if module.kind == "ModuleDict": return False
+            return all(self.repeatable(child) for child in module.children.values())
+        if module.kind == "Group": return bool(module.children) and all(self.repeatable(child) for child in module.children.values())
+        return True
+
+    def same_module(self, left, right):
+        """Structural equality of two parsed modules: same kind, params, and children.
+
+        Used to confirm that written-out repeats really are identical copies. AST nodes are
+        ignored because positions differ; a mismatch only costs the fold (the instances stay
+        separate), never a wrong grouping.
+        """
+        if left.kind != right.kind or left.params != right.params or left.expected != right.expected:
+            return False
+        if left.kind == "custom":
+            if unparse(left.forward) != unparse(right.forward): return False
+            if set(left.attrs) != set(right.attrs): return False
+            for key, value in left.attrs.items():
+                other = right.attrs[key]
+                if isinstance(value, Module) or isinstance(other, Module):
+                    if not isinstance(value, Module) or not isinstance(other, Module) or not self.same_module(value, other): return False
+                elif value != other: return False
+            return True
+        if set(left.children) != set(right.children): return False
+        return all(self.same_module(left.children[key], right.children[key]) for key in left.children)
+
+    def referenced(self, statements, target):
+        """How many times a `for …` body mentions its loop variable.
+
+        Both `for blk in blocks: x = blk(x)` and `for i in range(N): x = blocks[i](x)` must
+        resolve to exactly one node when the container is folded, so the count has to be 1;
+        a body that would need several distinct instances is rejected rather than misread.
+        """
+        return sum(isinstance(node, ast.Name) and node.id == target.id for statement in statements for node in ast.walk(statement))
+
+    def range_count(self, node, env):
+        """`range(N)` / `range(a, b)` as a positive instance count, or None."""
+        if not isinstance(node, ast.Call) or self.path(node.func) != "range" or len(node.args) not in (1, 2) or node.keywords: return None
+        try: bounds = [self.literal(argument, env) for argument in node.args]
+        except ImportIssue: return None
+        if any(type(value) is not int for value in bounds): return None
+        start, stop = (0, bounds[0]) if len(bounds) == 1 else (bounds[0], bounds[1])
+        count = stop - start
+        return count if 1 <= count <= MAX_REPEAT else None
 
     def require(self, args, expected, node):
         for key, value in expected.items():
@@ -240,6 +352,11 @@ class Parser:
                     children[str(self.literal(key, env))] = self.module(value, env, attrs, depth + 1)
             else:
                 if kind == "ModuleList":
+                    if len(elements) == 1 and isinstance(elements[0], ast.ListComp):
+                        # `[Block(...) for _ in range(N)]` is the idiomatic way to write N
+                        # identical layers; it carries N by construction.
+                        count = self.comprehension_count(elements[0], env)
+                        return self.repeat_container(kind, expression, env, attrs, [elements[0].elt], count)
                     if len(elements) != 1 or not isinstance(elements[0], (ast.List, ast.Tuple)): raise ImportIssue("ModuleList 需要静态列表", expression)
                     elements = elements[0].elts
                 if len(elements) == 1 and isinstance(elements[0], ast.Call) and self.path(elements[0].func) == "collections.OrderedDict":
@@ -249,6 +366,20 @@ class Parser:
                         if not isinstance(entry, (ast.List, ast.Tuple)) or len(entry.elts) != 2: raise ImportIssue("OrderedDict 需要 (名称, 层)", entry)
                         children[str(self.literal(entry.elts[0], env))] = self.module(entry.elts[1], env, attrs, depth + 1)
                 else:
+                    # Written-out instances are folded when they are provably identical copies,
+                    # by parsing the first and checking it against the rest. This is what turns
+                    # `ModuleList([Block(), Block(), Block()])` into one instance with repeat=3,
+                    # which the 128-node import budget depends on.
+                    if len(elements) > 1:
+                        try: unit = self.module(elements[0], env, attrs, depth + 1)
+                        except ImportIssue: unit = None
+                        if unit is not None and self.repeatable(unit):
+                            clones = True
+                            for element in elements[1:]:
+                                try: other = self.module(element, env, attrs, depth + 1)
+                                except ImportIssue: clones = False; break
+                                if not self.same_module(unit, other): clones = False; break
+                            if clones: return Module("Group", count=len(elements), children={"0": unit}, node=expression)
                     children = {str(i): self.module(value, env, attrs, depth + 1) for i, value in enumerate(elements)}
             return Module(kind, children=children, node=expression)
         specs = {
@@ -261,6 +392,10 @@ class Parser:
             "Linear": (["in_features", "out_features", "bias", "device", "dtype"], {"bias": True, "device": None, "dtype": None}),
             "Bilinear": (["in1_features", "in2_features", "out_features", "bias", "device", "dtype"], {"bias": True, "device": None, "dtype": None}),
             "LayerNorm": (["normalized_shape", "eps", "elementwise_affine", "bias", "device", "dtype"], {"eps": 1e-5, "elementwise_affine": True, "bias": True, "device": None, "dtype": None}),
+            # nn.RMSNorm needs torch >= 2.4 (the training requirements pin >= 2.6). It has no
+            # bias and does not center the mean, so `bias` is absent here and the analyzer
+            # counts a single weight per normalized element.
+            "RMSNorm": (["normalized_shape", "eps", "elementwise_affine", "device", "dtype"], {"eps": None, "elementwise_affine": True, "device": None, "dtype": None}),
             "GroupNorm": (["num_groups", "num_channels", "eps", "affine", "device", "dtype"], {"eps": 1e-5, "affine": True, "device": None, "dtype": None}),
             "InstanceNorm1d": (["num_features", "eps", "momentum", "affine", "track_running_stats", "device", "dtype"], {"eps": 1e-5, "momentum": 0.1, "affine": False, "track_running_stats": False, "device": None, "dtype": None}),
             "BatchNorm2d": (["num_features", "eps", "momentum", "affine", "track_running_stats", "device", "dtype"], {"eps": 1e-5, "momentum": 0.1, "affine": True, "track_running_stats": True, "device": None, "dtype": None}),
@@ -322,6 +457,18 @@ class Parser:
             elif isinstance(shape, list) and shape and all(type(v) is int and v > 0 for v in shape): normalized = shape
             else: raise ImportIssue("LayerNorm normalized_shape 必须是正整数或静态列表", expression)
             params = {"normalized_shape": normalized, "eps": args["eps"], "elementwise_affine": int(bool(args["elementwise_affine"]))}; expected = normalized[-1] if isinstance(normalized, list) else normalized
+        elif kind == "RMSNorm":
+            # Same normalized_shape contract as LayerNorm; the difference is only the parameter
+            # set (weight with no bias). nn.RMSNorm's default eps is dtype-dependent (1e-5 for
+            # fp16, 1e-6 otherwise), so it is resolved against the recorded dtype here rather
+            # than guessed, keeping the graph's parameter count and behavior faithful.
+            shape = args["normalized_shape"]
+            if type(shape) is int: normalized = shape
+            elif isinstance(shape, list) and shape and all(type(v) is int and v > 0 for v in shape): normalized = shape
+            else: raise ImportIssue("RMSNorm normalized_shape 必须是正整数或静态列表", expression)
+            eps = args["eps"]
+            if eps is None: eps = 1e-5 if "float16" in str(args["dtype"]) else 1e-6
+            params = {"normalized_shape": normalized, "eps": eps, "elementwise_affine": int(bool(args["elementwise_affine"]))}; expected = normalized[-1] if isinstance(normalized, list) else normalized
         elif kind == "GroupNorm":
             self.require(args, {"eps": 1e-5, "affine": True}, expression); expected = args["num_channels"]; params = {"num_groups": args["num_groups"]}
         elif kind.startswith("BatchNorm") or kind.startswith("InstanceNorm"):
@@ -378,8 +525,19 @@ class Parser:
         if self.path(expression) in attrs: return attrs[self.path(expression)]
         if isinstance(expression, ast.Subscript):
             parent = self.resolve_module(expression.value, attrs, env)
-            key = str(self.literal(expression.slice, env))
+            if isinstance(parent, Module) and parent.kind == "Group" and parent.count:
+                # `blocks[index]` selects one of `count` identical instances. The Group node
+                # stands for the whole chain, so the index only has to be in range.
+                ordinal = self.literal(expression.slice, env)
+                if type(ordinal) is not int or not 0 <= ordinal < parent.count:
+                    raise ImportIssue("结构块实例下标越界", expression)
+                return parent
+            key = self.literal(expression.slice, env)
             if isinstance(parent, Module) and key in parent.children: return parent.children[key]
+            # `for i in range(n): self.blocks[i]` yields an integer, not a module; the call
+            # site treats it as index 0 of the container, which the fold stands for.
+            if isinstance(parent, Module) and type(key) is int and parent.kind in ("ModuleList", "Sequential"): return 0
+            raise ImportIssue(f"容器下标 {key!r} 不在 {parent.kind} 中", expression)
         raise ImportIssue("无法识别调用的模块", expression)
 
     def add(self, kind, params, sources, name, node=None):
@@ -407,7 +565,9 @@ class Parser:
     def hint(self, tensor, module):
         if not module.expected or not isinstance(tensor, Tensor) or tensor.port: return
         node = next(n for n in self.graph["nodes"] if n["id"] == tensor.node)
-        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add"):
+        # Shape-preserving ops and the folded-block instance pass their declared dimension
+        # upstream; a `Group` node is transparent, so a body's expectation reaches the Input.
+        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Group"):
             for edge in self.graph["edges"]:
                 if edge["target"] == node["id"]: self.hint(Tensor(edge["source"], edge.get("sourcePort")), module)
         if node["op"] != "Input" or node["params"]["shape"]: return
@@ -434,6 +594,24 @@ class Parser:
             value = args[0]
             for key, child in module.children.items(): value = self.apply(child, [value], {}, f"{name}.{key}", call)
             return value
+        if module.kind == "Group":
+            # A container marked as `count` identical instances. The body is replayed once per
+            # instance to keep forward semantics exact, but every replay resolves to this one
+            # node, so the chain is emitted once and split afterwards.
+            if len(args) != 1 or keywords: raise ImportIssue("结构块实例需要单个输入", call)
+            identifier = self.add("Group", {}, [(args[0], None)], name, call)
+            self.group_counts[identifier.node] = module.count
+            self.group_applies += 1
+            # The body is exactly what the replay appended; recording it here avoids having to
+            # infer the body from the finished graph.
+            before = len(self.graph["nodes"])
+            unit = module.children["0"]
+            try: value = self.apply(unit, [Tensor(identifier.node)], {}, f"{name}.0", call)
+            except ImportIssue as error:
+                error.diagnostic.setdefault("occurrences", module.count)
+                raise
+            self.group_bodies[identifier.node] = [candidate["id"] for candidate in self.graph["nodes"][before:]]
+            return identifier
         if module.kind in ("ModuleDict", "ModuleList"): raise ImportIssue("容器需选取具体层或静态遍历", call)
         if id(module) in self.used_modules and module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention"):
             raise ImportIssue("同一参数层被多次调用涉及权重共享，目前无法忠实转换", call, "SHARED_WEIGHTS")
@@ -832,18 +1010,93 @@ class Parser:
             elif isinstance(statement, ast.Return): return self.expr(statement.value, env, attrs)
             elif isinstance(statement, ast.For):
                 if statement.orelse: raise ImportIssue("不支持 for/else", statement)
-                container = self.resolve_module(statement.iter, attrs, env)
-                if not isinstance(container, Module) or container.kind not in ("ModuleList", "Sequential"): raise ImportIssue("循环只支持静态层容器", statement)
-                for module in container.children.values():
-                    self.assign(statement.target, module, env)
-                    if any(isinstance(s, ast.Return) for s in ast.walk(statement)): raise ImportIssue("循环内不支持 return", statement)
+                if any(isinstance(s, ast.Return) for s in ast.walk(statement)): raise ImportIssue("循环内不支持 return", statement)
+                container, iterator = None, None
+                try: iterator = self.resolve_module(statement.iter, attrs, env)
+                except ImportIssue: pass
+                # `self.blocks[i]` selects one of the container's instances, so the container
+                if isinstance(iterator, Module) and iterator.kind in ("ModuleList", "Sequential", "Group"): container = iterator
+                if container is not None and container.count:
+                    # A folded container stands for `count` instances; one replay covers them
+                    # all, since every index resolves to the same node (see Module.count).
+                    if self.referenced(statement.body, statement.target) != 1: raise ImportIssue("折叠结构块的循环体需要恰好调用一次该块", statement)
+                    self.assign(statement.target, container, env)
                     self.statements(statement.body, env, attrs)
+                elif container is not None:
+                    for module in container.children.values():
+                        self.assign(statement.target, module, env)
+                        self.statements(statement.body, env, attrs)
+                else:
+                    # `for i in range(n): x = self.blocks[i](x)`, the other idiomatic spelling.
+                    # Index 0 stands in for the whole chain when the container is folded; if it
+                    # is not, the remaining instances are replayed normally.
+                    count = self.range_count(statement.iter, env)
+                    if count is None: raise ImportIssue("循环只支持静态层容器", statement)
+                    if self.referenced(statement.body, statement.target) != 1: raise ImportIssue("循环体需要恰好使用一次循环变量", statement)
+                    before = self.group_applies
+                    self.assign(statement.target, 0, env)
+                    self.statements(statement.body, env, attrs)
+                    if self.group_applies == before:
+                        for ordinal in range(1, count):
+                            self.assign(statement.target, ordinal, env)
+                            self.statements(statement.body, env, attrs)
             elif exported and isinstance(statement, ast.If):
                 # Export input validation is checked separately against our template.
                 expected = 'if isinstance(x, dict):\n    if set(x) != set(input_ids):\n        raise ValueError("Input dictionary must contain exactly the model\'s Input node IDs")\nelif len(input_ids) != 1:\n    raise ValueError("Multi-input models require a dictionary keyed by Input node ID")'
                 if ast.dump(statement, include_attributes=False) != ast.dump(ast.parse(expected).body[0], include_attributes=False): raise ImportIssue("导出代码输入检查已改变，不支持此控制流", statement)
             else: raise ImportIssue("不支持动态控制流、原地操作或此语句", statement, "UNSUPPORTED_STATEMENT")
         return None
+
+    def fold_containers(self):
+        """Turn each Group node into one subgraph definition plus one folded instance.
+
+        The Group node was added as a plain op to hold a position in the edge stream; the body
+        built through it is moved into a subgraph and the instance becomes the Group node. Both
+        ids and subgraph names stay inside `[a-zA-Z][a-zA-Z0-9_]{0,63}`, matching the graph IR
+        contract, and the result is what `backend.graph.expand_subgraphs` rebuilds.
+        """
+        groups = [node for node in self.graph["nodes"] if node["op"] == "Group"]
+        if not groups: return
+        for node in groups:
+            identifier = node["id"]
+            count = self.group_counts[identifier]
+            descendants = set(self.group_bodies[identifier])
+            if not descendants: raise ImportIssue(f"折叠结构块 {node['name']} 没有内部节点", self.node_sources.get(identifier))
+            children = [candidate for candidate in self.graph["nodes"] if candidate["id"] in descendants]
+            inner = [edge for edge in self.graph["edges"] if edge["source"] in descendants and edge["target"] in descendants]
+            entries = descendants - {edge["target"] for edge in inner}
+            exits = descendants - {edge["source"] for edge in inner}
+            if len(entries) != 1 or len(exits) != 1:
+                raise ImportIssue(f"折叠结构块 {node['name']} 的内部连线不构成唯一入口和出口", self.node_sources.get(identifier))
+            entry, departure = entries.pop(), exits.pop()
+            name = f"group_{identifier}"
+            position = {child["id"]: index for index, child in enumerate(children)}
+            self.graph.setdefault("subgraphs", {})[name] = {
+                "id": name, "name": node["name"][:120], "origin": "auto",
+                "nodes": [{**child, "id": f"n{index}", "position": {"x": index * 210, "y": 100}} for index, child in enumerate(children)],
+                "edges": [{**edge, "id": f"e_{edge['id']}", "source": f"n{position[edge['source']]}", "target": f"n{position[edge['target']]}"} for edge in inner],
+            }
+            # Constraints recorded while the body was built name the flat node ids, but the
+            # analyzer reports expanded ids; keep the mapping so both can be checked.
+            for index, child in enumerate(children): self.group_map[child["id"]] = f"{identifier}{EXPAND_SEP}0{EXPAND_SEP}n{index}"
+            self.group_map[identifier] = f"{identifier}{EXPAND_SEP}0{EXPAND_SEP}n{position[entry]}"
+            node.update({"op": "Group", "params": {}, "subgraph": name, "name": f"{node['name'][:110]} ×{count}"})
+            if count > 1: node["repeat"] = count
+            # Move the body out. Outside edges now address the instance, exactly the boundary
+            # `expand_subgraphs` rebuilds: entering the subgraph goes through its entry, leaving
+            # it through its exit. The body was built through an instance-to-entry edge, which is
+            # scaffolding rather than a connection, so it is dropped along with the moved edges.
+            kept = []
+            for edge in self.graph["edges"]:
+                source, target = edge["source"], edge["target"]
+                if source in descendants and target in descendants: continue
+                if source == identifier and target in descendants: continue
+                if target in descendants: target = identifier
+                if source in descendants: source = identifier
+                if source == identifier and target == identifier: continue
+                kept.append({**edge, "source": source, "target": target})
+            self.graph["edges"] = kept
+            self.graph["nodes"] = [candidate for candidate in self.graph["nodes"] if candidate["id"] not in descendants]
 
     def candidates(self):
         names = list(self.classes)
@@ -887,6 +1140,7 @@ class Parser:
             output = self.apply(module, [self.input("x")], {}, selected, assignment)
         if not isinstance(output, Tensor): raise ImportIssue("当前需要单个张量输出；注意力返回值请解包为 output, _", module.node)
         self.add("Output", {}, [(output, None)], "输出")
+        self.fold_containers()
         registered = []
         def collect(current):
             if current.kind == "custom":
@@ -909,15 +1163,24 @@ class Parser:
             source = self.node_sources.get(str(error).split(":", 1)[0])
             raise ImportIssue(f"结构或输入形状错误：{error}。请修改输入形状后重新解析。", source, code="STRUCTURE") from error
         for key, expected, kind, source in self.constraints:
-            edge = analysis["baseEdges"][key][0]
+            # A folded body reports expanded ids such as `import_1/0/n0`; map the recorded flat
+            # id back so the declared dimension is still checked.
+            key = self.group_map.get(key, key)
+            incoming = analysis["baseEdges"].get(key) or []
+            if not incoming: continue
+            edge = incoming[0]
             shape = analysis["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else analysis["shapes"][edge["source"]]
-            actual = shape[-1] if kind in ("Transformer", "MultiHeadAttention", "LayerNorm", "Linear", "Bilinear") else shape[1]
+            actual = shape[-1] if kind in ("Transformer", "MultiHeadAttention", "LayerNorm", "RMSNorm", "Linear", "Bilinear") else shape[1]
             if actual != expected: raise ImportIssue(f"{kind} 声明输入维度 {expected}，实际为 {actual}；请检查输入形状或代码", source, "SHAPE_MISMATCH")
+        # Only top-level nodes have a position; a folded body is laid out inside its subgraph.
         depths, rows = {}, {}
         for key in analysis["order"]:
-            depths[key] = max([depths[e["source"]] + 1 for e in self.graph["edges"] if e["target"] == key] or [0])
-            row = rows.get(depths[key], 0); rows[depths[key]] = row + 1
-            next(n for n in self.graph["nodes"] if n["id"] == key)["position"] = {"x": 210 * depths[key], "y": 100 + 170 * row}
+            top = key.split(EXPAND_SEP)[0]
+            if top in depths: continue
+            parents = [edge["source"].split(EXPAND_SEP)[0] for edge in self.graph["edges"] if edge["target"] == top]
+            depths[top] = max([depths[parent] + 1 for parent in parents if parent in depths] or [0])
+            row = rows.get(depths[top], 0); rows[depths[top]] = row + 1
+            next(n for n in self.graph["nodes"] if n["id"] == top)["position"] = {"x": 210 * depths[top], "y": 100 + 170 * row}
         self.warnings.append({"level": "info", "code": "STRUCTURE_ONLY", "message": "已导入模型结构和参数配置；原模型权重、训练脚本及优化器不随源码导入。"})
         return selected, analysis
 

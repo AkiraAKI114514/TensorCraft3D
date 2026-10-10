@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator
 
-from .graph import analyze_graph
+from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_INPUT_ELEMENTS = 4_000_000
@@ -70,8 +70,35 @@ def _shape_elements(shape: list[int]) -> int:
     return result
 
 
-def _validate_limits(info: dict[str, Any], label: str) -> None:
-    if info["activationBytesPerSample"] > MAX_CAPTURE_BYTES:
+def _activation_cone(info: dict[str, Any], selected: list[str]) -> set[str]:
+    """被检节点及其全部祖先。
+
+    单样本检查只需要这些层的中间张量；其余层即使存在也不参与捕获。用整模型激活总和
+    做闸门会让「只想看第 1 层」在大模型上直接失败，这才是它的实际瓶颈。
+    """
+    by_id = {node["id"]: node for node in info["nodes"]}
+    keep: set[str] = set()
+    stack = [node_id for node_id in selected if node_id in by_id]
+    while stack:
+        key = stack.pop()
+        if key in keep:
+            continue
+        keep.add(key)
+        for edge in info["baseEdges"].get(key, []):
+            stack.append(edge["source"])
+        for edge in info.get("overrideEdges", {}).get(key, []):
+            stack.append(edge["source"])
+    return keep
+
+
+def _validate_limits(info: dict[str, Any], label: str, selected: list[str] | None = None) -> None:
+    # 有选中节点时按祖先锥计账，没有选中就退回到整模型（那正是完整前向的真实占用）。
+    if selected:
+        cone = _activation_cone(info, selected)
+        peak = sum(_shape_elements(info["shapes"][key][1:]) * 4 for key in cone if key in info["shapes"])
+    else:
+        peak = info["activationBytesPerSample"]
+    if peak > MAX_CAPTURE_BYTES:
         raise InferenceError(f"{label} activation inspection exceeds 64 MB")
     if info["totalParameters"] > MAX_PARAMETERS or info["totalParameters"] * 4 > MAX_PARAMETER_BYTES:
         raise InferenceError("Inference model exceeds the 5M parameter / 20 MB limit")
@@ -123,15 +150,17 @@ def _embedding_inputs(info: dict[str, Any]) -> dict[str, int]:
     return result
 
 
-def _prepare_graph(graph: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, int]]:
+def _prepare_graph(graph: dict[str, Any], selected: list[str] | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, int]]:
     # Analyze the submitted graph first: rewriting B must not make an invalid source valid.
     analyze_graph(graph)
-    copied = copy.deepcopy(graph)
+    # Folded blocks carry no operator semantics, so inference expands them into the real
+    # operators before the single-sample batch rewrite below touches every node.
+    copied = expand_subgraphs(copy.deepcopy(graph))
     for node in copied["nodes"]:
         if node["op"] == "Input":
             node["params"]["shape"] = [1, *node["params"]["shape"][1:]]
-    inference_info = analyze_graph(copied)
-    _validate_limits(inference_info, "Single-sample graph")
+    inference_info = analyze_expanded_graph(copied)
+    _validate_limits(inference_info, "Single-sample graph", selected)
     return copied, inference_info, _embedding_inputs(inference_info)
 
 
@@ -316,7 +345,11 @@ def _validate_attention(request: TensorInferenceRequest, info: dict[str, Any], s
         # Captures retain all native projection/head stacks until the merged callback.
         projection_elements = query_length * embed * 4 + key_length * head_dim * kv_heads * 2
         extra_scratch += query_length * key_length * 64 + projection_elements * 32
-    if int(info["activationBytesPerSample"]) + extra_scratch > MAX_CAPTURE_BYTES:
+    # 与张量检查同一口径：只按被检节点的祖先锥计账，否则深层模型里查看浅层注意力
+    # 会被无关深层的激活拖到超限。
+    cone = _activation_cone(info, selected)
+    captured = sum(_shape_elements(info["shapes"][key][1:]) * 4 for key in cone if key in info["shapes"])
+    if captured + extra_scratch > MAX_CAPTURE_BYTES:
         raise InferenceError("Attention inspection scratch exceeds 64 MB")
 
 
@@ -356,10 +389,10 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         import torch
     except ImportError as exc:
         raise RuntimeError("PyTorch is not installed") from exc
-    copied, info, embedding = _prepare_graph(request.graph)
+    selected = list(dict.fromkeys(request.nodeIds))
+    copied, info, embedding = _prepare_graph(request.graph, selected)
     from .trained_models import trained_models
     snapshot = trained_models.get(request.modelId, request.graph) if request.modelId is not None else None
-    selected = list(dict.fromkeys(request.nodeIds))
     by_id = {node["id"]: node for node in copied["nodes"]}
     if any(node_id not in by_id for node_id in selected):
         raise InferenceError("nodeIds must refer to graph nodes")

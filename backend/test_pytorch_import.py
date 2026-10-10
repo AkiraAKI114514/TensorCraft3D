@@ -338,4 +338,113 @@ class Net(nn.Module):
         self.assertIsNotNone(result["graph"], result["diagnostics"])
 
 
+BLOCK = "class Block(nn.Module):\n    def __init__(self, d):\n        super().__init__()\n        self.norm = nn.LayerNorm(d)\n        self.fc = nn.Linear(d, d)\n    def forward(self, x):\n        return self.fc(self.norm(x))\n"
+
+
+class ImportFoldTests(unittest.TestCase):
+    """Static `ModuleList` loops must come back as one folded block, not N flattened copies.
+
+    The import budget is 128 nodes, so a 48-block model only fits at all if the instances
+    collapse into one `repeat`; the analyzer then scales the body's parameters by N, which is
+    what keeps the count equal to the real model.
+    """
+
+    def imported(self, count, forward="for b in self.blocks:\n    x = b(x)\nreturn x"):
+        init = f"self.blocks = nn.ModuleList([Block(8) for _ in range({count})])"
+        code = "from torch import nn\nimport torch\n" + BLOCK + module_source(init, forward)
+        result = import_pytorch(code, model_name="Net", input_shapes={"x": [2, 8]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        return result
+
+    def test_comprehension_modulelist_folds_to_one_instance(self):
+        result = self.imported(48)
+        graph, analysis = result["graph"], result["analysis"]
+        groups = [n for n in graph["nodes"] if n["op"] == "Group"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["repeat"], 48)
+        # 3 top-level nodes: Input, the folded block, Output. The 48 copies of the 2-layer body
+        # stay inside the subgraph definition.
+        self.assertEqual(len(graph["nodes"]), 3)
+        self.assertEqual([n["id"] for n in graph["subgraphs"][groups[0]["subgraph"]]["nodes"]], ["n0", "n1"])
+        # LayerNorm(8) = 16 params, Linear(8, 8) = 72, so 88 per block and 88 * 48 overall.
+        self.assertEqual(analysis["totalParameters"], 88 * 48)
+        self.assertEqual(groups[0]["params"], {})
+
+    def test_written_out_modulelist_folds_when_the_instances_are_identical(self):
+        init = "self.blocks = nn.ModuleList([Block(8), Block(8), Block(8)])"
+        code = "from torch import nn\nimport torch\n" + BLOCK + module_source(init, "for b in self.blocks:\n    x = b(x)\nreturn x")
+        result = import_pytorch(code, model_name="Net", input_shapes={"x": [2, 8]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        groups = [n for n in result["graph"]["nodes"] if n["op"] == "Group"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["repeat"], 3)
+        self.assertEqual(result["analysis"]["totalParameters"], 88 * 3)
+
+    def test_written_out_instances_that_differ_stay_separate_and_keep_their_own_counts(self):
+        # A differing constructor argument makes the two blocks non-isomorphic, so folding them
+        # would misreport the parameter count and they must stay separate.
+        block = "class Block(nn.Module):\n    def __init__(self, d, p=0.0):\n        super().__init__()\n        self.norm = nn.LayerNorm(d)\n        self.fc = nn.Linear(d, d)\n        self.drop = nn.Dropout(p)\n    def forward(self, x):\n        return self.drop(self.fc(self.norm(x)))\n"
+        forward = "for b in self.blocks:\n    x = b(x)\nreturn x"
+        mixed = "self.blocks = nn.ModuleList([Block(8), Block(8, 0.5)])"
+        result = import_pytorch("from torch import nn\nimport torch\n" + block + module_source(mixed, forward), model_name="Net", input_shapes={"x": [2, 8]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        self.assertEqual([n for n in result["graph"]["nodes"] if n["op"] == "Group"], [])
+        self.assertFalse(result["graph"].get("subgraphs"))
+
+    def test_range_indexed_forward_folds(self):
+        result = self.imported(4, "for i in range(4):\n    x = self.blocks[i](x)\nreturn x")
+        groups = [n for n in result["graph"]["nodes"] if n["op"] == "Group"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["repeat"], 4)
+        self.assertEqual(result["analysis"]["totalParameters"], 88 * 4)
+
+    def test_folded_block_trains_with_one_module_per_instance(self):
+        result = self.imported(3)
+        model, _ = build_model(result["graph"])
+        # Expansion gives each instance its own body operators, and they are genuinely
+        # independent modules rather than one shared layer.
+        norms = [model.layers[f"import_1/{index}/n0"] for index in range(3)]
+        linears = [model.layers[f"import_1/{index}/n1"] for index in range(3)]
+        self.assertTrue(all(isinstance(layer, nn.LayerNorm) for layer in norms))
+        self.assertEqual(len({layer.weight.data_ptr() for layer in linears}), 3)
+        output = model(torch.randn(2, 8))
+        self.assertEqual(tuple(output.shape), (2, 8))
+        output.square().sum().backward()
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+        self.assertEqual(result["analysis"]["totalParameters"], sum(p.numel() for p in model.parameters()))
+
+    def test_elements_that_depend_on_the_loop_variable_are_rejected(self):
+        # `Block(i)` gives each instance a different width, so it cannot stand for N identical
+        # copies; it must be refused rather than silently collapsed into one instance.
+        block = "class Block(nn.Module):\n    def __init__(self, d):\n        super().__init__()\n        self.fc = nn.Linear(d, d)\n    def forward(self, x):\n        return self.fc(x)\n"
+        init = "self.blocks = nn.ModuleList([Block(4 + i) for i in range(4)])"
+        code = "from torch import nn\nimport torch\n" + block + module_source(init, "for b in self.blocks:\n    x = b(x)\nreturn x")
+        result = import_pytorch(code, model_name="Net", input_shapes={"x": [2, 8]})
+        self.assertIsNone(result["graph"])
+        self.assertIn("循环变量", result["diagnostics"][0]["message"])
+
+    def test_folded_block_infers_the_input_shape_when_none_is_given(self):
+        # The body's declared width has to reach the Input through the instance, otherwise the
+        # UI would demand a shape for a model whose dimension is already written down.
+        init = "self.blocks = nn.ModuleList([Block(8) for _ in range(3)])"
+        code = "from torch import nn\nimport torch\n" + BLOCK + module_source(init, "for b in self.blocks:\n    x = b(x)\nreturn x")
+        result = import_pytorch(code, model_name="Net")
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        self.assertEqual(result["inputs"][0]["shape"], [1, 8])
+        self.assertTrue(result["inputs"][0]["inferred"])
+
+    def test_rmsnorm_round_trips_through_import_and_matches_the_analyzer(self):
+        code = "from torch import nn\nimport torch\n" + module_source("self.norm = nn.RMSNorm(8)", "return self.norm(x)")
+        result = import_pytorch(code, model_name="Net", input_shapes={"x": [2, 8]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        node = next(n for n in result["graph"]["nodes"] if n["op"] == "RMSNorm")
+        self.assertEqual(node["params"]["elementwise_affine"], 1)
+        self.assertAlmostEqual(node["params"]["eps"], 1e-6)
+        model = build_model(result["graph"])[0]
+        layer = model.layers[node["id"]]
+        self.assertIsInstance(layer, nn.RMSNorm)
+        self.assertFalse(hasattr(layer, "bias"))
+        self.assertEqual(result["analysis"]["totalParameters"], sum(p.numel() for p in model.parameters()))
+
+
 if __name__ == "__main__": unittest.main()
