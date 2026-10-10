@@ -87,7 +87,7 @@ Import, execution, and training are different checks. Non-classification outputs
 
 ## Reproducible examples
 
-[Five examples and their manifest](../examples/import_models/README.md) cover CNN, residual CNN, MQA, GQA and cross-attention. All are small two-logit classifiers with explicit model names, input shapes, expected operations and parameter counts; test-batch output is `[2,2]`, while the interactive inspector uses batch 1.
+[Six examples and their manifest](../examples/import_models/README.md) cover CNN, residual CNN, MQA, GQA, cross-attention and repeated-block folding. All are small two-logit classifiers with explicit model names, input shapes, expected operations and parameter counts; test-batch output is `[2,2]`, while the interactive inspector uses batch 1.
 
 From the repository root with the project environment active:
 
@@ -97,9 +97,10 @@ python -m examples.import_models.residual
 python -m examples.import_models.mqa
 python -m examples.import_models.gqa
 python -m examples.import_models.cross_attention
+python -m examples.import_models.grouped_stack
 ```
 
-Each seeds PyTorch, constructs a CPU model, performs one eval forward pass and prints shape/parameter count. They do not train or access the network. Cross-attention uses `query: [2,4,16]` and `context: [2,6,16]`.
+Each seeds PyTorch, constructs a CPU model, performs one eval forward pass and prints shape/parameter count. They do not train or access the network. Cross-attention uses `query: [2,4,16]` and `context: [2,6,16]`; repeated-block folding uses `x: [2,8,4]` and imports to a few grouped nodes instead of the flat operator cascade.
 
 Focused checks from the repository root:
 
@@ -109,4 +110,4 @@ npm exec --no -- vitest run src/importExamples.test.ts src/pytorchImport.test.ts
 npm run test:e2e -- e2e/importExamples.spec.ts
 ```
 
-The backend contract statically parses all five sources without executing them, then compares **trusted checked-in classes** and imported graphs with compatible weights, matching parameter counts, forward values and input gradients when PyTorch is installed. The source tests additionally execute standalone exports and reimports with common weights. This trusted fixture execution is not the browser upload path.
+The backend contract statically parses all six sources without executing them, then compares **trusted checked-in classes** and imported graphs with compatible weights, matching parameter counts, forward values and input gradients when PyTorch is installed. The source tests additionally execute standalone exports and reimports with common weights. This trusted fixture execution is not the browser upload path.

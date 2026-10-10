@@ -433,6 +433,24 @@ class ImportFoldTests(unittest.TestCase):
         self.assertEqual(result["inputs"][0]["shape"], [1, 8])
         self.assertTrue(result["inputs"][0]["inferred"])
 
+    def test_nested_folded_containers_each_become_one_block(self):
+        # A block that itself holds a folded container. The inner fold moves its body into a
+        # subgraph, so the outer fold has to run first for both to survive; folding inner-first
+        # used to leave the outer body referencing nodes that were already gone.
+        inner = "class Inner(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.fc = nn.Linear(8, 8)\n    def forward(self, x):\n        return self.fc(x)\n"
+        outer = "class Outer(nn.Module):\n    def __init__(self):\n        super().__init__()\n        self.inner = nn.ModuleList([Inner() for _ in range(3)])\n    def forward(self, x):\n        for layer in self.inner:\n            x = layer(x)\n        return x\n"
+        init = "self.stack = nn.ModuleList([Outer() for _ in range(2)])"
+        code = "from torch import nn\nimport torch\n" + inner + outer + module_source(init, "for block in self.stack:\n    x = block(x)\nreturn x")
+        result = import_pytorch(code, model_name="Net", input_shapes={"x": [2, 8]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        subgraphs = result["graph"]["subgraphs"]
+        self.assertEqual(len(subgraphs), 2)
+        # Outer x2, inner x3, one Linear(8, 8) each: 2 * 3 * 72 parameters.
+        self.assertEqual(result["analysis"]["totalParameters"], 72 * 3 * 2)
+        model, _ = build_model(result["graph"])
+        self.assertEqual(result["analysis"]["totalParameters"], sum(p.numel() for p in model.parameters()))
+        self.assertEqual(tuple(model(torch.randn(2, 8)).shape), (2, 8))
+
     def test_rmsnorm_round_trips_through_import_and_matches_the_analyzer(self):
         code = "from torch import nn\nimport torch\n" + module_source("self.norm = nn.RMSNorm(8)", "return self.norm(x)")
         result = import_pytorch(code, model_name="Net", input_shapes={"x": [2, 8]})

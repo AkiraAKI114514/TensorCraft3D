@@ -43,6 +43,14 @@
       "expected_parameters": 1122,
       "expected_ops": ["Input", "Input", "MultiHeadAttention", "Select", "Linear", "Output"],
       "attention": { "attention_type": "cross", "num_heads": 4, "kv_heads": 4 }
+    },
+    {
+      "filename": "grouped_stack.py",
+      "model_name": "GroupedStackClassifier",
+      "input_shapes": { "x": [2, 8, 4] },
+      "expected_output": [2, 2],
+      "expected_parameters": 178,
+      "expected_ops": ["Input", "Conv1d", "Group", "AdaptiveAvgPool1d", "Flatten", "Linear", "Output"]
     }
   ]
 }

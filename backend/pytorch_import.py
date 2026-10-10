@@ -1057,15 +1057,20 @@ class Parser:
         """
         groups = [node for node in self.graph["nodes"] if node["op"] == "Group"]
         if not groups: return
-        for node in groups:
+        # 由深到浅折叠：一个 Group 节点必然在它父块 replay 时被创建，所以 id 更大。反过来处理
+        # 外层块会先把它内部那个 Group 节点一起搬进子图并移出主图，内层就再也没有机会折叠。
+        for node in reversed(groups):
             identifier = node["id"]
             count = self.group_counts[identifier]
             descendants = set(self.group_bodies[identifier])
             if not descendants: raise ImportIssue(f"折叠结构块 {node['name']} 没有内部节点", self.node_sources.get(identifier))
             children = [candidate for candidate in self.graph["nodes"] if candidate["id"] in descendants]
-            inner = [edge for edge in self.graph["edges"] if edge["source"] in descendants and edge["target"] in descendants]
-            entries = descendants - {edge["target"] for edge in inner}
-            exits = descendants - {edge["source"] for edge in inner}
+            # 内层块先折时会被移出主图，外层记录的 body 里就留下了已不存在的 id。把它们剔除，
+            # 否则入口/出口会被算成多个，外层块再也折不了。
+            live = {candidate["id"] for candidate in children}
+            inner = [edge for edge in self.graph["edges"] if edge["source"] in live and edge["target"] in live]
+            entries = live - {edge["target"] for edge in inner}
+            exits = live - {edge["source"] for edge in inner}
             if len(entries) != 1 or len(exits) != 1:
                 raise ImportIssue(f"折叠结构块 {node['name']} 的内部连线不构成唯一入口和出口", self.node_sources.get(identifier))
             entry, departure = entries.pop(), exits.pop()
