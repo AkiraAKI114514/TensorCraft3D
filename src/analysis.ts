@@ -3,6 +3,27 @@ import { expandGraph, topLevelId, SubgraphError } from './subgraph';
 import { ATTENTION_TYPES, attentionConfig, incomingEdges, isCrossAttention, crossInputRole, edgeKey, edgeOutputShape, isAttention, isProjectionPort, projectionPorts } from './attentionConfig';
 
 export const product = (values: number[]) => values.reduce((a, b) => a * b, 1);
+/** 与 backend/graph.py 的 einsum_shape 逐条对应；两处必须给出相同结果。 */
+export function einsumShape(equation: unknown, shapes: number[][]): number[] {
+  if (typeof equation !== 'string' || !equation.includes('->')) throw new Error('einsum 方程必须显式写出 ->');
+  const [left, right] = equation.split('->');
+  const operands = left.split(',').map(part => part.trim());
+  if (operands.length !== shapes.length) throw new Error('einsum 子脚本数量必须与输入个数一致');
+  if (operands.some(operand => !operand)) throw new Error('einsum 子脚本不能为空');
+  const sizes: Record<string, number> = {};
+  operands.forEach((subscripts, index) => {
+    if (subscripts.length !== shapes[index].length) throw new Error('einsum 子脚本长度必须与各自输入维度一致');
+    for (const [position, label] of [...subscripts].entries()) {
+      const size = shapes[index][position];
+      if (label in sizes && sizes[label] !== size) throw new Error('einsum 同名子脚本的维度必须一致');
+      sizes[label] = size;
+    }
+  });
+  const output = right.trim();
+  if (new Set(output).size !== output.length) throw new Error('einsum 输出子脚本不能重复');
+  for (const label of output) if (!(label in sizes)) throw new Error('einsum 输出子脚本必须出现在输入中');
+  return [...output].map(label => sizes[label]);
+}
 export const shapeText = (shape?: number[]) => shape ? shape.join(' × ') : '—';
 export const formatNumber = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
 
@@ -121,7 +142,7 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (parents.length !== 2 || new Set(inputEdges.map(e => crossInputRole(graph, n, e.id))).size !== 2) throw new Error('Cross-Attention 需要两个输入：一个 Query 和一个 Context');
       } else {
         if (inputEdges.some(e => e.targetPort)) throw new Error('Query / Context 端口只适用于 Cross-Attention');
-        if (!['Input', 'Add', 'Multiply', 'Concat', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply 或 Concat');
+        if (!['Input', 'Add', 'Multiply', 'Concat', 'Einsum', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply、Concat 或 Einsum');
         if (n.op === 'Bilinear' && parents.length !== 2) throw new Error('Bilinear 需要两个输入');
       }
       let output = [...(input[0] || [])], count = 0;
@@ -261,6 +282,9 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Add 至少需要两个完全相同形状的输入');
       } else if (n.op === 'Multiply') {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Multiply 至少需要两个完全相同形状的输入');
+      } else if (n.op === 'Einsum') {
+        if (input.length < 1) throw new Error('Einsum 至少需要一个输入');
+        output = einsumShape(n.params.equation, input);
       } else if (n.op === 'Concat') {
         if (input.length < 2) throw new Error('Concat 至少需要两个输入'); const dim = integer('dim', 1, 1, output.length - 1);
         if (input.some(s => s.length !== output.length || s.some((v, i) => i !== dim && v !== output[i]))) throw new Error('Concat 非拼接维度必须一致');

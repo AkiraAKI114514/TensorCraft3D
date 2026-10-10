@@ -100,6 +100,7 @@ def build_model(graph):
                     for value in args[1:]: product = product * value
                     values[key] = product
                 elif op == "Concat": values[key] = torch.cat(args, dim=int(node["params"].get("dim", 1)))
+                elif op == "Einsum": values[key] = torch.einsum(node["params"]["equation"], *args)
                 elif op == "Unsqueeze": values[key] = torch.unsqueeze(args[0], int(node["params"].get("dim", 0)))
                 elif op == "Squeeze":
                     dim = node["params"].get("dim", "all")

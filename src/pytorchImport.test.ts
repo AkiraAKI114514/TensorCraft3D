@@ -54,6 +54,30 @@ print("matched")
     expect(imported.nodes.find(n => n.op === 'Bilinear')!.params.in2_features).toBe(width);
   }, 60000);
 
+  it('round-trips an authored Einsum contraction', () => {
+    // Two inputs whose shared `d` axis contracts away; the export must re-import with
+    // the equation intact and the same forward values.
+    const graph = PRESETS.blank();
+    graph.nodes = [
+      { id: 'a', name: 'A', op: 'Input', params: { shape: [2, 4, 16] }, position: { x: 0, y: 100 } },
+      { id: 'b', name: 'B', op: 'Input', params: { shape: [2, 6, 16] }, position: { x: 0, y: 300 } },
+      { id: 'dot', name: 'Dot', op: 'Einsum', params: { equation: 'bsd,btd->bst' }, position: { x: 200, y: 200 } },
+      { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 400, y: 200 } }
+    ];
+    graph.edges = [
+      { id: 'e0', source: 'a', target: 'dot' }, { id: 'e1', source: 'b', target: 'dot' }, { id: 'e2', source: 'dot', target: 'out' }
+    ];
+    const original = analyze(graph);
+    expect(original.valid).toBe(true);
+    // Output keeps `b` and `s` from the first operand and `t` from the second.
+    expect(original.layers.dot.output).toEqual([2, 4, 6]);
+    const imported = roundtrip(graph);
+    const equation = imported.nodes.find(n => n.op === 'Einsum')!.params.equation;
+    expect(equation).toBe('bsd,btd->bst');
+    expect(analyze(imported).valid).toBe(true);
+    expect(analyze(imported).parameters).toBe(original.parameters);
+  }, 30000);
+
   it('preserves Q/K/V overrides and projection outputs', () => {
     const graph = PRESETS.mqa();
     graph.nodes.push({ id: 'extra', name: 'Extra input', op: 'Input', params: { shape: [1, 16, 64] }, position: { x: 0, y: 300 } });

@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Concat", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Concat", "Einsum", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
@@ -26,6 +26,34 @@ _ADAPTIVE_POOLS = {
     "AdaptiveAvgPool1d": 3, "AdaptiveAvgPool2d": 4, "AdaptiveAvgPool3d": 5,
     "AdaptiveMaxPool1d": 3, "AdaptiveMaxPool2d": 4, "AdaptiveMaxPool3d": 5,
 }
+
+
+def einsum_shape(equation, shapes):
+    """Output shape of an explicit `torch.einsum` equation, or ValueError.
+
+    Only the explicit `->` form is accepted: implicit-output equations infer their
+    result from alphabetical label order, which is easy to misread and unnecessary in
+    model code. Labels shared between operands must agree in size, so a contraction
+    cannot silently broadcast. Summed labels (appearing on the left but not the right)
+    are dropped, which is the ellipsis-free form of `torch.einsum`'s reduction.
+    """
+    if not isinstance(equation, str) or "->" not in equation:
+        raise ValueError("einsum equation must be explicit and use '->'")
+    left, right = equation.split("->")
+    operands = [part.strip() for part in left.split(",")]
+    if len(operands) != len(shapes): raise ValueError("einsum operand count must match its inputs")
+    if any(not operand for operand in operands): raise ValueError("einsum subscripts cannot be empty")
+    sizes = {}
+    for subscripts, shape in zip(operands, shapes):
+        if len(subscripts) != len(shape): raise ValueError("einsum subscripts must match each input rank")
+        for label, size in zip(subscripts, shape):
+            if label in sizes and sizes[label] != size: raise ValueError("einsum subscript sizes must agree")
+            sizes[label] = size
+    output = right.strip()
+    if len(set(output)) != len(output): raise ValueError("einsum output subscripts must not repeat")
+    for label in output:
+        if label not in sizes: raise ValueError("einsum output subscript must appear in an input")
+    return [sizes[label] for label in output]
 
 
 def expand_subgraphs(graph):
@@ -217,7 +245,7 @@ def analyze_expanded_graph(graph):
         else:
             cross = op in ("Transformer", "MultiHeadAttention") and p.get("attention_type") == "cross"
             required_inputs = 2 if cross or op == "Bilinear" else 1
-            if not parents or (op not in ("Add", "Multiply", "Concat") and len(parents) != required_inputs): raise ValueError(f"{key}: invalid input count")
+            if not parents or (op not in ("Add", "Multiply", "Concat", "Einsum") and len(parents) != required_inputs): raise ValueError(f"{key}: invalid input count")
             shape = list(in_shapes[0])
             if op in _TRANSPOSE_CONVS:
                 rank = _TRANSPOSE_CONVS[op]
@@ -405,6 +433,12 @@ def analyze_expanded_graph(graph):
                 dim = integer("dim", 1, maximum=len(shape) - 1)
                 if len(parents) < 2 or any(len(s) != len(shape) or any(v != shape[i] for i, v in enumerate(s) if i != dim) for s in in_shapes): raise ValueError(f"{key}: Concat dimensions must match")
                 shape[dim] = sum(s[dim] for s in in_shapes)
+            elif op == "Einsum":
+                equation = p.get("equation")
+                try:
+                    shape = einsum_shape(equation, in_shapes)
+                except ValueError as error:
+                    raise ValueError(f"{key}: {error}") from error
             elif op == "Output" and outgoing[key]: raise ValueError("Output cannot have outgoing edges")
         # A folded layer stands for `repeat` isomorphic instances: shapes are unchanged, but
         # parameters and activation memory scale with the instance count. Chaining N instances

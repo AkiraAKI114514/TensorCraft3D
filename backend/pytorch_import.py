@@ -8,7 +8,7 @@ import copy
 import math
 import operator
 from dataclasses import dataclass, field
-from .graph import MAX_REPEAT, EXPAND_SEP, analyze_graph
+from .graph import MAX_REPEAT, EXPAND_SEP, analyze_graph, einsum_shape
 from .static_tensors import DynamicStaticSlice, StaticTensor, StaticTensorError, f32, new_budget
 
 
@@ -938,6 +938,23 @@ class Parser:
                 rank = len(self.tensor_shape(tensor, expression))
                 if not -rank <= dim < rank or dim % rank == 0: raise ImportIssue("select 不支持 batch 维度或越界维度", expression)
                 return self.add("Select", {"dim": dim, "index": index}, [(tensor, None)], "Select", expression)
+            if path in ("torch.einsum", "torch.functional.einsum"):
+                # The equation is the first positional argument and must be a literal
+                # string. Its output shape is resolved here rather than deferred, so a
+                # mismatched contraction is reported at the call site.
+                if not expression.args or expression.keywords: raise ImportIssue("einsum 需要位置参数形式的方程与张量", expression)
+                equation = self.literal(expression.args[0], env)
+                if not isinstance(equation, str): raise ImportIssue("einsum 方程必须是字符串常量", expression)
+                operands = [self.expr(argument, env, attrs) for argument in expression.args[1:]]
+                if not operands: raise ImportIssue("einsum 至少需要一个张量", expression)
+                for operand in operands:
+                    if not isinstance(operand, Tensor): raise ImportIssue("einsum 只接受运行时张量", expression)
+                shapes = [self.tensor_shape(operand, expression) for operand in operands]
+                try:
+                    einsum_shape(equation, shapes)
+                except ValueError as error:
+                    raise ImportIssue(f"einsum 方程无效：{error}", expression) from error
+                return self.add("Einsum", {"equation": equation}, [(operand, None) for operand in operands], "张量收缩", expression)
             if path in ("torch.cat", "torch.concat"):
                 if not expression.args: raise ImportIssue("cat 缺少张量列表", expression)
                 tensors = self.expr(expression.args[0], env, attrs)
