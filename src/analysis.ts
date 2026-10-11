@@ -155,11 +155,11 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
         const k = integer('kernel_size', 4, 1, 64), stride = integer('stride', 2, 1, 64), padding = integer('padding', 1, 0, 64), outputPadding = integer('output_padding', 0, 0, 64);
         if (outputPadding >= stride) throw new Error('output_padding 必须小于 stride');
-        const channels = integer('out_channels', 16, 1, 4096), groups = integer('groups', 1, 1, output[1]);
+        const channels = integer('out_channels', 16, 1, 4096), groups = integer('groups', 1, 1, output[1]), bias = integer('bias', 1, 0, 1);
         if (output[1] % groups || channels % groups) throw new Error('channels 必须能被 groups 整除');
         const spatial = output.slice(2).map(size => (size - 1) * stride - 2 * padding + k + outputPadding);
         if (spatial.some(v => v <= 0)) throw new Error('转置卷积输出尺寸无效');
-        count = (output[1] * (channels / groups) * Math.pow(k, rank - 2)) + channels;
+        count = (output[1] * (channels / groups) * Math.pow(k, rank - 2)) + bias * channels;
         output = [output[0], channels, ...spatial];
       } else if (['Conv1d', 'Conv2d', 'Conv3d', 'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d'].includes(n.op)) {
         const rank = Number(n.op.match(/([123])d$/)?.[1] || 2) + 2;
@@ -168,7 +168,7 @@ function analyzeExpanded(graph: Graph): Analysis {
         const spatial = output.slice(2).map(size => Math.floor((size + 2 * padding - k) / stride) + 1);
         if (spatial.some(v => v <= 0)) throw new Error('卷积核或池化核大于输入，输出尺寸为零');
         const channels = convolution ? integer('out_channels', 16, 1, 4096) : output[1];
-        if (convolution) { const groups = integer('groups', 1, 1, output[1]); if (output[1] % groups || channels % groups) throw new Error('channels 必须能被 groups 整除'); count = channels * (output[1] / groups) * Math.pow(k, rank - 2) + channels; }
+        if (convolution) { const groups = integer('groups', 1, 1, output[1]), bias = integer('bias', 1, 0, 1); if (output[1] % groups || channels % groups) throw new Error('channels 必须能被 groups 整除'); count = channels * (output[1] / groups) * Math.pow(k, rank - 2) + bias * channels; }
         output = [output[0], channels, ...spatial];
       } else if (['BatchNorm1d', 'BatchNorm2d', 'BatchNorm3d', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d'].includes(n.op)) {
         const dimensions = Number(n.op.match(/([123])d$/)?.[1] || 2); const ranks = n.op === 'BatchNorm1d' ? [2, 3] : [dimensions + 2]; if (!ranks.includes(output.length)) throw new Error(`${n.op} 需要 ${ranks.join(' 或 ')} 维通道输入`); if (n.op.startsWith('BatchNorm') || Number(n.params.affine ?? 1)) count = output[1] * 2;
@@ -221,11 +221,11 @@ function analyzeExpanded(graph: Graph): Analysis {
         aligned.forEach((size, dim) => { if (dim === sequenceDim ? output[dim] > size : size !== 1 && size !== output[dim]) throw new Error(dim === sequenceDim ? '输入序列超过常量缓冲区容量' : '常量形状无法广播到输入'); });
       } else if (n.op === 'Linear') {
         if (output.length < 2) throw new Error('Linear 需要至少二维输入 [B,...,F]');
-        const features = integer('out_features', 10); count = (output.at(-1)! + 1) * features; output = [...output.slice(0, -1), features];
+        const features = integer('out_features', 10), bias = integer('bias', 1, 0, 1); count = (output.at(-1)! + bias) * features; output = [...output.slice(0, -1), features];
       } else if (n.op === 'Bilinear') {
         // in2_features 是权重形状，必须与第二个输入的末维一致：它既是参数计数，
         // 也是 nn.Bilinear 的构造参数，两侧任何一方独自推断都会造成形状与参数漂移。
-        if (input.length !== 2 || input.some(s => s.length !== 2)) throw new Error('Bilinear 需要两个二维输入'); const features = integer('out_features', 10), in2 = integer('in2_features', 16); if (input[1][1] !== in2) throw new Error(`Bilinear in2_features 必须等于第二输入的末维 ${input[1][1]}`); if (input[0][0] !== input[1][0]) throw new Error('Bilinear 两个输入的 batch 维度必须一致'); count = input[0][1] * in2 * features + features; output = [output[0], features];
+        if (input.length !== 2 || input.some(s => s.length !== 2)) throw new Error('Bilinear 需要两个二维输入'); const features = integer('out_features', 10), in2 = integer('in2_features', 16), bias = integer('bias', 1, 0, 1); if (input[1][1] !== in2) throw new Error(`Bilinear in2_features 必须等于第二输入的末维 ${input[1][1]}`); if (input[0][0] !== input[1][0]) throw new Error('Bilinear 两个输入的 batch 维度必须一致'); count = input[0][1] * in2 * features + bias * features; output = [output[0], features];
       } else if (n.op === 'Embedding') {
         if (output.length < 2) throw new Error('Embedding 需要索引序列输入');
         if (graph.nodes.find(node => node.id === parents[0])?.op !== 'Input') throw new Error('Embedding 输入必须直接来自 Input 层');

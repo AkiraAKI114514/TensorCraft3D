@@ -179,6 +179,38 @@ class PyTorchImportTests(unittest.TestCase):
     def test_scalar_scale_rejects_division_by_zero(self):
         code = module_source("self.p = nn.Linear(8, 8)", "return self.p(x) / 0.0")
         self.reject(code, input_shapes={"x": [2, 4, 8]})
+    def test_biasless_linear_matches_pytorch_parameters_and_values(self):
+        # `bias=False` is what every modern LLM/ViT projection writes; it must drop
+        # the bias term from both the parameter count and the built module.
+        code = module_source("self.layer = nn.Linear(4, 2, bias=False)", "return self.layer(x)")
+        result, model = self.parsed(code, input_shapes={"x": [1, 4]})
+        self.assertEqual(result["graph"]["nodes"][1]["params"]["bias"], 0)
+        layer = model.layers["import_1"]
+        original = nn.Linear(4, 2, bias=False)
+        layer.load_state_dict(original.state_dict())
+        model.eval(); original.eval()
+        x = torch.randn(3, 4)
+        torch.testing.assert_close(model(x), original(x))
+        self.assertIsNone(layer.bias)
+        self.assertEqual(result["analysis"]["totalParameters"], 8)
+        self.assertEqual(sum(p.numel() for p in original.parameters()), 8)
+
+    def test_biasless_conv_and_bilinear_parameter_counts(self):
+        for init, shape, op in [
+            ("self.layer = nn.Conv2d(3, 4, 3, padding=1, bias=False)", [1, 3, 8, 8], "Conv2d"),
+            ("self.layer = nn.ConvTranspose2d(3, 4, 3, stride=2, bias=False)", [1, 3, 8, 8], "ConvTranspose2d"),
+            ("self.a = nn.Linear(4, 6, bias=False)\n"
+             "self.b = nn.Linear(4, 6, bias=False)\n"
+             "self.layer = nn.Bilinear(6, 6, 5, bias=False)",
+             [1, 4], "Bilinear"),
+        ]:
+            with self.subTest(op=op):
+                forward = "return self.layer(self.a(x), self.b(x))" if op == "Bilinear" else "return self.layer(x)"
+                result, model = self.parsed(module_source(init, forward), input_shapes={"x": shape})
+                target = model.layers["import_3" if op == "Bilinear" else "import_1"]
+                self.assertEqual(result["analysis"]["totalParameters"],
+                                 sum(p.numel() for p in model.parameters() if p.requires_grad))
+                self.assertIsNone(target.bias)
 
     def test_einsum_contraction_imports_and_runs(self):
         # Scaled attention written out by hand: both contractions are explicit `->` form.
@@ -299,7 +331,6 @@ model = Net(width=8)
 
     def test_errors_keep_source_location_and_no_partial_graph(self):
         for init, forward, expected in [
-            ("self.layer = nn.Linear(4, 2, bias=False)", "return self.layer(x)", "UNSUPPORTED"),
             ("self.layer = nn.Linear(4, 4)", "x = self.layer(x)\nreturn self.layer(x)", "SHARED_WEIGHTS"),
             ("self.layer = nn.Linear(4, 4)", "if x.sum() > 0:\n    x = self.layer(x)\nreturn x", "UNSUPPORTED_STATEMENT"),
             ("self.layer = nn.MultiheadAttention(8, 2)", "return self.layer(x, x, x)[0]", "UNSUPPORTED"),

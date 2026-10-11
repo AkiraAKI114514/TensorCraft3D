@@ -78,6 +78,64 @@ print("matched")
     expect(analyze(imported).parameters).toBe(original.parameters);
   }, 30000);
 
+  it('round-trips a biasless linear and drops the bias from the parameter count', () => {
+    // `bias: 0` must survive the export->reimport trip as `nn.Linear(..., bias=False)`
+    // and must not be counted as a parameter on either side.
+    const graph = PRESETS.blank();
+    graph.nodes = [
+      { id: 'in', name: 'In', op: 'Input', params: { shape: [4, 8] }, position: { x: 0, y: 100 } },
+      { id: 'biasless', name: 'Biasless', op: 'Linear', params: { out_features: 6, bias: 0 }, position: { x: 150, y: 100 } },
+      { id: 'head', name: 'Head', op: 'Linear', params: { out_features: 10 }, position: { x: 300, y: 100 } },
+      { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 450, y: 100 } }
+    ];
+    graph.edges = [
+      { id: 'e0', source: 'in', target: 'biasless' }, { id: 'e1', source: 'biasless', target: 'head' }, { id: 'e2', source: 'head', target: 'out' }
+    ];
+    const analysis = analyze(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.parameters).toBe(8 * 6 + (6 + 1) * 10);
+    const imported = roundtrip(graph);
+    expect(validateGraph(imported)).toEqual(imported);
+    expect(analyze(imported).valid).toBe(true);
+    expect(analyze(imported).parameters).toBe(analysis.parameters);
+    expect(imported.nodes.find(n => n.op === 'Linear')!.params.bias).toBe(0);
+  }, 30000);
+
+  it.each([
+    ['Conv2d', { out_channels: 4, kernel_size: 3, padding: 1, bias: 0 }, [1, 3, 8, 8], (f: number, o: number, k: number) => 3 * o * k * k, false],
+    ['ConvTranspose2d', { out_channels: 4, kernel_size: 4, stride: 2, padding: 1, bias: 0 }, [1, 3, 8, 8], (f: number, o: number, k: number) => f * o * k * k, false],
+    // Bilinear has no channels/kernel: `f` is the first input width and `o` the second.
+    ['Bilinear', { in2_features: 5, out_features: 4, bias: 0 }, [1, 6], (f: number, o: number) => f * o * 4, true]
+  ] as [string, Params, number[], (f: number, o: number, k: number) => number, boolean][])(
+    'round-trips a biasless %s and omits the bias from the exported source',
+    (op, params, shape, weights, twoInputs) => {
+      // Coverage for the Conv / ConvTranspose / Bilinear branches of the bias flag;
+      // the Linear branch alone would not catch a missing `bias=False` in export.
+      const graph = PRESETS.blank();
+      graph.nodes = [
+        { id: 'in', name: 'In', op: 'Input', params: { shape }, position: { x: 0, y: 100 } },
+        ...(twoInputs ? [{ id: 'second', name: 'Second', op: 'Input' as const, params: { shape: [1, Number(params.in2_features)] }, position: { x: 0, y: 300 } }] : []),
+        { id: 'biasless', name: 'Biasless', op: op as Graph['nodes'][number]['op'], params, position: { x: 150, y: 100 } },
+        { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 300, y: 100 } }
+      ];
+      graph.edges = [
+        { id: 'e0', source: 'in', target: 'biasless' },
+        ...(twoInputs ? [{ id: 'e2', source: 'second', target: 'biasless' }] : []),
+        { id: 'e1', source: 'biasless', target: 'out' }
+      ];
+      const analysis = analyze(graph);
+      expect(analysis.valid).toBe(true);
+      const expected = op === 'Bilinear'
+        ? 6 * Number(params.in2_features) * Number(params.out_features)
+        : weights(shape[1], Number(params.out_channels), Number(params.kernel_size));
+      expect(analysis.parameters).toBe(expected);
+      expect(generatePython(graph)).toContain('bias=False');
+      const imported = roundtrip(graph);
+      expect(validateGraph(imported)).toEqual(imported);
+      expect(analyze(imported).parameters).toBe(analysis.parameters);
+      expect(imported.nodes.find(n => n.op === op)!.params.bias).toBe(0);
+    }, 60000);
+
   it('preserves Q/K/V overrides and projection outputs', () => {
     const graph = PRESETS.mqa();
     graph.nodes.push({ id: 'extra', name: 'Extra input', op: 'Input', params: { shape: [1, 16, 64] }, position: { x: 0, y: 300 } });

@@ -21,6 +21,26 @@
       "expected": { "valid": true, "outputShape": [2, 2], "parameters": 58 }
     },
     {
+      "id": "linear_biasless",
+      "graph": {
+        "version": 1, "name": "Biasless Linear",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Hidden", "op": "Linear", "params": { "out_features": 8, "bias": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "ReLU", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Head", "op": "Linear", "params": { "out_features": 2 }, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "Output", "op": "Output", "params": {}, "position": { "x": 400, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 2], "parameters": 50 }
+    },
+    {
       "id": "sequence_linear",
       "graph": {
         "version": 1, "name": "Sequence Linear",
