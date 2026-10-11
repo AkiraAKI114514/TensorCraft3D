@@ -212,6 +212,41 @@ class PyTorchImportTests(unittest.TestCase):
                                  sum(p.numel() for p in model.parameters() if p.requires_grad))
                 self.assertIsNone(target.bias)
 
+    def test_glu_lowers_to_a_single_op_and_matches_pytorch(self):
+        # The single-projection SwiGLU/GLU FFN: one wide projection split in half and
+        # sigmoid-gated against itself. `nn.GLU` and `F.glu` must agree.
+        for init, forward in [
+            ("self.fc = nn.Linear(8, 16)\nself.glu = nn.GLU(dim=-1)",
+             "return self.glu(self.fc(x))"),
+            ("self.fc = nn.Linear(8, 16)",
+             "return F.glu(self.fc(x), dim=-1)"),
+        ]:
+            with self.subTest(init=init):
+                result, model = self.parsed(module_source(init, forward), input_shapes={"x": [2, 4, 8]})
+                nodes = [n["op"] for n in result["graph"]["nodes"]]
+                self.assertEqual(nodes.count("GLU"), 1)
+                self.assertEqual(result["graph"]["nodes"][-2]["params"]["dim"], -1)
+                # The 16-wide projection halves back to 8.
+                self.assertEqual(result["analysis"]["shapes"]["import_2"], [2, 4, 8])
+                output = model(torch.randn(2, 4, 8)); output.sum().backward()
+                self.assertEqual(list(output.shape), [2, 4, 8])
+                self.assertTrue(all(p.grad is not None for p in model.parameters()))
+
+    def test_glu_rejects_odd_axis_and_batch_dimension(self):
+        # The importer builds the node, then the shared analyzer rejects the shape:
+        # an odd axis cannot be halved, and the batch axis may not be touched.
+        for init, forward, shape, message in [
+            ("self.fc = nn.Linear(4, 5)", "return F.glu(self.fc(x), dim=-1)", [1, 4], "must be even"),
+            ("self.fc = nn.Linear(4, 8)", "return F.glu(self.fc(x), dim=0)", [1, 4], "batch dimension"),
+        ]:
+            with self.subTest(forward=forward):
+                code = module_source(init, forward)
+                result = import_pytorch(code, "Net", {"x": shape})
+                self.assertIsNone(result["graph"], result)
+                self.assertEqual(result["diagnostics"][0]["level"], "error")
+                self.assertIn(message, result["diagnostics"][0]["message"])
+
+
     def test_einsum_contraction_imports_and_runs(self):
         # Scaled attention written out by hand: both contractions are explicit `->` form.
         code = module_source(

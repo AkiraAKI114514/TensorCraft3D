@@ -136,6 +136,30 @@ print("matched")
       expect(imported.nodes.find(n => n.op === op)!.params.bias).toBe(0);
     }, 60000);
 
+  it('round-trips a GLU block and halves the gated axis', () => {
+    // An authored `Linear(16) -> GLU(-1)` block: the exported F.glu must re-import
+    // as a single GLU node with the axis halved back to 8.
+    const graph = PRESETS.blank();
+    graph.nodes = [
+      { id: 'in', name: 'In', op: 'Input', params: { shape: [2, 4, 8] }, position: { x: 0, y: 100 } },
+      { id: 'fc', name: 'FC', op: 'Linear', params: { out_features: 16 }, position: { x: 150, y: 100 } },
+      { id: 'glu', name: 'GLU', op: 'GLU', params: { dim: -1 }, position: { x: 300, y: 100 } },
+      { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 450, y: 100 } }
+    ];
+    graph.edges = [
+      { id: 'e0', source: 'in', target: 'fc' }, { id: 'e1', source: 'fc', target: 'glu' }, { id: 'e2', source: 'glu', target: 'out' }
+    ];
+    const original = analyze(graph);
+    expect(original.valid).toBe(true);
+    expect(original.layers.glu.output).toEqual([2, 4, 8]);
+    expect(analyze(graph).parameters).toBe(8 * 16 + 16);
+    const imported = roundtrip(graph);
+    expect(imported.nodes.filter(n => n.op === 'GLU')).toHaveLength(1);
+    expect(analyze(imported).valid).toBe(true);
+    expect(analyze(imported).layers[imported.nodes.find(n => n.op === 'GLU')!.id].output).toEqual([2, 4, 8]);
+    expect(analyze(imported).parameters).toBe(original.parameters);
+  }, 30000);
+
   it('preserves Q/K/V overrides and projection outputs', () => {
     const graph = PRESETS.mqa();
     graph.nodes.push({ id: 'extra', name: 'Extra input', op: 'Input', params: { shape: [1, 16, 64] }, position: { x: 0, y: 300 } });

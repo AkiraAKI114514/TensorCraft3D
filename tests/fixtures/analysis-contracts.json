@@ -41,6 +41,24 @@
       "expected": { "valid": true, "outputShape": [2, 2], "parameters": 50 }
     },
     {
+      "id": "glu_halves_the_gated_axis",
+      "graph": {
+        "version": 1, "name": "GLU FFN",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Wide", "op": "Linear", "params": { "out_features": 16 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Gate", "op": "GLU", "params": { "dim": -1 }, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Output", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 8], "parameters": 144 }
+    },
+    {
       "id": "sequence_linear",
       "graph": {
         "version": 1, "name": "Sequence Linear",

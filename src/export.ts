@@ -211,6 +211,7 @@ export function generatePython(graph: Graph) {
         // `torch.einsum` is native, so unlike ConstantAdd this needs no embedded runtime helper.
         case 'Einsum': forward.push(`        values[${key}] = torch.einsum(${JSON.stringify(p.equation)}, ${inputs.join(', ')})`); continue;
         case 'Scale': forward.push(`        values[${key}] = ${inputs[0]} * ${JSON.stringify(p.factor ?? 1)}`); continue;
+        case 'GLU': forward.push(`        values[${key}] = torch.nn.functional.glu(${inputs[0]}, dim=${p.dim ?? -1})`); continue;
       }
       const repeat = repeatOf(node);
       const overrides = isAttention(node.op) ? edges.filter(e => isProjectionPort(e.targetPort)) : [];
