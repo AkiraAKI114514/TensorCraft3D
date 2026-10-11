@@ -282,6 +282,11 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Add 至少需要两个完全相同形状的输入');
       } else if (n.op === 'Multiply') {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Multiply 至少需要两个完全相同形状的输入');
+      } else if (n.op === 'Scale') {
+        // Shape-preserving elementwise scale; the factor is the attention `1/sqrt(d)` or similar.
+        const factor = n.params.factor;
+        if (typeof factor !== 'number' || !Number.isFinite(factor)) throw new Error('Scale 需要有限的数值系数 factor');
+        if (Math.abs(factor) > 3.4028234663852886e38) throw new Error('Scale 系数超出 float32 范围');
       } else if (n.op === 'Einsum') {
         if (input.length < 1) throw new Error('Einsum 至少需要一个输入');
         output = einsumShape(n.params.equation, input);
