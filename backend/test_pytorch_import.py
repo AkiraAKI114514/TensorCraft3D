@@ -280,6 +280,108 @@ class PyTorchImportTests(unittest.TestCase):
             "return torch.einsum('bsd,btd->bst', self.wide(x), self.thin(x))")
         self.reject(code, input_shapes={"x": [2, 4, 8]})
 
+    def test_functional_normalization_matches_the_module_forms(self):
+        # F.layer_norm / F.rms_norm / F.group_norm are the spellings real transformer code writes.
+        # Each must lower onto the same op as its nn.* counterpart and reproduce that module's
+        # forward -- the functional call is affine-free, which is the only form the graph can hold.
+        cases = [
+            ("F.layer_norm(x, (8,))", "self.f = nn.Linear(8, 8)", "return F.layer_norm(self.f(x), (8,))", [2, 8], "LayerNorm", 72),
+            ("F.layer_norm(x, (8,), eps=1e-6)", "self.f = nn.Linear(8, 8)", "return F.layer_norm(self.f(x), (8,), eps=1e-6)", [2, 8], "LayerNorm", 72),
+            ("F.layer_norm explicit None weight/bias", "self.f = nn.Linear(8, 8)", "return F.layer_norm(self.f(x), (8,), None, None)", [2, 8], "LayerNorm", 72),
+            ("F.rms_norm(x, (8,))", "self.f = nn.Linear(8, 8)", "return F.rms_norm(self.f(x), (8,))", [2, 8], "RMSNorm", 72),
+            ("F.rms_norm(x, (8,), eps=1e-4)", "self.f = nn.Linear(8, 8)", "return F.rms_norm(self.f(x), (8,), eps=1e-4)", [2, 8], "RMSNorm", 72),
+            ("F.group_norm(x, 2)", "self.f = nn.Conv2d(3, 8, 3, padding=1)", "return F.group_norm(self.f(x), 2)", [2, 3, 8, 8], "GroupNorm", 224),
+        ]
+        for label, init, forward, shape, op, parameters in cases:
+            with self.subTest(label=label):
+                code = module_source(init, forward)
+                result, imported = self.parsed(code, input_shapes={"x": shape})
+                node = next(n for n in result["graph"]["nodes"] if n["op"] == op)
+                self.assertEqual(node["params"].get("elementwise_affine", node["params"].get("affine")), 0, label)
+                namespace = {}
+                exec(code, namespace)
+                original = namespace["Net"]()
+                for candidate in result["graph"]["nodes"]:
+                    if candidate["id"] in imported.layers and candidate["name"].startswith("self."):
+                        source = original
+                        for part in candidate["name"].split("self.", 1)[1].split("."): source = getattr(source, part)
+                        imported.layers[candidate["id"]].load_state_dict(source.state_dict())
+                imported.eval(); original.eval()
+                x = torch.randn(*shape)
+                with torch.no_grad():
+                    torch.testing.assert_close(imported({i["id"]: x for i in result["inputs"]}), original(x))
+                self.assertEqual(result["analysis"]["totalParameters"], parameters, label)
+
+    def test_functional_interpolate_lowers_onto_upsample(self):
+        # F.interpolate needs no argument rewriting: its keyword names already match nn.Upsample's.
+        for mode, shape in (("nearest", [2, 3, 8, 8]), ("bilinear", [2, 3, 8, 8]), ("nearest", [2, 3, 8, 8, 8])):
+            with self.subTest(mode=mode, shape=shape):
+                dims = len(shape) - 2
+                kernel = "nn.Conv2d(3, 8, 3, padding=1)" if dims == 2 else "nn.Conv3d(3, 8, 3, padding=1)"
+                code = module_source(f"self.f = {kernel}", f"return F.interpolate(self.f(x), scale_factor=2, mode='{mode}')")
+                result, imported = self.parsed(code, input_shapes={"x": shape})
+                node = next(n for n in result["graph"]["nodes"] if n["op"] == "Upsample")
+                self.assertEqual(node["params"]["scale_factor"], 2)
+                self.assertEqual(node["params"]["mode"], mode)
+                namespace = {}
+                exec(code, namespace)
+                original = namespace["Net"]()
+                for candidate in result["graph"]["nodes"]:
+                    if candidate["id"] in imported.layers and candidate["name"].startswith("self."):
+                        source = original
+                        for part in candidate["name"].split("self.", 1)[1].split("."): source = getattr(source, part)
+                        imported.layers[candidate["id"]].load_state_dict(source.state_dict())
+                imported.eval(); original.eval()
+                x = torch.randn(*shape)
+                with torch.no_grad():
+                    torch.testing.assert_close(imported({i["id"]: x for i in result["inputs"]}), original(x))
+
+    def test_functional_normalization_rejects_affine_tensors(self):
+        # A weight/bias argument is a real tensor the graph has no way to store; dropping it
+        # silently would change the computation, so it has to be an error rather than a warning.
+        for op, init, forward, shape in (
+            ("layer_norm", "self.f = nn.Linear(8, 8)", "return F.layer_norm(self.f(x), (8,), torch.ones(8))", [2, 8]),
+            ("rms_norm", "self.f = nn.Linear(8, 8)", "return F.rms_norm(self.f(x), (8,), torch.ones(8))", [2, 8]),
+            ("group_norm", "self.f = nn.Conv2d(3, 8, 3, padding=1)", "return F.group_norm(self.f(x), 2, torch.ones(8))", [2, 3, 8, 8]),
+        ):
+            with self.subTest(op=op):
+                result = self.reject(module_source(init, forward), input_shapes={"x": shape})
+                self.assertIn("weight/bias", result["diagnostics"][0]["message"])
+                self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
+    def test_functional_normalization_rejects_an_unresolvable_eps_and_missing_groups(self):
+        # layer_norm's eps is a plain float whose default is 1e-5, so an explicit None is not a
+        # request for a dtype-dependent epsilon -- torch raises TypeError for it. Accepting it
+        # would put a null in the node params, which both analyzers pass and build_model then
+        # fails on, long after the diagnostic could point at the source line.
+        result = self.reject(module_source("self.f = nn.Linear(8, 8)", "return F.layer_norm(self.f(x), (8,), None, None, None)"))
+        self.assertEqual(result["diagnostics"][0]["code"], "UNSUPPORTED")
+        self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+        # num_groups may arrive as a keyword, so the bridge must not assume a positional layout.
+        for forward in ("return F.group_norm(self.f(x), 2)", "return F.group_norm(self.f(x), num_groups=2)"):
+            with self.subTest(forward=forward):
+                code = module_source("self.f = nn.Conv2d(3, 8, 3, padding=1)", forward)
+                result, imported = self.parsed(code, input_shapes={"x": [2, 3, 8, 8]})
+                node = next(n for n in result["graph"]["nodes"] if n["op"] == "GroupNorm")
+                self.assertEqual(node["params"]["num_groups"], 2)
+                # An affine-free GroupNorm owns nothing, so the total is the Conv2d's weights alone.
+                self.assertEqual(node["params"]["affine"], 0)
+                self.assertEqual(result["analysis"]["totalParameters"], 3 * 8 * 3 * 3 + 8)
+        # A group_norm with no group count at all is a source error, not an internal crash.
+        result = self.reject(module_source("self.f = nn.Conv2d(3, 8, 3, padding=1)", "return F.group_norm(self.f(x))"), input_shapes={"x": [2, 3, 8, 8]})
+        self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
+    def test_functional_interpolate_rejects_size_and_align_corners(self):
+        # Neither has a representation: `size` is not a scale factor, and align_corners changes the
+        # sampling grid, which the Upsample op does not carry.
+        for forward in (
+            "return F.interpolate(self.f(x), size=(16, 16), mode='nearest')",
+            "return F.interpolate(self.f(x), scale_factor=2, mode='bilinear', align_corners=False)",
+        ):
+            with self.subTest(forward=forward):
+                result = self.reject(module_source("self.f = nn.Conv2d(3, 8, 3, padding=1)", forward), input_shapes={"x": [2, 3, 8, 8]})
+                self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
     def test_static_modulelist_nested_custom_defaults_and_model_selection(self):
         code = '''from torch import nn
 class Block(nn.Module):
@@ -672,8 +774,13 @@ class ImportFoldTests(unittest.TestCase):
         self.assertIsNotNone(result["graph"], result["diagnostics"])
         node = next(n for n in result["graph"]["nodes"] if n["op"] == "RMSNorm")
         self.assertEqual(node["params"]["elementwise_affine"], 1)
-        self.assertAlmostEqual(node["params"]["eps"], 1e-6)
+        # nn.RMSNorm leaves eps=None, which the kernel resolves to finfo(opmath).eps rather than
+        # the 1e-6 this importer used to record -- for a float32 graph that is finfo(float32).eps.
+        self.assertAlmostEqual(node["params"]["eps"], torch.finfo(torch.float32).eps)
         model = build_model(result["graph"])[0]
+        # The resolved eps has to reach PyTorch exactly, or the imported graph and the module it
+        # came from normalize with different denominators.
+        self.assertEqual(model.layers[node["id"]].eps, torch.finfo(torch.float32).eps)
         layer = model.layers[node["id"]]
         self.assertIsInstance(layer, nn.RMSNorm)
         self.assertFalse(hasattr(layer, "bias"))

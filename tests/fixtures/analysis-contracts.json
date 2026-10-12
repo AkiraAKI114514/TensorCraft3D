@@ -691,6 +691,38 @@
         ]
       },
       "expected": { "valid": true, "outputShape": [2, 8], "parameters": 24 }
+    },
+    {
+      "id": "affine_free_group_norm_owns_no_parameters",
+      "graph": {
+        "version": 1, "name": "Affine-free GroupNorm",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 8, 4, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Group", "op": "GroupNorm", "params": { "num_groups": 2, "affine": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8, 4, 4], "parameters": 0 }
+    },
+    {
+      "id": "upsample_doubles_each_spatial_axis",
+      "graph": {
+        "version": 1, "name": "Upsample",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 3, 4, 5] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Up", "op": "Upsample", "params": { "scale_factor": 2, "mode": "nearest" }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 3, 8, 10], "parameters": 0 }
     }
   ]
 }
