@@ -290,6 +290,15 @@ function analyzeExpanded(graph: Graph): Analysis {
       } else if (n.op === 'Einsum') {
         if (input.length < 1) throw new Error('Einsum 至少需要一个输入');
         output = einsumShape(n.params.equation, input);
+      } else if (n.op === 'GLU') {
+        // Halves along `dim`, gated: the second half passes through a sigmoid and
+        // multiplies the first half, so the axis shrinks from 2C to C.
+        if (input.length !== 1) throw new Error('GLU 需要单个输入');
+        const dim = integer('dim', -1, -output.length, output.length - 1);
+        const axis = (dim + output.length) % output.length;
+        if (axis === 0) throw new Error('GLU 不能作用于 batch 维度');
+        if (output[axis] % 2) throw new Error('GLU 该维度长度必须为偶数');
+        output[axis] = output[axis] / 2;
       } else if (n.op === 'Concat') {
         if (input.length < 2) throw new Error('Concat 至少需要两个输入'); const dim = integer('dim', 1, 1, output.length - 1);
         if (input.some(s => s.length !== output.length || s.some((v, i) => i !== dim && v !== output[i]))) throw new Error('Concat 非拼接维度必须一致');

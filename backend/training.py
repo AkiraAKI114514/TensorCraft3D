@@ -102,6 +102,7 @@ def build_model(graph):
                 elif op == "Concat": values[key] = torch.cat(args, dim=int(node["params"].get("dim", 1)))
                 elif op == "Einsum": values[key] = torch.einsum(node["params"]["equation"], *args)
                 elif op == "Scale": values[key] = args[0] * float(node["params"]["factor"])
+                elif op == "GLU": values[key] = torch.nn.functional.glu(args[0], dim=int(node["params"].get("dim", -1)))
                 elif op == "Unsqueeze": values[key] = torch.unsqueeze(args[0], int(node["params"].get("dim", 0)))
                 elif op == "Squeeze":
                     dim = node["params"].get("dim", "all")

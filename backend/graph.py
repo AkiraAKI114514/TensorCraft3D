@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Concat", "Einsum", "Scale", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Concat", "Einsum", "Scale", "GLU", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
@@ -444,6 +444,16 @@ def analyze_expanded_graph(graph):
                     shape = einsum_shape(equation, in_shapes)
                 except ValueError as error:
                     raise ValueError(f"{key}: {error}") from error
+            elif op == "GLU":
+                # Halves along `dim`, gated: the second half passes through a sigmoid and
+                # multiplies the first half, so the axis shrinks from 2C to C. Must mirror
+                # src/analysis.ts.
+                if len(parents) != 1: raise ValueError(f"{key}: GLU requires a single input")
+                dim = integer("dim", -1, -len(shape), len(shape) - 1)
+                axis = (dim + len(shape)) % len(shape)
+                if axis == 0: raise ValueError(f"{key}: GLU cannot act on the batch dimension")
+                if shape[axis] % 2: raise ValueError(f"{key}: GLU axis length must be even")
+                shape[axis] = shape[axis] // 2
             elif op == "Output" and outgoing[key]: raise ValueError("Output cannot have outgoing edges")
         # A folded layer stands for `repeat` isomorphic instances: shapes are unchanged, but
         # parameters and activation memory scale with the instance count. Chaining N instances
