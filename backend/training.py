@@ -28,11 +28,11 @@ def build_model(graph):
                 in_shape = (info["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else info["shapes"][edge["source"]]) if edge else []
                 def build():
                     if op in ("Conv1d", "Conv2d", "Conv3d"):
-                        cls = getattr(nn, op); return cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 3)), int(p.get("stride", 1)), int(p.get("padding", 1)), groups=int(p.get("groups", 1)))
+                        cls = getattr(nn, op); return cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 3)), int(p.get("stride", 1)), int(p.get("padding", 1)), groups=int(p.get("groups", 1)), bias=bool(p.get("bias", 1)))
                     elif op in ("ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d"):
-                        cls = getattr(nn, op); return cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 4)), int(p.get("stride", 2)), int(p.get("padding", 1)), int(p.get("output_padding", 0)), groups=int(p.get("groups", 1)))
-                    elif op == "Linear": return nn.Linear(in_shape[-1], int(p.get("out_features", 10)))
-                    elif op == "Bilinear": return nn.Bilinear(in_shape[1], int(p.get("in2_features", 16)), int(p.get("out_features", 10)))
+                        cls = getattr(nn, op); return cls(in_shape[1], int(p.get("out_channels", 16)), int(p.get("kernel_size", 4)), int(p.get("stride", 2)), int(p.get("padding", 1)), int(p.get("output_padding", 0)), groups=int(p.get("groups", 1)), bias=bool(p.get("bias", 1)))
+                    elif op == "Linear": return nn.Linear(in_shape[-1], int(p.get("out_features", 10)), bias=bool(p.get("bias", 1)))
+                    elif op == "Bilinear": return nn.Bilinear(in_shape[1], int(p.get("in2_features", 16)), int(p.get("out_features", 10)), bias=bool(p.get("bias", 1)))
                     elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d"):
                         return getattr(nn, op)(in_shape[1])
                     elif op in ("InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d"):

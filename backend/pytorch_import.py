@@ -475,17 +475,19 @@ class Parser:
         self.require(args, {k: None for k in ("device", "dtype") if k in args}, expression)
         params, expected = {}, None
         if kind in ("Conv1d", "Conv2d", "Conv3d"):
-            self.require(args, {"dilation": 1, "groups": 1, "bias": True, "padding_mode": "zeros"}, expression)
+            self.require(args, {"dilation": 1, "groups": 1, "padding_mode": "zeros"}, expression)
             expected = args["in_channels"]
             dims = int(kind[-2]); params = {key: self.spatial_value(args[key], dims, expression, args["kernel_size"] if key == "stride" and args[key] is None else None, key == "padding") for key in ("out_channels", "kernel_size", "stride", "padding")}
+            params["bias"] = int(bool(args["bias"]))
         elif kind in ("ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d"):
-            self.require(args, {"dilation": 1, "groups": 1, "bias": True, "padding_mode": "zeros"}, expression)
+            self.require(args, {"dilation": 1, "groups": 1, "padding_mode": "zeros"}, expression)
             expected = args["in_channels"]
             dims = int(kind[-2]); params = {key: self.spatial_value(args[key], dims, expression, args["kernel_size"] if key == "stride" and args[key] is None else None, key in ("padding", "output_padding")) for key in ("out_channels", "kernel_size", "stride", "padding", "output_padding")}
+            params["bias"] = int(bool(args["bias"]))
         elif kind == "Linear":
-            self.require(args, {"bias": True}, expression); expected = args["in_features"]; params = {"out_features": args["out_features"]}
+            expected = args["in_features"]; params = {"out_features": args["out_features"], "bias": int(bool(args["bias"]))}
         elif kind == "Bilinear":
-            self.require(args, {"bias": True}, expression); expected = args["in1_features"]; params = {"in2_features": args["in2_features"], "out_features": args["out_features"]}
+            expected = args["in1_features"]; params = {"in2_features": args["in2_features"], "out_features": args["out_features"], "bias": int(bool(args["bias"]))}
         elif kind == "LayerNorm":
             self.require(args, {"bias": True}, expression)
             shape = args["normalized_shape"]

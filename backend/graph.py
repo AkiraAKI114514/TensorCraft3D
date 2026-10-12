@@ -252,11 +252,11 @@ def analyze_expanded_graph(graph):
                 if len(shape) != rank: raise ValueError(f"{key}: requires {rank}D channel input")
                 k = integer("kernel_size", 4, maximum=64); s = integer("stride", 2, maximum=64); pad = integer("padding", 1, 0, 64); output_pad = integer("output_padding", 0, 0, 64)
                 if output_pad >= s: raise ValueError(f"{key}: output_padding must be smaller than stride")
-                channels = integer("out_channels", 16, maximum=4096); groups = integer("groups", 1, maximum=shape[1])
+                channels = integer("out_channels", 16, maximum=4096); groups = integer("groups", 1, maximum=shape[1]); bias = integer("bias", 1, 0, 1)
                 if shape[1] % groups or channels % groups: raise ValueError(f"{key}: channels must be divisible by groups")
                 spatial = [(size - 1) * s - 2 * pad + k + output_pad for size in shape[2:]]
                 if min(spatial) < 1: raise ValueError(f"{key}: spatial output is empty")
-                count = shape[1] * (channels // groups) * (k ** (rank - 2)) + channels; shape = [shape[0], channels, *spatial]
+                count = shape[1] * (channels // groups) * (k ** (rank - 2)) + bias * channels; shape = [shape[0], channels, *spatial]
             elif op in _CONVS:
                 rank = _CONVS[op]
                 if len(shape) != rank: raise ValueError(f"{key}: requires {rank}D channel input")
@@ -265,8 +265,9 @@ def analyze_expanded_graph(graph):
                 if min(spatial) < 1: raise ValueError(f"{key}: spatial output is empty")
                 channels = integer("out_channels", 16, maximum=4096)
                 groups = integer("groups", 1, maximum=shape[1])
+                bias = integer("bias", 1, 0, 1)
                 if shape[1] % groups or channels % groups: raise ValueError(f"{key}: channels must be divisible by groups")
-                count = channels * (shape[1] // groups) * (k ** (rank - 2)) + channels
+                count = channels * (shape[1] // groups) * (k ** (rank - 2)) + bias * channels
                 shape = [shape[0], channels, *spatial]
             elif op in _POOLS:
                 rank = _POOLS[op]
@@ -279,8 +280,8 @@ def analyze_expanded_graph(graph):
                 # PyTorch Linear applies to the final dimension and preserves
                 # leading batch/sequence dimensions (e.g. [B,S,F] -> [B,S,O]).
                 if len(shape) < 2: raise ValueError(f"{key}: Linear requires at least [B,F]")
-                features = integer("out_features", 10)
-                count = (shape[-1] + 1) * features; shape = [*shape[:-1], features]
+                features = integer("out_features", 10); bias = integer("bias", 1, 0, 1)
+                count = (shape[-1] + bias) * features; shape = [*shape[:-1], features]
             elif op in ("BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d"):
                 dimensions = int(op[-2])
                 expected_ranks = (2, 3) if op == "BatchNorm1d" else (dimensions + 2,)
@@ -363,9 +364,9 @@ def analyze_expanded_graph(graph):
                 if len(shape) != 2: raise ValueError(f"{key}: Bilinear requires [B,F1]")
                 if len(in_shapes[1]) != 2: raise ValueError(f"{key}: Bilinear requires two 2D inputs")
                 if shape[0] != in_shapes[1][0]: raise ValueError(f"{key}: Bilinear inputs must share the batch dimension")
-                other = integer("in2_features", 16); features = integer("out_features", 10)
+                other = integer("in2_features", 16); features = integer("out_features", 10); bias = integer("bias", 1, 0, 1)
                 if in_shapes[1][1] != other: raise ValueError(f"{key}: in2_features must equal the second input's last dimension {in_shapes[1][1]}")
-                count = shape[1] * other * features + features; shape = [shape[0], features]
+                count = shape[1] * other * features + bias * features; shape = [shape[0], features]
             elif op == "Embedding":
                 if len(shape) < 2: raise ValueError(f"{key}: Embedding requires integer index input")
                 if by_id[parents[0]]["op"] != "Input": raise ValueError(f"{key}: Embedding input must come directly from an Input layer")
