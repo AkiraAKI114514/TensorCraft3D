@@ -16,6 +16,11 @@ def unparse(node):
     return ast.unparse(node) if node is not None else ""
 
 
+def _is_none(node):
+    """True for an explicit `None` literal, i.e. an affinely-neutral normalization argument."""
+    return isinstance(node, ast.Constant) and node.value is None
+
+
 _LABELS = "abcdefghijklmnopqrstuvwxyz"
 
 
@@ -489,26 +494,40 @@ class Parser:
         elif kind == "Bilinear":
             expected = args["in1_features"]; params = {"in2_features": args["in2_features"], "out_features": args["out_features"], "bias": int(bool(args["bias"]))}
         elif kind == "LayerNorm":
+            # nn.LayerNorm's `bias` is a bool gating the beta parameter; the functional
+            # F.layer_norm's `bias` argument is the beta tensor itself. The bridge renames the
+            # functional spelling's `weight` to `elementwise_affine` before it gets here, so a
+            # functional call never carries `bias`, and a constructor's `bias` stays a bool.
             self.require(args, {"bias": True}, expression)
             shape = args["normalized_shape"]
             if type(shape) is int: normalized = shape
             elif isinstance(shape, list) and shape and all(type(v) is int and v > 0 for v in shape): normalized = shape
             else: raise ImportIssue("LayerNorm normalized_shape 必须是正整数或静态列表", expression)
+            # Unlike RMSNorm, layer_norm's eps is a plain float with a 1e-5 default, so None is not
+            # a dtype-dependent request -- torch itself raises TypeError for it. Rejecting keeps a
+            # null out of the node params, which would otherwise pass both analyzers and only fail
+            # later inside build_model.
+            if args["eps"] is None: raise ImportIssue("layer_norm 的 eps 需要数值", expression)
             params = {"normalized_shape": normalized, "eps": args["eps"], "elementwise_affine": int(bool(args["elementwise_affine"]))}; expected = normalized[-1] if isinstance(normalized, list) else normalized
         elif kind == "RMSNorm":
             # Same normalized_shape contract as LayerNorm; the difference is only the parameter
-            # set (weight with no bias). nn.RMSNorm's default eps is dtype-dependent (1e-5 for
-            # fp16, 1e-6 otherwise), so it is resolved against the recorded dtype here rather
-            # than guessed, keeping the graph's parameter count and behavior faithful.
+            # set (weight with no bias). nn.RMSNorm leaves eps=None and resolves it in the kernel,
+            # not in the module, to the machine epsilon of the computation type: finfo(float32).eps
+            # for every float dtype this importer can accept (the `dtype` argument is rejected as a
+            # non-constant, so fp64 input is unreachable and the fp64 branch would be dead code).
+            # Recorded as the concrete epsilon so the graph does not carry a null that would pass
+            # the analyzers and then fail inside build_model.
             shape = args["normalized_shape"]
             if type(shape) is int: normalized = shape
             elif isinstance(shape, list) and shape and all(type(v) is int and v > 0 for v in shape): normalized = shape
             else: raise ImportIssue("RMSNorm normalized_shape 必须是正整数或静态列表", expression)
             eps = args["eps"]
-            if eps is None: eps = 1e-5 if "float16" in str(args["dtype"]) else 1e-6
+            if eps is None: eps = 1.1920928955078125e-07
             params = {"normalized_shape": normalized, "eps": eps, "elementwise_affine": int(bool(args["elementwise_affine"]))}; expected = normalized[-1] if isinstance(normalized, list) else normalized
         elif kind == "GroupNorm":
-            self.require(args, {"eps": 1e-5, "affine": True}, expression); expected = args["num_channels"]; params = {"num_groups": args["num_groups"]}
+            # affine is present only when weight/bias are real nn.Parameters, which have no
+            # representation here, so the functional F.group_norm(x, g) form arrives affine-free.
+            self.require(args, {"eps": 1e-5}, expression); expected = args["num_channels"]; params = {"num_groups": args["num_groups"], "affine": int(bool(args["affine"]))}
         elif kind.startswith("BatchNorm") or kind.startswith("InstanceNorm"):
             self.require(args, {"eps": 1e-5, "momentum": 0.1, "affine": True if kind.startswith("BatchNorm") else False, "track_running_stats": True if kind.startswith("BatchNorm") else False}, expression); expected = args["num_features"]; params = {"affine": int(bool(args["affine"]))}
         elif kind.startswith("MaxPool"):
@@ -1041,6 +1060,7 @@ class Parser:
                 "torch.flatten": "Flatten", "torch.relu": "ReLU", "torch.sigmoid": "Sigmoid", "torch.tanh": "Tanh",
                 "torch.nn.functional.relu": "ReLU", "torch.nn.functional.gelu": "GELU", "torch.nn.functional.silu": "SiLU", "torch.nn.functional.sigmoid": "Sigmoid", "torch.nn.functional.tanh": "Tanh", "torch.nn.functional.hardsigmoid": "Hardsigmoid", "torch.nn.functional.hardswish": "Hardswish", "torch.nn.functional.mish": "Mish", "torch.nn.functional.softsign": "Softsign", "torch.nn.functional.leaky_relu": "LeakyReLU", "torch.nn.functional.elu": "ELU", "torch.nn.functional.selu": "SELU", "torch.nn.functional.softplus": "Softplus", "torch.nn.functional.softmax": "Softmax", "torch.nn.functional.log_softmax": "LogSoftmax", "torch.nn.functional.glu": "GLU",
                 "torch.nn.functional.dropout": "Dropout", "torch.nn.functional.max_pool1d": "MaxPool1d", "torch.nn.functional.max_pool2d": "MaxPool2d", "torch.nn.functional.max_pool3d": "MaxPool3d", "torch.nn.functional.avg_pool1d": "AvgPool1d", "torch.nn.functional.avg_pool2d": "AvgPool2d", "torch.nn.functional.avg_pool3d": "AvgPool3d", "torch.nn.functional.adaptive_avg_pool1d": "AdaptiveAvgPool1d", "torch.nn.functional.adaptive_avg_pool2d": "AdaptiveAvgPool2d", "torch.nn.functional.adaptive_avg_pool3d": "AdaptiveAvgPool3d", "torch.nn.functional.adaptive_max_pool1d": "AdaptiveMaxPool1d", "torch.nn.functional.adaptive_max_pool2d": "AdaptiveMaxPool2d", "torch.nn.functional.adaptive_max_pool3d": "AdaptiveMaxPool3d",
+                "torch.nn.functional.layer_norm": "LayerNorm", "torch.nn.functional.rms_norm": "RMSNorm", "torch.nn.functional.group_norm": "GroupNorm", "torch.nn.functional.interpolate": "Upsample",
             }
             if path in ("torch.unsqueeze", "torch.squeeze", "torch.functional.unsqueeze", "torch.functional.squeeze", "torch.Tensor.unsqueeze", "torch.Tensor.squeeze"):
                 # torch.Tensor.unsqueeze(x, dim) is the explicit class-method form;
@@ -1057,6 +1077,41 @@ class Parser:
                     training = next((k for k in kwargs if k.arg == "training"), None)
                     if training is None or self.path(training.value) != "self.training": raise ImportIssue("F.dropout 需要 training=self.training，才能保持训练/推理语义", expression)
                     kwargs.remove(training)
+                if kind in ("LayerNorm", "RMSNorm", "GroupNorm"):
+                    # The functional forms take (input, ..., weight=None, bias=None), where weight
+                    # and bias are real tensors. TensorCraft3D stores affinity as the boolean
+                    # `elementwise_affine`/`affine` flag and owns the tensors itself, so a supplied
+                    # weight/bias has no representation and is rejected rather than silently
+                    # dropped. Dropping the slots also realigns the remaining arguments with the
+                    # nn.* constructor: LayerNorm/GroupNorm (..., weight, bias, eps) lose two,
+                    # RMSNorm (..., weight, eps) loses one. `interpolate` needs no marshal because
+                    # its keyword names already match nn.Upsample's.
+                    positional = list(expression.args[1:])
+                    slots = (1,) if kind == "RMSNorm" else (1, 2)
+                    supplied = any(index < len(positional) and not _is_none(positional[index]) for index in slots)
+                    supplied = supplied or any(kw.arg in ("weight", "bias") and not _is_none(kw.value) for kw in kwargs)
+                    if supplied: raise ImportIssue(f"{path.split('.')[-1]} 的 weight/bias 张量无法在图中表示，只能导入无仿射形式", expression)
+                    kwargs = [kw for kw in kwargs if kw.arg not in ("weight", "bias")]
+                    if kind == "GroupNorm":
+                        # num_groups may be positional or a keyword, and nn.GroupNorm takes
+                        # num_channels second, which the functional form never names -- read it off
+                        # the normalized input's channel axis.
+                        groups = positional[0] if positional else next((kw.value for kw in kwargs if kw.arg == "num_groups"), None)
+                        if groups is None: raise ImportIssue("group_norm 需要 num_groups", expression)
+                        rest = positional[len(slots) + 1:] if positional else []
+                        kwargs = [kw for kw in kwargs if kw.arg != "num_groups"]
+                        positional = [groups, ast.Constant(self.tensor_shape(source, expression)[1])] + rest
+                        kwargs.append(ast.keyword(arg="affine", value=ast.Constant(False)))
+                    else:
+                        # The functional forms take (..., weight=None, bias=None, eps). Dropping the
+                        # weight/bias slots realigns what remains with the nn.* constructor:
+                        # LayerNorm (..., weight, bias, eps) loses two, RMSNorm (..., weight, eps)
+                        # loses one.
+                        if positional: positional = [positional[0]] + positional[len(slots) + 1:]
+                        kwargs.append(ast.keyword(arg="elementwise_affine", value=ast.Constant(False)))
+                    fake = ast.Call(func=ast.Attribute(value=ast.Name(id="nn"), attr=kind), args=positional, keywords=kwargs)
+                    ast.copy_location(fake, expression)
+                    return self.apply(self.module(fake, env), [source], {}, kind, expression)
                 fake = ast.Call(func=ast.Attribute(value=ast.Name(id="nn"), attr=kind), args=expression.args[1:], keywords=kwargs)
                 ast.copy_location(fake, expression)
                 return self.apply(self.module(fake, env), [source], {}, kind, expression)

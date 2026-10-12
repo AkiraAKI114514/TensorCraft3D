@@ -160,6 +160,60 @@ print("matched")
     expect(analyze(imported).parameters).toBe(original.parameters);
   }, 30000);
 
+  it.each([
+    // Affinity is the whole point of these cases: an affine-free normalization is what the
+    // functional F.layer_norm / F.rms_norm / F.group_norm forms produce, and `elementwise_affine: 0`
+    // used to be unrepresentable on the import side (LayerNorm required bias, GroupNorm required
+    // affine). Export must emit `affine=False` / `elementwise_affine=False` that re-imports.
+    ['LayerNorm', { normalized_shape: 8, elementwise_affine: 0 }, 8, [2, 8], 'elementwise_affine'],
+    ['RMSNorm', { normalized_shape: 8, elementwise_affine: 0 }, 8, [2, 8], 'elementwise_affine'],
+    ['GroupNorm', { num_groups: 2, affine: 0 }, 8, [2, 8, 4, 4], 'affine'],
+  ] as [string, Params, number, number[], string][])(
+    'round-trips an affine-free %s and keeps the flag off',
+    (op, params, width, shape, flag) => {
+      const graph = PRESETS.blank();
+      graph.nodes = [
+        { id: 'in', name: 'In', op: 'Input', params: { shape }, position: { x: 0, y: 100 } },
+        { id: 'norm', name: 'Norm', op: op as Graph['nodes'][number]['op'], params: { ...params }, position: { x: 150, y: 100 } },
+        { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 300, y: 100 } }
+      ];
+      graph.edges = [
+        { id: 'e0', source: 'in', target: 'norm' }, { id: 'e1', source: 'norm', target: 'out' }
+      ];
+      const analysis = analyze(graph);
+      expect(analysis.valid).toBe(true);
+      // No weight and no bias are owned: an affine-free norm has no parameters at all.
+      expect(analysis.parameters).toBe(0);
+      expect(generatePython(graph)).toContain('False');
+      const imported = roundtrip(graph);
+      expect(validateGraph(imported)).toEqual(imported);
+      expect(analyze(imported).valid).toBe(true);
+      expect(analyze(imported).parameters).toBe(analysis.parameters);
+      expect(Number(imported.nodes.find(n => n.op === op)!.params[flag])).toBe(0);
+      void width;
+    }, 30000);
+
+  it('round-trips an Upsample authored with a scale factor and mode', () => {
+    // Upsample is the target of the F.interpolate route; the mode string must survive export
+    // (emitted through JSON.stringify, so double-quoted) and re-import unchanged.
+    const graph = PRESETS.blank();
+    graph.nodes = [
+      { id: 'in', name: 'In', op: 'Input', params: { shape: [2, 3, 4, 4] }, position: { x: 0, y: 100 } },
+      { id: 'up', name: 'Up', op: 'Upsample', params: { scale_factor: 2, mode: 'bilinear' }, position: { x: 150, y: 100 } },
+      { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 300, y: 100 } }
+    ];
+    graph.edges = [{ id: 'e0', source: 'in', target: 'up' }, { id: 'e1', source: 'up', target: 'out' }];
+    const analysis = analyze(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.layers.up.output).toEqual([2, 3, 8, 8]);
+    expect(generatePython(graph)).toContain('nn.Upsample(scale_factor=2, mode="bilinear")');
+    const imported = roundtrip(graph);
+    const node = imported.nodes.find(n => n.op === 'Upsample')!;
+    expect(node.params.mode).toBe('bilinear');
+    expect(Number(node.params.scale_factor)).toBe(2);
+    expect(analyze(imported).layers[node.id].output).toEqual([2, 3, 8, 8]);
+  }, 30000);
+
   it('preserves Q/K/V overrides and projection outputs', () => {
     const graph = PRESETS.mqa();
     graph.nodes.push({ id: 'extra', name: 'Extra input', op: 'Input', params: { shape: [1, 16, 64] }, position: { x: 0, y: 300 } });
