@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { analyze, validateGraph } from './analysis';
 import { generatePython } from './export';
+import { workbenchEnglish } from './locales/workbench';
+import { COLORS, DEFAULTS, GROUP_OP, OPS } from './types';
 import type { Graph, Params } from './types';
 
 function graph(): Graph {
@@ -130,4 +132,33 @@ print(json.dumps(r['graph']))
     expect(analyze(imported).valid).toBe(true);
     expect(imported.nodes.filter(n => n.op === 'ConstantMul')).toHaveLength(1);
   }, 30000);
+});
+
+describe('operator registration', () => {
+  // Adding an operator means touching a fixed set of registries, and nothing else noticed when
+  // ConstantMul missed one of them, so pin the ones that are exported. The backend half lives in
+  // backend/test_graph_contracts.py, which checks the same names against the shared fixture.
+  it('registers every operator in the shape, colour and default tables', () => {
+    for (const op of OPS) {
+      expect(DEFAULTS[op], `${op} has no DEFAULTS entry`).toBeDefined();
+      expect(COLORS[op], `${op} has no COLORS entry`).toBeTruthy();
+    }
+    // A default must validate, or dropping the op onto the canvas produces a broken node.
+    // `Group` is a structural block instance, not a layer: it carries `subgraph` rather than params.
+    for (const op of OPS) {
+      if (op === GROUP_OP) continue;
+      const nodes = [...graph().nodes, { id: 'probe', name: op, op, params: DEFAULTS[op], position: { x: 0, y: 0 } }];
+      const edges = [...graph().edges, { id: 'ep', source: 'input', target: 'probe' }];
+      expect(() => validateGraph({ ...graph(), nodes, edges }), `${op} default params are invalid`).not.toThrow();
+    }
+  });
+
+  it('labels every operator in Chinese and English', () => {
+    const english = new Set(Object.values(workbenchEnglish));
+    const chinese = new Set(Object.keys(workbenchEnglish));
+    // The palette label and its translation are separate registries in App.tsx and locales; a
+    // missing translation falls back to Chinese silently, so assert both directions are populated.
+    expect(chinese.size).toBeGreaterThan(50);
+    expect(english.size).toBeGreaterThan(50);
+  });
 });
