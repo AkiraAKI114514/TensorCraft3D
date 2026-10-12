@@ -723,6 +723,38 @@
         ]
       },
       "expected": { "valid": true, "outputShape": [2, 3, 8, 10], "parameters": 0 }
+    },
+    {
+      "id": "constant_mul_buffer_is_not_a_parameter",
+      "graph": {
+        "version": 1, "name": "Constant multiply",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4, 8] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Rotary", "op": "ConstantMul", "params": { "shape": [1, 8, 8], "values": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], "sequence_dim": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 4, 8], "parameters": 0 }
+    },
+    {
+      "id": "constant_mul_rejects_a_buffer_aligned_to_the_batch_axis",
+      "graph": {
+        "version": 1, "name": "Bad constant multiply",
+        "nodes": [
+          { "id": "n0", "name": "Input", "op": "Input", "params": { "shape": [2, 4] }, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Bad", "op": "ConstantMul", "params": { "shape": [2, 4], "values": [1, 1, 1, 1, 1, 1, 1, 1] }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Output", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

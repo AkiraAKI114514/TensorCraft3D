@@ -92,7 +92,7 @@ class Tensor:
 class Parser:
     def __init__(self, tree, input_shapes):
         self.tree = tree
-        self.aliases = {name: name for name in ("TensorLabAttention", "TensorLabTransformer", "TensorLabConstantAdd")}
+        self.aliases = {name: name for name in ("TensorLabAttention", "TensorLabTransformer", "TensorLabConstantAdd", "TensorLabConstantMul")}
         for statement in tree.body:
             if isinstance(statement, ast.Import):
                 for name in statement.names:
@@ -104,7 +104,7 @@ class Parser:
                         and any(self.path(b) in ("torch.nn.Module", "nn.Module") for b in n.bases)}
         self.functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         # The embedded runtime in TensorLab exports is provided by our backend.
-        for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer", "TensorLabConstantAdd"):
+        for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer", "TensorLabConstantAdd", "TensorLabConstantMul"):
             self.classes.pop(name, None)
         self.constants = {}
         for n in tree.body:
@@ -376,11 +376,11 @@ class Parser:
                     elif isinstance(target, ast.Name): local[key] = value
                     else: raise ImportIssue("不支持此赋值对象", target)
             return module
-        if path == "TensorLabConstantAdd":
+        if path in ("TensorLabConstantAdd", "TensorLabConstantMul"):
             args = self.arguments(expression, ["shape", "values", "sequence_dim"], {"sequence_dim": None}, env)
             params = {"shape": args["shape"], "values": args["values"]}
             if args["sequence_dim"] is not None: params["sequence_dim"] = args["sequence_dim"]
-            return Module("ConstantAdd", params=params, node=expression)
+            return Module(path.removeprefix("TensorLab"), params=params, node=expression)
         if not path.startswith(("torch.nn.", "nn.")) and kind not in ("TensorLabAttention", "TensorLabTransformer"):
             raise ImportIssue(f"不支持自定义层 {path or ast.unparse(expression.func)}", expression)
         if kind in ("Sequential", "ModuleList", "ModuleDict"):
@@ -918,19 +918,22 @@ class Parser:
             raise ImportIssue("静态一元运算需要数值或缓冲区", expression)
         if isinstance(expression, ast.BinOp):
             left, right = self.expr(expression.left, env, attrs), self.expr(expression.right, env, attrs)
-            if isinstance(expression.op, ast.Add) and ((isinstance(left, (StaticTensor, DynamicStaticSlice)) and isinstance(right, Tensor)) or (isinstance(right, (StaticTensor, DynamicStaticSlice)) and isinstance(left, Tensor))):
+            if isinstance(expression.op, (ast.Add, ast.Mult)) and ((isinstance(left, (StaticTensor, DynamicStaticSlice)) and isinstance(right, Tensor)) or (isinstance(right, (StaticTensor, DynamicStaticSlice)) and isinstance(left, Tensor))):
                 constant = left if isinstance(left, (StaticTensor, DynamicStaticSlice)) else right
                 tensor = right if constant is left else left
                 buffer = constant.tensor if isinstance(constant, DynamicStaticSlice) else constant
+                # Additive and multiplicative spellings differ only in the operator: `x + self.pe`
+                # is the positional sum, `x * self.cos` the rotary table RoPE needs.
+                kind, verb = ("ConstantAdd", "相加") if isinstance(expression.op, ast.Add) else ("ConstantMul", "相乘")
                 params = {"shape": list(buffer.shape), "values": list(buffer.values)}
                 if isinstance(constant, DynamicStaticSlice):
                     input_shape = self.tensor_shape(tensor, expression)
                     if constant.source != tensor or constant.buffer_dim + len(input_shape) - len(buffer.shape) != constant.sequence_dim:
-                        raise ImportIssue("动态常量前缀必须引用相加输入的同一序列维度", expression)
+                        raise ImportIssue(f"动态常量前缀必须引用{verb}输入的同一序列维度", expression)
                     params["sequence_dim"] = constant.sequence_dim
-                return self.add("ConstantAdd", params, [(tensor, None)], "ConstantAdd", expression)
+                return self.add(kind, params, [(tensor, None)], kind, expression)
             if isinstance(left, DynamicStaticSlice) or isinstance(right, DynamicStaticSlice):
-                raise ImportIssue("动态常量前缀只支持与对应运行时张量相加", expression)
+                raise ImportIssue("动态常量前缀只支持与对应运行时张量相加或相乘", expression)
             if isinstance(left, StaticTensor) or isinstance(right, StaticTensor):
                 operations = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv}
                 fn = operations.get(type(expression.op))

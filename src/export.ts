@@ -174,6 +174,7 @@ export function generatePython(graph: Graph) {
           forward.push(`        values[${key}] = ${inputs[0]}[${indices.join(', ')}]`); continue;
         }
         case 'Select': forward.push(`        values[${key}] = torch.select(${inputs[0]}, dim=${p.dim ?? 1}, index=${p.index ?? -1})`); continue;
+        case 'ConstantMul': expr = `TensorLabConstantMul(shape=${JSON.stringify(p.shape)}, values=${JSON.stringify(p.values)}${p.sequence_dim === undefined ? '' : `, sequence_dim=${p.sequence_dim}`})`; break;
         case 'ConstantAdd': expr = `TensorLabConstantAdd(shape=${JSON.stringify(p.shape)}, values=${JSON.stringify(p.values)}${p.sequence_dim === undefined ? '' : `, sequence_dim=${p.sequence_dim}`})`; break;
         case 'Dropout':
         case 'Dropout1d':
@@ -265,7 +266,7 @@ export function generatePython(graph: Graph) {
   let emitted = emitScope(graph, '', 'moduleDict', null, null, []);
   if (!emitted) { definitions.length = 0; classMemo.clear(); attentionClassMemo.clear(); emitted = emitScope(expanded, '', 'moduleDict', null, null, []); }
   if (!emitted) throw new Error('请先修复形状或连线错误后导出代码');
-  const helper = (expanded.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd') ? `\n${tensorRuntime}\n` : '');
+  const helper = (expanded.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
   for (const node of expanded.nodes.filter(n => n.op === 'Embedding')) {
     const edge = expanded.edges.find(e => e.target === node.id && !e.targetPort);

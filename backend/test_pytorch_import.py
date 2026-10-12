@@ -635,7 +635,7 @@ class Net(nn.Module):
                 self.assertEqual(result["analysis"]["shapes"][result["analysis"]["output"]], list(reference(torch.randn(2, 6, 5)).shape))
 
     def test_unsupported_static_and_index_semantics_fail_with_source_locations(self):
-        cases = [('', 'return x[0]'), ('', 'return x[:1]'), ('', 'return x[:, [0, 2]]'), ('', 'return x[:, ::-1]'), ('', 'return x[:, :x.size(2)]'), ('', 'return x[:, :other.size(1)]'), ('self.register_buffer("pe", torch.empty(1, 6, 5))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, dtype=torch.float64))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, unexpected=True))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :other.size(1)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(1), :2]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x * self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe.real')]
+        cases = [('', 'return x[0]'), ('', 'return x[:1]'), ('', 'return x[:, [0, 2]]'), ('', 'return x[:, ::-1]'), ('', 'return x[:, :x.size(2)]'), ('', 'return x[:, :other.size(1)]'), ('self.register_buffer("pe", torch.empty(1, 6, 5))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, dtype=torch.float64))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, unexpected=True))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :other.size(1)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(1), :2]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x * self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe.real')]
         for init, forward in cases:
             with self.subTest(init=init, forward=forward):
                 result = self.reject(module_source(init, forward, inputs="x, other"), input_shapes={"x": [2, 6, 5], "other": [2, 6, 5]})
@@ -785,6 +785,106 @@ class ImportFoldTests(unittest.TestCase):
         self.assertIsInstance(layer, nn.RMSNorm)
         self.assertFalse(hasattr(layer, "bias"))
         self.assertEqual(result["analysis"]["totalParameters"], sum(p.numel() for p in model.parameters()))
+
+
+    def test_constant_mul_mirrors_constant_add(self):
+        # ConstantMul is ConstantAdd's multiplicative sibling, and it exists for one reason: a
+        # rotation cannot be written additively. Both ops therefore share the buffer contract
+        # (shape/values/sequence_dim rules and rejections) and differ only in the combining op.
+        from backend.graph import analyze_graph
+        shape, values = [1, 4, 8], [float(i + 1) / 8 for i in range(32)]
+
+        def build(op, params):
+            return {"version": 1, "name": op, "nodes": [
+                {"id": "i", "name": "I", "op": "Input", "params": {"shape": [2, 4, 8]}, "position": {"x": 0, "y": 0}},
+                {"id": "c", "name": "C", "op": op, "params": params, "position": {"x": 0, "y": 0}},
+                {"id": "o", "name": "O", "op": "Output", "params": {}, "position": {"x": 0, "y": 0}}],
+                "edges": [{"id": "a", "source": "i", "target": "c"}, {"id": "b", "source": "c", "target": "o"}]}
+
+        add, mul = build("ConstantAdd", {"shape": shape, "values": values, "sequence_dim": 1}), build("ConstantMul", {"shape": shape, "values": values, "sequence_dim": 1})
+        self.assertEqual(analyze_graph(add)["shapes"], analyze_graph(mul)["shapes"])
+        # Neither buffer is trainable, so neither contributes parameters.
+        self.assertEqual(analyze_graph(mul)["totalParameters"], 0)
+
+        x = torch.randn(2, 4, 8)
+        buffer = torch.tensor(values).reshape(shape)
+        for op, expected in (("ConstantAdd", x + buffer), ("ConstantMul", x * buffer)):
+            with self.subTest(op=op):
+                model, _ = build_model(build(op, {"shape": shape, "values": values, "sequence_dim": 1}))
+                model.eval()
+                with torch.no_grad(): torch.testing.assert_close(model({"i": x}), expected)
+
+        # The validation rules are shared, so each rejection must fire identically for both ops.
+        for params in ({"shape": [8.5], "values": [1.0] * 8}, {"shape": [1, 8], "values": [1.0] * 7},
+                       {"shape": [2, 8], "values": [1.0] * 16}, {"shape": [1, 2, 8], "values": [1.0] * 16, "sequence_dim": 1}):
+            for op in ("ConstantAdd", "ConstantMul"):
+                with self.subTest(op=op, params=params):
+                    with self.assertRaises(ValueError): analyze_graph(build(op, params))
+
+    def test_rotary_position_embedding_is_expressible(self):
+        # The point of ConstantMul. RoPE is x*cos + rotate_half(x)*sin; the cos/sin are fixed
+        # buffers, so without a multiplicative constant this rotation cannot be written at all.
+        # This is the primitive DeepSeek-V3's MLA depends on.
+        from backend.graph import analyze_graph
+        seq, dim = 4, 8
+        angle = torch.arange(seq).float().unsqueeze(1) * (1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim)))
+        cos = torch.cat([angle.cos(), angle.cos()], -1); sin = torch.cat([angle.sin(), angle.sin()], -1)
+        rotate_half = lambda v: torch.cat([-v[..., dim // 2:], v[..., :dim // 2]], -1)
+        graph = {"version": 1, "name": "RoPE", "nodes": [
+            {"id": "in", "name": "In", "op": "Input", "params": {"shape": [2, seq, dim]}, "position": {"x": 0, "y": 0}},
+            {"id": "cos", "name": "Cos", "op": "ConstantMul", "params": {"shape": [1, seq, dim], "values": cos.reshape(-1).tolist(), "sequence_dim": 1}, "position": {"x": 0, "y": 0}},
+            {"id": "lo", "name": "Lo", "op": "Slice", "params": {"dim": 2, "start": "none", "end": dim // 2, "step": 1}, "position": {"x": 0, "y": 0}},
+            {"id": "hi", "name": "Hi", "op": "Slice", "params": {"dim": 2, "start": dim // 2, "end": "none", "step": 1}, "position": {"x": 0, "y": 0}},
+            {"id": "neg", "name": "Neg", "op": "Scale", "params": {"factor": -1}, "position": {"x": 0, "y": 0}},
+            {"id": "rot", "name": "Rot", "op": "Concat", "params": {"dim": 2}, "position": {"x": 0, "y": 0}},
+            {"id": "sin", "name": "Sin", "op": "ConstantMul", "params": {"shape": [1, seq, dim], "values": sin.reshape(-1).tolist(), "sequence_dim": 1}, "position": {"x": 0, "y": 0}},
+            {"id": "sum", "name": "Sum", "op": "Add", "params": {}, "position": {"x": 0, "y": 0}},
+            {"id": "out", "name": "Out", "op": "Output", "params": {}, "position": {"x": 0, "y": 0}}], "edges": [
+            {"id": "e1", "source": "in", "target": "cos"}, {"id": "e2", "source": "in", "target": "lo"},
+            {"id": "e3", "source": "in", "target": "hi"}, {"id": "e4", "source": "hi", "target": "neg"},
+            {"id": "e5", "source": "neg", "target": "rot"}, {"id": "e6", "source": "lo", "target": "rot"},
+            {"id": "e7", "source": "rot", "target": "sin"}, {"id": "e8", "source": "cos", "target": "sum"},
+            {"id": "e9", "source": "sin", "target": "sum"}, {"id": "e10", "source": "sum", "target": "out"}]}
+        self.assertEqual(analyze_graph(graph)["shapes"]["out"], [2, seq, dim])
+        model, _ = build_model(graph); model.eval()
+        x = torch.randn(2, seq, dim)
+        with torch.no_grad(): torch.testing.assert_close(model({"in": x}), x * cos + rotate_half(x) * sin)
+
+    def test_a_buffer_multiplication_imports_as_constant_mul(self):
+        # The multiplicative spelling has to be reachable from the PyTorch source it was added for,
+        # not just from a hand-built graph: `x * self.cos` is how RoPE is actually written.
+        cos = torch.ones(1, 8, 8) * 1.5
+        cos = cos - 0.25
+        init = 'pe = torch.ones(1, 8, 8) * 1.5\npe[0] = pe[0] - 0.25\nself.register_buffer("cos", pe)'
+        cases = (('return x * self.cos', "ConstantMul", lambda x: x * cos),
+                 ('return self.cos * x', "ConstantMul", lambda x: x * cos),
+                 ('return x + self.cos', "ConstantAdd", lambda x: x + cos))
+        for forward, op, reference in cases:
+            with self.subTest(forward=forward):
+                result = import_pytorch(module_source(init, forward), input_shapes={"x": [2, 8, 8]})
+                self.assertIsNotNone(result["graph"], result["diagnostics"])
+                self.assertIn(op, [n["op"] for n in result["graph"]["nodes"]])
+                # A buffer is not trainable either way, so both spellings stay parameter-free.
+                self.assertEqual(result["analysis"]["totalParameters"], 0)
+                model, _ = build_model(result["graph"])
+                key = result["inputs"][0]["id"]
+                x = torch.randn(2, 8, 8)
+                with torch.no_grad(): torch.testing.assert_close(model({key: x}), reference(x))
+
+        # A dynamic sequence prefix narrows exactly as the additive path does.
+        result = import_pytorch(module_source(init, 'return x * self.cos[:, :x.size(1)]'), input_shapes={"x": [2, 5, 8]})
+        self.assertIsNotNone(result["graph"], result["diagnostics"])
+        node = next(n for n in result["graph"]["nodes"] if n["op"] == "ConstantMul")
+        self.assertEqual(node["params"]["sequence_dim"], 1)
+        model, _ = build_model(result["graph"])
+        key = result["inputs"][0]["id"]
+        x = torch.randn(2, 5, 8)
+        with torch.no_grad(): torch.testing.assert_close(model({key: x}), x * cos[:, :5])
+        # Multiplication against a non-sequence axis is still rejected, mirroring the additive rule.
+        rejected = import_pytorch(module_source(init, 'return x * self.cos[:, :x.size(2)]'), input_shapes={"x": [2, 8, 8]})
+        self.assertIsNone(rejected["graph"], rejected["graph"])
+        self.assertEqual(rejected["diagnostics"][0]["level"], "error")
+
 
 
 if __name__ == "__main__": unittest.main()
