@@ -1059,6 +1059,26 @@ class Parser:
                 rest = ast.Call(func=function, args=expression.args[1:], keywords=expression.keywords)
                 args = self.arguments(rest, ["dim"], {"dim": 0}, env)
                 return self.add("Concat", args, [(t, None) for t in tensors], "拼接", expression)
+            if path in ("torch.chunk", "torch.split") or isinstance(function, ast.Attribute) and function.attr in ("chunk", "split"):
+                # Both are pure slicing: a static axis cut into contiguous pieces. They lower onto
+                # the existing Slice op rather than adding a second shape path, exactly as matmul
+                # lowers onto Einsum. This is how `q, k, v = qkv.chunk(3, -1)` is written.
+                method, chunking = not path.startswith("torch."), path.split(".")[-1] == "chunk"
+                spec_name = "chunks" if chunking else "split_size_or_sections"
+                names = ([] if method else ["input"]) + [spec_name, "dim"]
+                if len(expression.args) > len(names): raise ImportIssue(f"{spec_name} 参数过多", expression)
+                arguments = dict(zip(names, expression.args))
+                for keyword in expression.keywords:
+                    if keyword.arg not in names or keyword.arg in arguments: raise ImportIssue("chunk/split 参数无效或重复", expression)
+                    arguments[keyword.arg] = keyword.value
+                if "input" in names and "input" not in arguments: raise ImportIssue("chunk/split 缺少输入张量", expression)
+                if spec_name not in arguments: raise ImportIssue(f"chunk/split 缺少 {spec_name}", expression)
+                tensor = self.expr(function.value if method else arguments["input"], env, attrs)
+                spec = self.literal(arguments[spec_name], env)
+                dim = self.literal(arguments["dim"], env) if "dim" in arguments else 0
+                pieces = self.slice_pieces(tensor, spec, dim, chunking, expression)
+                pieces = [self.add("Slice", {"dim": axis, "start": start, "end": end, "step": 1}, [(tensor, None)], "切片", expression) for axis, start, end in pieces]
+                return tuple(pieces)
             functional_paths = {
                 "torch.flatten": "Flatten", "torch.relu": "ReLU", "torch.sigmoid": "Sigmoid", "torch.tanh": "Tanh",
                 "torch.nn.functional.relu": "ReLU", "torch.nn.functional.gelu": "GELU", "torch.nn.functional.silu": "SiLU", "torch.nn.functional.sigmoid": "Sigmoid", "torch.nn.functional.tanh": "Tanh", "torch.nn.functional.hardsigmoid": "Hardsigmoid", "torch.nn.functional.hardswish": "Hardswish", "torch.nn.functional.mish": "Mish", "torch.nn.functional.softsign": "Softsign", "torch.nn.functional.leaky_relu": "LeakyReLU", "torch.nn.functional.elu": "ELU", "torch.nn.functional.selu": "SELU", "torch.nn.functional.softplus": "Softplus", "torch.nn.functional.softmax": "Softmax", "torch.nn.functional.log_softmax": "LogSoftmax", "torch.nn.functional.glu": "GLU",
@@ -1174,10 +1194,43 @@ class Parser:
         try: return self.literal(expression, env)
         except ImportIssue: raise ImportIssue(f"不支持表达式 {ast.unparse(expression)[:100]}", expression)
 
+    def slice_pieces(self, tensor, spec, dim, chunking, source):
+        """Resolve `chunk`/`split` into `(axis, start, end)` groups of contiguous slices.
+
+        Both are pure slicing on a static axis, so they need no new graph vocabulary. `chunk(n)`
+        asks for n near-equal pieces (`torch.chunk` never returns more than the axis holds);
+        `split(k)` cuts every k elements from the front, and `split([a, b])` cuts exactly those.
+        """
+        rank = len(self.tensor_shape(tensor, source))
+        if type(dim) is not int: raise ImportIssue("chunk/split 的 dim 必须是整数常量", source)
+        axis = dim % rank
+        if axis == 0: raise ImportIssue("chunk/split 不支持 batch 维度", source)
+        length = self.tensor_shape(tensor, source)[axis]
+        if chunking:
+            if type(spec) is not int or spec < 1: raise ImportIssue("chunk 需要正整数份数", source)
+            # `torch.chunk` splits into ceil(len/spec)-sized pieces but never returns more pieces
+            # than the axis holds, so a tail slice that would be empty is dropped.
+            size = -(-length // spec)
+            return [(axis, start, min(start + size, length)) for start in range(0, length, size)]
+        elif type(spec) is int:
+            if spec < 1: raise ImportIssue("split 需要正整数切分长度", source)
+            return [(axis, start, min(start + spec, length)) for start in range(0, length, spec)]
+        elif isinstance(spec, (list, tuple)):
+            if not spec or any(type(v) is not int or v < 1 for v in spec) or sum(spec) != length:
+                raise ImportIssue("split 的长度列表必须是总和等于该维度的正整数组", source)
+            bounds, cursor = [], 0
+            for width in spec: bounds.append((cursor, cursor + width)); cursor += width
+            return [(axis, start, end) for start, end in bounds]
+        else: raise ImportIssue("split 需要整数长度或长度列表", source)
+
     def assign(self, target, value, env):
         if isinstance(target, ast.Name): env[target.id] = value
         elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (tuple, list)) and len(target.elts) == len(value):
             for item, child in zip(target.elts, value): self.assign(item, child, env)
+        elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (tuple, list)):
+            # `q, k, v = qkv.chunk(2, -1)` -- PyTorch drops empty tail pieces, so the requested
+            # count is an upper bound, not a guarantee. Say so instead of a generic unpack error.
+            raise ImportIssue(f"解包需要 {len(target.elts)} 个值，但该调用返回 {len(value)} 个（chunk 份数是上限，不足时会减少）", target)
         elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and isinstance(env.get(target.value.id), dict):
             env[target.value.id][self.literal(target.slice, env)] = value
         else: raise ImportIssue("不支持此赋值（只支持变量、解包或中间字典）", target)
