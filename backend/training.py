@@ -15,7 +15,7 @@ def build_model(graph):
     graph = expand_subgraphs(graph)
     info = analyze_expanded_graph(graph)
     from .attention import TensorLabAttention, TensorLabTransformer
-    from .tensor_ops import TensorLabConstantAdd
+    from .tensor_ops import TensorLabConstantAdd, TensorLabConstantMul
     class GraphModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -56,6 +56,7 @@ def build_model(graph):
                     elif op == "Flatten": return nn.Flatten(1)
                     elif op in ("Unsqueeze", "Squeeze", "Slice", "Select"): return None
                     elif op == "ConstantAdd": return TensorLabConstantAdd(p["shape"], p["values"], p.get("sequence_dim"))
+                    elif op == "ConstantMul": return TensorLabConstantMul(p["shape"], p["values"], p.get("sequence_dim"))
                     elif op in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): return getattr(nn, op)(float(p.get("p", 0.3)))
                     elif op == "Embedding": return nn.Embedding(int(p.get("num_embeddings", 100)), int(p.get("embedding_dim", 32)))
                     elif op == "Upsample":

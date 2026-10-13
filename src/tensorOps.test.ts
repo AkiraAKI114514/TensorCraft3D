@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { analyze, validateGraph } from './analysis';
 import { generatePython } from './export';
+import { workbenchEnglish } from './locales/workbench';
+import { COLORS, DEFAULTS, GROUP_OP, OPS } from './types';
 import type { Graph, Params } from './types';
 
 function graph(): Graph {
@@ -83,4 +85,80 @@ print(json.dumps(r['graph']))
     expect(analyze(imported).valid).toBe(true);
     expect(imported.nodes.filter(n => ['ConstantAdd', 'Slice', 'Select'].includes(n.op))).toHaveLength(3);
   }, 30000);
+
+  it('round-trips a ConstantMul buffer and keeps the multiplicative semantics', () => {
+    // ConstantMul is ConstantAdd's sibling and exists so rotary position embedding is writable:
+    // a rotation is `x*cos + rotate_half(x)*sin`, and no additive constant can express it.
+    const model: Graph = {
+      version: 1, name: 'Constant multiply',
+      nodes: [
+        { id: 'input', name: 'Input', op: 'Input', params: { shape: [2, 6, 4] }, position: { x: 0, y: 0 } },
+        { id: 'scale', name: 'Scale buffer', op: 'ConstantMul', params: { shape: [1, 8, 4], values: Array.from({ length: 32 }, (_, i) => (i % 8) / 8 + 0.5), sequence_dim: 1 }, position: { x: 200, y: 0 } },
+        { id: 'output', name: 'Output', op: 'Output', params: {}, position: { x: 400, y: 0 } },
+      ],
+      edges: [{ id: 'e0', source: 'input', target: 'scale' }, { id: 'e1', source: 'scale', target: 'output' }],
+    };
+    const info = analyze(model);
+    expect(info.valid, JSON.stringify(info.diagnostics)).toBe(true);
+    // A fixed buffer is not a trainable parameter, exactly as with ConstantAdd.
+    expect(info.parameters).toBe(0);
+    expect(info.layers.scale.output).toEqual([2, 6, 4]);
+    const code = generatePython(model);
+    expect(code).toContain('TensorLabConstantMul');
+    const script = `import ast,json,sys,torch
+from backend.training import build_model
+from backend.pytorch_import import import_pytorch
+p=json.load(sys.stdin)
+a,info=build_model(p['graph'])
+ns={'__name__':'test_export'};exec(p['code'],ns)
+b=ns['VisualModel']();b.load_state_dict(a.state_dict())
+r=import_pytorch(p['code']);assert r['graph'] is not None,r['diagnostics']
+assert any(n['op']=='ConstantMul' for n in r['graph']['nodes']),r['graph']['nodes']
+c,ci=build_model(r['graph'])
+for n in r['graph']['nodes']:
+ if n['id'] in c.layers and n['op']=='ConstantMul':
+  old=ast.literal_eval(n['name'].split('self.layers',1)[1][1:-1])
+  c.layers[n['id']].load_state_dict(a.layers[old].state_dict())
+assert ci['totalParameters']==info['totalParameters']==p['parameters']
+for length in (4,6,8):
+ x=torch.randn(2,length,4,requires_grad=True)
+ y,z,w=a(x),b(x),c(x)
+ assert torch.equal(y,z) and torch.equal(y,w)
+ torch.testing.assert_close(y, x*a.layers['scale'].constant[:,:length])
+print(json.dumps(r['graph']))
+`;
+    const imported = JSON.parse(execFileSync('.venv/Scripts/python.exe', ['-c', script], { input: JSON.stringify({ graph: model, code, parameters: analyze(model).parameters }), encoding: 'utf8', timeout: 30000 })) as Graph;
+    expect(validateGraph(imported)).toEqual(imported);
+    expect(analyze(imported).valid).toBe(true);
+    expect(imported.nodes.filter(n => n.op === 'ConstantMul')).toHaveLength(1);
+  }, 30000);
+});
+
+describe('operator registration', () => {
+  // Adding an operator means touching a fixed set of registries, and nothing else noticed when
+  // ConstantMul missed one of them, so pin the ones that are exported. The backend half lives in
+  // backend/test_graph_contracts.py, which checks the same names against the shared fixture.
+  it('registers every operator in the shape, colour and default tables', () => {
+    for (const op of OPS) {
+      expect(DEFAULTS[op], `${op} has no DEFAULTS entry`).toBeDefined();
+      expect(COLORS[op], `${op} has no COLORS entry`).toBeTruthy();
+    }
+    // A default must validate, or dropping the op onto the canvas produces a broken node.
+    // `Group` is a structural block instance, not a layer: it carries `subgraph` rather than params.
+    for (const op of OPS) {
+      if (op === GROUP_OP) continue;
+      const nodes = [...graph().nodes, { id: 'probe', name: op, op, params: DEFAULTS[op], position: { x: 0, y: 0 } }];
+      const edges = [...graph().edges, { id: 'ep', source: 'input', target: 'probe' }];
+      expect(() => validateGraph({ ...graph(), nodes, edges }), `${op} default params are invalid`).not.toThrow();
+    }
+  });
+
+  it('labels every operator in Chinese and English', () => {
+    const english = new Set(Object.values(workbenchEnglish));
+    const chinese = new Set(Object.keys(workbenchEnglish));
+    // The palette label and its translation are separate registries in App.tsx and locales; a
+    // missing translation falls back to Chinese silently, so assert both directions are populated.
+    expect(chinese.size).toBeGreaterThan(50);
+    expect(english.size).toBeGreaterThan(50);
+  });
 });

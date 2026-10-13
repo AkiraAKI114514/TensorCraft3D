@@ -38,7 +38,7 @@ export function validateGraph(value: unknown): Graph {
     if (n.repeat !== undefined && (!Number.isInteger(n.repeat) || n.repeat < 1 || n.repeat > MAX_REPEAT)) throw new Error(`节点 repeat 必须是 1–${MAX_REPEAT} 的整数`);
     if (n.op === GROUP_OP) { if (typeof n.subgraph !== 'string' || !n.subgraph) throw new Error('结构块实例必须指定 subgraph'); }
     else if (n.subgraph !== undefined) throw new Error('只有结构块实例可以指定 subgraph');
-    for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= (n.op === 'ConstantAdd' && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
+    for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= ((n.op === 'ConstantAdd' || n.op === 'ConstantMul') && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
   const edgeIds = new Set<string>(), pairs = new Set<string>();
@@ -209,7 +209,7 @@ function analyzeExpanded(graph: Graph): Analysis {
           const length = Math.max(0, Math.ceil((bound('end', size) - bound('start', 0)) / step));
           if (!length) throw new Error('Slice 输出为空'); output[dim] = length;
         }
-      } else if (n.op === 'ConstantAdd') {
+      } else if (n.op === 'ConstantAdd' || n.op === 'ConstantMul') {
         const shape = n.params.shape, values = n.params.values;
         if (!output.length || !Array.isArray(shape) || shape.length > Math.min(5, output.length) || !shape.every(v => Number.isInteger(v) && v >= 1 && v <= 65536)) throw new Error('常量 shape 无效');
         if (!Array.isArray(values) || !values.length || values.length > 65536 || product(shape) !== values.length || !values.every(v => Number.isFinite(v) && Math.abs(v) <= 3.4028234663852886e38)) throw new Error('常量 values 必须是与 shape 匹配的有限 FP32 数组');

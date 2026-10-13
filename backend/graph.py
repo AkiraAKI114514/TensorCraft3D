@@ -7,7 +7,7 @@ OPS = {
     "ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity",
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
-    "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
+    "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
     "Add", "Multiply", "Concat", "Einsum", "Scale", "GLU", "MultiHeadAttention", "Transformer", "Group"
 }
 
@@ -340,7 +340,7 @@ def analyze_expanded_graph(graph):
                     size = len(range(start, end, step))
                     if size < 1: raise ValueError(f"{key}: slice output is empty")
                     shape[dim] = size
-            elif op == "ConstantAdd":
+            elif op in ("ConstantAdd", "ConstantMul"):
                 buffer_shape, values = p.get("shape"), p.get("values")
                 if not shape or not isinstance(buffer_shape, list) or len(buffer_shape) > min(5, len(shape)) or any(type(v) is not int or not 1 <= v <= 65536 for v in buffer_shape):
                     raise ValueError(f"{key}: invalid constant shape")

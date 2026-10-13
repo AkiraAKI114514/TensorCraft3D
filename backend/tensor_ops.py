@@ -4,25 +4,33 @@ import torch
 from torch import nn
 
 
+def constant_buffer(shape, values, sequence_dim):
+    """Validate and materialise a fixed graph buffer, shared by both constant ops."""
+    if not isinstance(shape, (list, tuple)) or len(shape) > 5 or any(type(v) is not int or not 1 <= v <= 65536 for v in shape):
+        raise ValueError("Invalid constant shape")
+    if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= 65536 or math.prod(shape) != len(values) or any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 3.4028234663852886e38 for v in values):
+        raise ValueError("Invalid constant values")
+    if sequence_dim is not None and (type(sequence_dim) is not int or not 1 <= sequence_dim <= 4):
+        raise ValueError("Constant sequence_dim must preserve the batch axis")
+    return torch.tensor(values, dtype=torch.float32).reshape(shape)
+
+
 class TensorLabConstantAdd(nn.Module):
     def __init__(self, shape, values, sequence_dim=None):
         super().__init__()
-        if not isinstance(shape, (list, tuple)) or len(shape) > 5 or any(type(v) is not int or not 1 <= v <= 65536 for v in shape):
-            raise ValueError("Invalid constant shape")
-        if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= 65536 or math.prod(shape) != len(values) or any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 3.4028234663852886e38 for v in values):
-            raise ValueError("Invalid constant values")
-        if sequence_dim is not None and (type(sequence_dim) is not int or not 1 <= sequence_dim <= 4):
-            raise ValueError("Constant sequence_dim must preserve the batch axis")
         self.sequence_dim = sequence_dim
-        self.register_buffer("constant", torch.tensor(values, dtype=torch.float32).reshape(shape))
+        self.register_buffer("constant", constant_buffer(shape, values, sequence_dim))
 
-    def forward(self, x):
+    def broadcast(self, x, operation):
+        """Align the buffer to `x`'s rank and narrow a sequence-axis prefix to the input length."""
         if not x.is_floating_point() or self.constant.ndim > x.ndim:
-            raise ValueError("ConstantAdd requires floating input with compatible rank")
+            raise ValueError(f"{operation} requires floating input with compatible rank")
         offset = x.ndim - self.constant.ndim
         shape = (1,) * offset + tuple(self.constant.shape)
         if shape[0] != 1:
-            raise ValueError("ConstantAdd must broadcast across the batch axis")
+            raise ValueError(f"{operation} must broadcast across the batch axis")
+        if self.sequence_dim is not None and self.sequence_dim >= x.ndim:
+            raise ValueError("Constant sequence_dim exceeds input rank")
         constant = self.constant
         for dim, (size, actual) in enumerate(zip(shape, x.shape)):
             if dim == self.sequence_dim:
@@ -31,6 +39,24 @@ class TensorLabConstantAdd(nn.Module):
                 constant = constant.narrow(dim - offset, 0, actual)
             elif size not in (1, actual):
                 raise ValueError("Constant shape does not broadcast to the input")
-        if self.sequence_dim is not None and self.sequence_dim >= x.ndim:
-            raise ValueError("Constant sequence_dim exceeds input rank")
-        return x + constant
+        return constant
+
+    def forward(self, x):
+        return x + self.broadcast(x, "ConstantAdd")
+
+
+class TensorLabConstantMul(nn.Module):
+    """Multiplies by a fixed buffer -- the operation rotary position embedding needs.
+
+    `rotary(x) = x * cos + rotate_half(x) * sin` is unreachable with an additive-only constant
+    (a rotation is not a translation), so this is the primitive that makes RoPE expressible.
+    """
+
+    def __init__(self, shape, values, sequence_dim=None):
+        super().__init__()
+        self.sequence_dim = sequence_dim
+        self.register_buffer("constant", constant_buffer(shape, values, sequence_dim))
+
+    def forward(self, x):
+        return x * TensorLabConstantAdd.broadcast(self, x, "ConstantMul")
+
