@@ -305,6 +305,8 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (!dims.length || dims.length > 5) throw new Error('Reduce 需要 1–5 个 dim');
         const axes: number[] = [];
         for (const value of dims) {
+          // `Number.isInteger` already accepts an integral float, which is what keeps this in
+          // step with the Python side's `_integral`; 1.0 and 1 are the same number here.
           if (typeof value !== 'number' || !Number.isInteger(value)) throw new Error('Reduce 的 dim 必须是整数');
           if (value < -output.length || value >= output.length) throw new Error('Reduce 的 dim 超出输入维度');
           // JS `%` keeps the sign of the dividend, so a negative dim needs the extra wrap to
@@ -314,8 +316,8 @@ function analyzeExpanded(graph: Graph): Analysis {
           axes.push(axis);
         }
         if (new Set(axes).size !== axes.length) throw new Error('Reduce 的 dim 不能重复');
-        const keepdim = Number(n.params.keepdim ?? 0);
-        if (keepdim !== 0 && keepdim !== 1) throw new Error('Reduce keepdim 必须是 0 或 1');
+        const keepdim = n.params.keepdim ?? 0;
+        if (typeof keepdim !== 'number' || !Number.isInteger(keepdim) || (keepdim !== 0 && keepdim !== 1)) throw new Error('Reduce keepdim 必须是 0 或 1');
         output = keepdim ? output.map((size, position) => (axes.includes(position) ? 1 : size)) : output.filter((_, position) => !axes.includes(position));
       } else if (n.op === 'GLU') {
         // Halves along `dim`, gated: the second half passes through a sigmoid and

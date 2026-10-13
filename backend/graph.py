@@ -18,6 +18,17 @@ _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "
 # "all" rather than as `None`, because `None` is also what a missing parameter reads as.
 _REDUCE_OPS = {"mean", "sum", "amax", "amin"}
 _MAX_REDUCE_DIMS = 5
+
+
+def _integral(value):
+    """True for a JSON number that is a whole number, so 2 and 2.0 both qualify.
+
+    JavaScript's JSON.parse cannot tell 2 from 2.0 while Python's json.loads yields a float
+    for 2.0, and the wire format is produced by the frontend. `repeat` already accepts either
+    for this reason; a dim or a keepdim flag has to do the same or the two analyzers disagree
+    on a project file neither language could have written differently.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value) and value == int(value)
 _DROPOUTS = {"Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"}
 _CONVS = {"Conv1d": 3, "Conv2d": 4, "Conv3d": 5}
 _TRANSPOSE_CONVS = {"ConvTranspose1d": 3, "ConvTranspose2d": 4, "ConvTranspose3d": 5}
@@ -459,21 +470,25 @@ def analyze_expanded_graph(graph):
                 # src/analysis.ts.
                 if len(parents) != 1: raise ValueError(f"{key}: Reduce requires a single input")
                 kind = p.get("op", "mean")
-                if kind not in _REDUCE_OPS: raise ValueError(f"{key}: Reduce op must be one of {sorted(_REDUCE_OPS)}")
+                # The isinstance guard comes first: an unhashable `op` would otherwise raise
+                # TypeError out of the membership test instead of a validation message.
+                if not isinstance(kind, str) or kind not in _REDUCE_OPS: raise ValueError(f"{key}: Reduce op must be one of {sorted(_REDUCE_OPS)}")
                 raw = p.get("dim", -1)
                 if raw == "all": raise ValueError(f"{key}: Reduce cannot reduce every axis; name the axes, for example dim=-1")
                 dims = raw if isinstance(raw, list) else [raw]
                 if not dims or len(dims) > _MAX_REDUCE_DIMS: raise ValueError(f"{key}: Reduce needs 1-{_MAX_REDUCE_DIMS} dims")
                 axes = []
                 for value in dims:
-                    if type(value) is not int: raise ValueError(f"{key}: Reduce dims must be integers")
+                    if not _integral(value): raise ValueError(f"{key}: Reduce dims must be integers")
+                    value = int(value)
                     if not -len(shape) <= value < len(shape): raise ValueError(f"{key}: Reduce dim is out of range")
                     axis = value % len(shape)
                     if axis == 0: raise ValueError(f"{key}: Reduce cannot act on the batch dimension")
                     axes.append(axis)
                 if len(set(axes)) != len(axes): raise ValueError(f"{key}: Reduce dims must be distinct")
                 keepdim = p.get("keepdim", 0)
-                if type(keepdim) is not int or keepdim not in (0, 1): raise ValueError(f"{key}: Reduce keepdim must be 0 or 1")
+                if not _integral(keepdim) or int(keepdim) not in (0, 1): raise ValueError(f"{key}: Reduce keepdim must be 0 or 1")
+                keepdim = int(keepdim)
                 if keepdim:
                     for axis in axes: shape[axis] = 1
                 else:

@@ -867,6 +867,70 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_accepts_an_integral_float_dim",
+      "graph": {
+        "version": 1, "name": "reduce_accepts_an_integral_float_dim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": 1.0, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 0 }
+    },
+    {
+      "id": "reduce_accepts_an_integral_float_keepdim",
+      "graph": {
+        "version": 1, "name": "reduce_accepts_an_integral_float_keepdim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "sum", "dim": -1, "keepdim": 1.0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 1], "parameters": 0 }
+    },
+    {
+      "id": "reduce_rejects_a_fractional_dim",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_a_fractional_dim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": 1.5, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_rejects_a_stringified_keepdim",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_a_stringified_keepdim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": -1, "keepdim": "1" }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

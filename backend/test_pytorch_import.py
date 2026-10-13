@@ -808,6 +808,33 @@ class Net(nn.Module):
         self.assertIsNone(result["graph"])
         self.assertIn("返回 3", result["diagnostics"][0]["message"])
 
+    def test_reduce_accepts_the_values_of_an_argmax(self):
+        # `.values` says the indices are not wanted, so this is an `amax`/`amin` and imports;
+        # a bare `.max()` is still refused because it hands back both. The functional spelling
+        # has to be recognised by path, since `torch.max` is itself an attribute named `max`.
+        for forward, kind in (("return x.max(-1).values", "amax"), ("return x.min(dim=-1).values", "amin"),
+                              ("return torch.max(x, -1).values", "amax"), ("return torch.min(x, dim=-1).values", "amin")):
+            with self.subTest(forward=forward):
+                result, model = self.parsed(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                reduces = [n["params"] for n in result["graph"]["nodes"] if n["op"] == "Reduce"]
+                self.assertEqual(reduces, [{"op": kind, "dim": 2, "keepdim": 0}])
+                x = torch.randn(2, 5, 8)
+                got = model({result["inputs"][0]["id"]: x})
+                self.assertTrue(torch.allclose(got, reference_model(forward)(x)))
+        # The indices half needs an argmax the graph cannot carry.
+        result = self.reject(module_source("", "return x.max(-1).indices"), input_shapes={"x": [2, 5, 8]})
+        self.assertIn("argmax", result["diagnostics"][0]["message"])
+
+    def test_reduce_diagnostics_name_the_right_reason_for_max_and_min(self):
+        # A bare `.max()` and an elementwise `torch.max(a, b)` fail for different reasons, so the
+        # message names both rather than pointing at a replacement that only fixes one.
+        for forward in ("return x.max(-1)", "return x.max()", "return torch.max(x, x)", "return x.min(dim=-1)"):
+            with self.subTest(forward=forward):
+                result = self.reject(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                message = result["diagnostics"][0]["message"]
+                self.assertIn("下标", message)
+                self.assertIn("逐元素", message)
+
     def test_unsupported_static_and_index_semantics_fail_with_source_locations(self):
         cases = [('', 'return x[0]'), ('', 'return x[:1]'), ('', 'return x[:, [0, 2]]'), ('', 'return x[:, ::-1]'), ('', 'return x[:, :x.size(2)]'), ('', 'return x[:, :other.size(1)]'), ('self.register_buffer("pe", torch.empty(1, 6, 5))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, dtype=torch.float64))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, unexpected=True))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :other.size(1)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(1), :2]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x * self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe.real')]
         for init, forward in cases:
