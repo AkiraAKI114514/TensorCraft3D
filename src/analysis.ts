@@ -3,6 +3,8 @@ import { expandGraph, topLevelId, SubgraphError } from './subgraph';
 import { ATTENTION_TYPES, attentionConfig, incomingEdges, isCrossAttention, crossInputRole, edgeKey, edgeOutputShape, isAttention, isProjectionPort, projectionPorts } from './attentionConfig';
 
 export const product = (values: number[]) => values.reduce((a, b) => a * b, 1);
+/** The PyTorch methods a `Reduce` node can stand for. Mirrors `_REDUCE_OPS` in backend/graph.py. */
+export const REDUCE_OPS = ['mean', 'sum', 'amax', 'amin'] as const;
 /** 与 backend/graph.py 的 einsum_shape 逐条对应；两处必须给出相同结果。 */
 export function einsumShape(equation: unknown, shapes: number[][]): number[] {
   if (typeof equation !== 'string' || !equation.includes('->')) throw new Error('einsum 方程必须显式写出 ->');
@@ -290,6 +292,31 @@ function analyzeExpanded(graph: Graph): Analysis {
       } else if (n.op === 'Einsum') {
         if (input.length < 1) throw new Error('Einsum 至少需要一个输入');
         output = einsumShape(n.params.equation, input);
+      } else if (n.op === 'Reduce') {
+        // `mean`/`sum`/`amax`/`amin` over named axes. Every other op transforms each sample
+        // independently and leaves axis 0 alone, so a reduction may not collapse the batch axis
+        // either; `dim='all'` is torch's `x.sum()` and does fold batch in.
+        if (input.length !== 1) throw new Error('Reduce 需要单个输入');
+        const kind = n.params.op ?? 'mean';
+        if (typeof kind !== 'string' || !REDUCE_OPS.includes(kind as typeof REDUCE_OPS[number])) throw new Error(`Reduce 只支持 ${REDUCE_OPS.join('/')}`);
+        const raw = n.params.dim ?? -1;
+        if (raw === 'all') throw new Error('Reduce 不能约简全部维度，请写出要约简的轴，例如 dim=-1');
+        const dims: unknown[] = Array.isArray(raw) ? raw : [raw];
+        if (!dims.length || dims.length > 5) throw new Error('Reduce 需要 1–5 个 dim');
+        const axes: number[] = [];
+        for (const value of dims) {
+          if (typeof value !== 'number' || !Number.isInteger(value)) throw new Error('Reduce 的 dim 必须是整数');
+          if (value < -output.length || value >= output.length) throw new Error('Reduce 的 dim 超出输入维度');
+          // JS `%` keeps the sign of the dividend, so a negative dim needs the extra wrap to
+          // land where Python's `%` does.
+          const axis = ((value % output.length) + output.length) % output.length;
+          if (axis === 0) throw new Error('Reduce 不能作用于 batch 维度');
+          axes.push(axis);
+        }
+        if (new Set(axes).size !== axes.length) throw new Error('Reduce 的 dim 不能重复');
+        const keepdim = Number(n.params.keepdim ?? 0);
+        if (keepdim !== 0 && keepdim !== 1) throw new Error('Reduce keepdim 必须是 0 或 1');
+        output = keepdim ? output.map((size, position) => (axes.includes(position) ? 1 : size)) : output.filter((_, position) => !axes.includes(position));
       } else if (n.op === 'GLU') {
         // Halves along `dim`, gated: the second half passes through a sigmoid and
         // multiplies the first half, so the axis shrinks from 2C to C.

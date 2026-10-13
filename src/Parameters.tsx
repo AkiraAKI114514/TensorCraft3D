@@ -13,6 +13,15 @@ export default function Parameters({ node, disabled, onUpdate }: { node: Layer; 
     {(['shape', 'values'] as const).map(key => <label className="field-label" key={`${node.id}_${key}`}>{key}<textarea aria-label={key} disabled={disabled} defaultValue={JSON.stringify(node.params[key])} key={JSON.stringify(node.params[key])} rows={key === 'values' ? 4 : 2} onBlur={e => { try { const value: unknown = JSON.parse(e.target.value); if (Array.isArray(value) && value.every(v => typeof v === 'number' && Number.isFinite(v))) onUpdate(key, value); else e.target.value = JSON.stringify(node.params[key]); } catch { e.target.value = JSON.stringify(node.params[key]); } }} /></label>)}
     <label className="field-label">sequence_dim<select aria-label="sequence_dim" disabled={disabled} value={node.params.sequence_dim === undefined ? 'fixed' : String(node.params.sequence_dim)} onChange={e => onUpdate('sequence_dim', e.target.value === 'fixed' ? 'fixed' : Number(e.target.value))}><option value="fixed">{t('固定常量')}</option>{[1, 2, 3, 4].map(dim => <option key={dim} value={dim}>{dim}</option>)}</select></label>
   </>;
+  // `Reduce` is the one op whose fields are neither all-numeric nor all-text: `op` is a method
+  // name, `dim` is one axis or a list of them, and `keepdim` is a flag. The generic field below
+  // would render the method name as `NaN`.
+  if (node.op === 'Reduce') return <>
+    {repeatField}
+    <label className="field-label" key="op">op<select aria-label="op" disabled={disabled} value={String(node.params.op ?? 'mean')} onChange={e => onUpdate('op', e.target.value)}>{['mean', 'sum', 'amax', 'amin'].map(name => <option key={name} value={name}>{name}</option>)}</select></label>
+    <label className="parameter-field" key="dim"><span>dim</span><input type="text" aria-label="dim" disabled={disabled} key={`${node.id}_dim_${String(node.params.dim)}`} defaultValue={Array.isArray(node.params.dim) ? node.params.dim.join(', ') : String(node.params.dim ?? -1)} placeholder="-1、1, -1" onBlur={e => { const parts = e.target.value.trim().split(',').map(part => part.trim()); if (parts.length && parts.every(part => /^-?\d+$/.test(part))) onUpdate('dim', parts.length === 1 ? Number(parts[0]) : parts.map(Number)); else e.target.value = Array.isArray(node.params.dim) ? node.params.dim.join(', ') : String(node.params.dim ?? -1); }} /></label>
+    <label className="field-label" key="keepdim">keepdim<select aria-label="keepdim" disabled={disabled} value={Number(node.params.keepdim ?? 0) ? 1 : 0} onChange={e => onUpdate('keepdim', Number(e.target.value))}><option value={0}>{t('移除维度')}</option><option value={1}>{t('保留为 1')}</option></select></label>
+  </>;
   const attention = isAttention(node.op), cfg = attentionConfig(node.params);
   const params = { ...DEFAULTS[node.op], ...(node.op === 'Transformer' ? { norm_first: 1, activation: 'gelu' } : {}), ...node.params, ...(attention ? { kv_heads: cfg.kvHeads, branches: cfg.branches, attention_type: cfg.type } : {}) };
   if (!Object.keys(params).length) return <>{repeatField}<p className="muted-text">{t('此算子无可配置参数')}</p></>;

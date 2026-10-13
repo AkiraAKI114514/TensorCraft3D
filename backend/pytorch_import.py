@@ -1191,9 +1191,72 @@ class Parser:
                 batch_ok = batch_ok or isinstance(batch, ast.Subscript) and isinstance(batch.value, ast.Attribute) and batch.value.attr == "shape" and ast.dump(batch.value.value) == ast.dump(function.value) and self.literal(batch.slice, env) == 0
                 if expression.keywords or not batch_ok or self.literal(dimensions[1], env) != -1: raise ImportIssue("reshape/view 目前仅支持保留 batch 的展平，如 x.view(x.size(0), -1)", expression)
                 return self.add("Flatten", {}, [(self.expr(function.value, env, attrs), None)], "Flatten", expression)
+            # The reduce family: `x.mean(dim)`, `torch.sum(x, dim)`, `torch.amax(x, dim, True)`.
+            # `max`/`min` are left out on purpose -- with a `dim` torch hands back
+            # `(values, indices)`, and taking the values here would quietly discard the argmax
+            # the source asked for. `amax`/`amin` are the reduction-only spellings.
+            if path in ("torch.mean", "torch.sum", "torch.amax", "torch.amin") or isinstance(function, ast.Attribute) and function.attr in ("mean", "sum", "amax", "amin"):
+                method = not path.startswith("torch.")
+                kind = function.attr if isinstance(function, ast.Attribute) else path.split(".")[-1]
+                names = ([] if method else ["input"]) + ["dim", "keepdim"]
+                if len(expression.args) > len(names): raise ImportIssue("reduce 参数过多", expression)
+                arguments = dict(zip(names, expression.args))
+                for keyword in expression.keywords:
+                    if keyword.arg not in names or keyword.arg in arguments: raise ImportIssue("reduce 参数无效或重复", expression)
+                    arguments[keyword.arg] = keyword.value
+                if "input" in names and "input" not in arguments: raise ImportIssue("reduce 缺少输入张量", expression)
+                tensor = self.expr(function.value if method else arguments["input"], env, attrs)
+                # torch treats `dim=None`, `dim=()` and `dim=[]` alike -- it reduces everything --
+                # so all three collapse to one "all" sentinel. `None` cannot be that sentinel,
+                # because it is also what an absent parameter reads as.
+                if "dim" not in arguments: spec = "all"
+                else:
+                    spec = self.literal(arguments["dim"], env)
+                    if spec is None or spec == [] or spec == (): spec = "all"
+                dims = self.reduce_dims(tensor, spec, expression)
+                # A reduction with no `dim` folds the batch axis in too, mixing samples. Every
+                # other operator maps each sample independently and `Output` is pinned to axis 0,
+                # so that shape has no representation here. Say so rather than silently turning
+                # `x.sum()` into a per-sample sum, which is a different computation.
+                if dims == "all": raise ImportIssue("reduce 不能约简全部维度（含 batch 维度），请写出要约简的轴，例如 dim=-1", expression)
+                keepdim = self.literal(arguments["keepdim"], env) if "keepdim" in arguments else False
+                return self.add("Reduce", {"op": kind, "dim": dims, "keepdim": int(bool(keepdim))}, [(tensor, None)], "归约", expression)
+            # `max`/`min` look like the reduce family but are not: with a `dim` torch returns a
+            # `(values, indices)` namedtuple, and this graph has no second output to carry the
+            # argmax. Falling through would report them as an unknown operation, so name the real
+            # reason and the replacement. Without a `dim` they are plain reductions, but the graph
+            # has no way to say "every non-batch axis", so they are refused either way.
+            if isinstance(function, ast.Attribute) and function.attr in ("max", "min"):
+                raise ImportIssue(f"max/min 会同时返回数值与下标，本图没有第二个输出；请改用 a{function.attr}", expression)
             raise ImportIssue(f"不支持操作 {path or ast.unparse(function)}", expression, "UNSUPPORTED_OPERATION")
         try: return self.literal(expression, env)
         except ImportIssue: raise ImportIssue(f"不支持表达式 {ast.unparse(expression)[:100]}", expression)
+
+    def reduce_dims(self, tensor, spec, source):
+        """Resolve a reduce call's `dim` into graph axes.
+
+        One axis stays an int so the common `x.mean(-1)` round-trips to exactly that call;
+        several become a sorted list of distinct non-batch axes. `"all"` passes through for the
+        caller to reject. `amax` tops out at 32 dims in torch but the graph ranks cap at 5, so
+        the duplicate/range checks below are what actually bound the list.
+        """
+        if spec == "all": return "all"
+        values = spec if isinstance(spec, (list, tuple)) else [spec]
+        if not values: return "all"
+        rank = len(self.tensor_shape(tensor, source))
+        axes = []
+        for value in values:
+            # `type(...) is int` and not `isinstance`: `bool` subclasses `int`, and torch itself
+            # refuses `x.sum(dim=True)`, so accepting it here would go beyond the source language.
+            if type(value) is not int: raise ImportIssue("reduce 的 dim 必须是整数常量", source)
+            if not -rank <= value < rank: raise ImportIssue("reduce 的 dim 超出张量维度", source)
+            axis = value % rank
+            if axis == 0: raise ImportIssue("reduce 不支持 batch 维度", source)
+            axes.append(axis)
+        # torch raises "dim N appears multiple times" rather than de-duplicating, so a repeated
+        # axis is a source error, not something to silently collapse.
+        if len(set(axes)) != len(axes): raise ImportIssue("reduce 的 dim 不能重复", source)
+        return (axes[0] if len(axes) == 1 else sorted(axes))
 
     def slice_pieces(self, tensor, spec, dim, chunking, source):
         """Resolve `chunk`/`split` into `(axis, start, end)` groups of contiguous slices.
