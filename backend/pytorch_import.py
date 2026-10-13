@@ -1203,6 +1203,9 @@ class Parser:
         """
         rank = len(self.tensor_shape(tensor, source))
         if type(dim) is not int: raise ImportIssue("chunk/split 的 dim 必须是整数常量", source)
+        # PyTorch rejects an out-of-range dim outright, so wrapping it here would accept a call
+        # torch itself refuses -- and a wrapped dim would be misreported as the batch axis.
+        if not -rank <= dim < rank: raise ImportIssue("chunk/split 的 dim 超出张量维度", source)
         axis = dim % rank
         if axis == 0: raise ImportIssue("chunk/split 不支持 batch 维度", source)
         length = self.tensor_shape(tensor, source)[axis]

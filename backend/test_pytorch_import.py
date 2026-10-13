@@ -684,6 +684,12 @@ class Net(nn.Module):
         for forward in cases:
             with self.subTest(forward=forward.splitlines()[0]):
                 self.reject(module_source('', forward), input_shapes={"x": [2, 4, 4]})
+        # An out-of-range dim must be rejected as such. Wrapping it with `% rank` would accept a
+        # call torch raises on, and would misreport dim=4 on a rank-4 axis as the batch axis.
+        for dim in (4, -5, 9):
+            with self.subTest(dim=dim):
+                result = self.reject(module_source('', f'return x.chunk(2, {dim})[0]'), input_shapes={"x": [2, 3, 4]})
+                self.assertIn("超出张量维度", result["diagnostics"][0]["message"])
         # A count that exceeds the axis is an upper bound, not an error, but the mismatch between
         # the requested unpack and the pieces PyTorch actually returns is reported precisely.
         result = import_pytorch(module_source('', 'q, k, v = x.chunk(2, -1)\nreturn q + k'), input_shapes={"x": [2, 4, 4]})
