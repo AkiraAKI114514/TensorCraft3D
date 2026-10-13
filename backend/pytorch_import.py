@@ -1064,7 +1064,8 @@ class Parser:
                 # the existing Slice op rather than adding a second shape path, exactly as matmul
                 # lowers onto Einsum. This is how `q, k, v = qkv.chunk(3, -1)` is written.
                 method, chunking = not path.startswith("torch."), path.split(".")[-1] == "chunk"
-                spec_name = "chunks" if chunking else "split_size_or_sections"
+                if chunking: spec_name = "chunks"
+                else: spec_name = "split_size" if method else "split_size_or_sections"
                 names = ([] if method else ["input"]) + [spec_name, "dim"]
                 if len(expression.args) > len(names): raise ImportIssue(f"{spec_name} 参数过多", expression)
                 arguments = dict(zip(names, expression.args))

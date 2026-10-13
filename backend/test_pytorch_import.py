@@ -634,6 +634,29 @@ class Net(nn.Module):
                 torch.testing.assert_close(torch.autograd.grad(actual.square().sum(), x)[0], torch.autograd.grad(expected.square().sum(), x)[0])
                 self.assertEqual(result["analysis"]["shapes"][result["analysis"]["output"]], list(reference(torch.randn(2, 6, 5)).shape))
 
+    def test_chunk_and_split_accept_pytorch_keyword_names(self):
+        # The method and functional forms name the split spec differently -- `Tensor.split(split_size=)`
+        # against `torch.split(split_size_or_sections=)`. Accepting the wrong one would reject valid
+        # source and accept a call torch itself refuses.
+        valid = ('return x.split(split_size=3, dim=-1)[0]',
+                 'return torch.split(x, split_size_or_sections=3, dim=-1)[0]',
+                 'return x.chunk(chunks=3, dim=-1)[0]',
+                 'return torch.chunk(x, chunks=3, dim=-1)[0]')
+        for forward in valid:
+            with self.subTest(forward=forward):
+                _, model = self.parsed(module_source('', forward), input_shapes={"x": [2, 3, 9]})
+                x = torch.randn(2, 3, 9)
+                torch.testing.assert_close(model(x), x[:, :, :3])
+        invalid = ('return x.split(split_size_or_sections=3, dim=-1)[0]',
+                   'return torch.split(x, split_size=3, dim=-1)[0]')
+        for forward in invalid:
+            with self.subTest(forward=forward):
+                # These are exactly the spellings torch raises TypeError on, verified separately so
+                # the pairing cannot drift: a wrong keyword name is a defect in both directions.
+                expression = forward.replace('return ', '')
+                with self.assertRaises(TypeError): eval(expression, {"x": torch.randn(2, 3, 9), "torch": torch})
+                self.reject(module_source('', forward), input_shapes={"x": [2, 3, 9]})
+
     def test_chunk_and_split_lower_onto_slice(self):
         # `q, k, v = qkv.chunk(3, -1)` is the fused-projection spelling every attention block uses.
         # Both chunk and split are pure slicing on a static axis, so they lower onto the existing
