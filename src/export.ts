@@ -212,6 +212,13 @@ export function generatePython(graph: Graph) {
         // `torch.einsum` is native, so unlike ConstantAdd this needs no embedded runtime helper.
         case 'Einsum': forward.push(`        values[${key}] = torch.einsum(${JSON.stringify(p.equation)}, ${inputs.join(', ')})`); continue;
         case 'Scale': forward.push(`        values[${key}] = ${inputs[0]} * ${JSON.stringify(p.factor ?? 1)}`); continue;
+        // `mean`/`sum`/`amax`/`amin` are tensor methods, so this needs no embedded helper. A
+        // multi-axis cut exports as a tuple to match `keepdim`'s expectation of a sequence.
+        case 'Reduce': {
+          const raw = p.dim ?? -1;
+          const dim = typeof raw === 'string' ? JSON.stringify(raw) : Array.isArray(raw) ? `(${raw.join(', ')},)` : raw;
+          forward.push(`        values[${key}] = ${inputs[0]}.${p.op ?? 'mean'}(${dim}, keepdim=${Number(p.keepdim ?? 0) ? 'True' : 'False'})`); continue;
+        }
         case 'GLU': forward.push(`        values[${key}] = torch.nn.functional.glu(${inputs[0]}, dim=${p.dim ?? -1})`); continue;
       }
       const repeat = repeatOf(node);

@@ -8,10 +8,27 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Concat", "Einsum", "Scale", "GLU", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
+# The PyTorch methods a `Reduce` node stands for. `amin` mirrors `amax`; `max`/`min` are
+# deliberately absent because torch returns `(values, indices)` for them when `dim` is given,
+# and the graph has no second output to carry the argmax. `dim=None` survives as the string
+# "all" rather than as `None`, because `None` is also what a missing parameter reads as.
+_REDUCE_OPS = {"mean", "sum", "amax", "amin"}
+_MAX_REDUCE_DIMS = 5
+
+
+def _integral(value):
+    """True for a JSON number that is a whole number, so 2 and 2.0 both qualify.
+
+    JavaScript's JSON.parse cannot tell 2 from 2.0 while Python's json.loads yields a float
+    for 2.0, and the wire format is produced by the frontend. `repeat` already accepts either
+    for this reason; a dim or a keepdim flag has to do the same or the two analyzers disagree
+    on a project file neither language could have written differently.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value) and value == int(value)
 _DROPOUTS = {"Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"}
 _CONVS = {"Conv1d": 3, "Conv2d": 4, "Conv3d": 5}
 _TRANSPOSE_CONVS = {"ConvTranspose1d": 3, "ConvTranspose2d": 4, "ConvTranspose3d": 5}
@@ -444,6 +461,38 @@ def analyze_expanded_graph(graph):
                     shape = einsum_shape(equation, in_shapes)
                 except ValueError as error:
                     raise ValueError(f"{key}: {error}") from error
+            elif op == "Reduce":
+                # `mean`/`sum`/`amax`/`amin` over named axes. Every other op here transforms each
+                # sample independently and leaves axis 0 alone, so a reduction is not allowed to
+                # collapse the batch axis either -- that would mix samples, and `Output` is pinned
+                # to axis 0. `dim="all"` means the caller asked for no axes at all (torch's
+                # `x.sum()`), which folds batch in and so has no shape here. Must mirror
+                # src/analysis.ts.
+                if len(parents) != 1: raise ValueError(f"{key}: Reduce requires a single input")
+                kind = p.get("op", "mean")
+                # The isinstance guard comes first: an unhashable `op` would otherwise raise
+                # TypeError out of the membership test instead of a validation message.
+                if not isinstance(kind, str) or kind not in _REDUCE_OPS: raise ValueError(f"{key}: Reduce op must be one of {sorted(_REDUCE_OPS)}")
+                raw = p.get("dim", -1)
+                if raw == "all": raise ValueError(f"{key}: Reduce cannot reduce every axis; name the axes, for example dim=-1")
+                dims = raw if isinstance(raw, list) else [raw]
+                if not dims or len(dims) > _MAX_REDUCE_DIMS: raise ValueError(f"{key}: Reduce needs 1-{_MAX_REDUCE_DIMS} dims")
+                axes = []
+                for value in dims:
+                    if not _integral(value): raise ValueError(f"{key}: Reduce dims must be integers")
+                    value = int(value)
+                    if not -len(shape) <= value < len(shape): raise ValueError(f"{key}: Reduce dim is out of range")
+                    axis = value % len(shape)
+                    if axis == 0: raise ValueError(f"{key}: Reduce cannot act on the batch dimension")
+                    axes.append(axis)
+                if len(set(axes)) != len(axes): raise ValueError(f"{key}: Reduce dims must be distinct")
+                keepdim = p.get("keepdim", 0)
+                if not _integral(keepdim) or int(keepdim) not in (0, 1): raise ValueError(f"{key}: Reduce keepdim must be 0 or 1")
+                keepdim = int(keepdim)
+                if keepdim:
+                    for axis in axes: shape[axis] = 1
+                else:
+                    shape = [size for position, size in enumerate(shape) if position not in axes]
             elif op == "GLU":
                 # Halves along `dim`, gated: the second half passes through a sigmoid and
                 # multiplies the first half, so the axis shrinks from 2C to C. Must mirror

@@ -54,7 +54,7 @@ def build_model(graph):
                     elif op in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d"):
                         size = p.get("output_size", 1); size = tuple(size) if isinstance(size, list) else size; return getattr(nn, op)(size)
                     elif op == "Flatten": return nn.Flatten(1)
-                    elif op in ("Unsqueeze", "Squeeze", "Slice", "Select"): return None
+                    elif op in ("Unsqueeze", "Squeeze", "Slice", "Select", "Reduce"): return None
                     elif op == "ConstantAdd": return TensorLabConstantAdd(p["shape"], p["values"], p.get("sequence_dim"))
                     elif op == "ConstantMul": return TensorLabConstantMul(p["shape"], p["values"], p.get("sequence_dim"))
                     elif op in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): return getattr(nn, op)(float(p.get("p", 0.3)))
@@ -113,6 +113,11 @@ def build_model(graph):
                     start = None if p.get("start", "none") == "none" else int(p["start"]); end = None if p.get("end", "none") == "none" else int(p["end"])
                     indices = [slice(None)] * args[0].ndim; indices[dim] = slice(start, end, int(p.get("step", 1))); values[key] = args[0][tuple(indices)]
                 elif op == "Select": values[key] = torch.select(args[0], int(node["params"].get("dim", 1)), int(node["params"].get("index", -1)))
+                elif op == "Reduce":
+                    p = node["params"]; dims = p.get("dim", -1)
+                    # `dim` may be one axis or several; the analyzer already pinched it to
+                    # ints in range and kept axis 0 out, so this pass-through needs no guard.
+                    values[key] = getattr(args[0], str(p.get("op", "mean")))(tuple(dims) if isinstance(dims, list) else dims, keepdim=bool(p.get("keepdim", 0)))
                 elif op in ("Transformer", "MultiHeadAttention"):
                     overrides = {e["targetPort"]: edge_value(e) for e in info["overrideEdges"][key]}
                     attention_callback = None

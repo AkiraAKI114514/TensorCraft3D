@@ -161,6 +161,32 @@ print("matched")
   }, 30000);
 
   it.each([
+    // The three spellings the exporter has to get right: a bare axis, a keepdim axis, and a
+    // multi-axis list. The last one is why `dim` exports as a tuple -- torch wants a sequence
+    // there, and a JS `[1, 2]` would otherwise stringify into the generated source differently.
+    [['mean', -1, 0], [2, 5, 8]],
+    [['sum', -1, 1], [2, 5, 8, 1]],
+    [['amax', [1, 2], 0], [2, 3]],
+  ])('round-trips a Reduce node for %j', (spec, expected) => {
+    const [op, dim, keepdim] = spec;
+    const graph = PRESETS.blank();
+    graph.nodes = [
+      { id: 'in', name: 'In', op: 'Input', params: { shape: [2, 5, 8, 3] }, position: { x: 0, y: 100 } },
+      { id: 'red', name: 'Reduce', op: 'Reduce', params: { op, dim, keepdim }, position: { x: 150, y: 100 } },
+      { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 300, y: 100 } }
+    ];
+    graph.edges = [{ id: 'e0', source: 'in', target: 'red' }, { id: 'e1', source: 'red', target: 'out' }];
+    const original = analyze(graph);
+    expect(original.valid).toBe(true);
+    expect(original.layers.red.output).toEqual(expected);
+    // roundtrip re-imports the generated source and asserts the two models compute equal values.
+    const imported = roundtrip(graph);
+    const nodes = imported.nodes.filter(n => n.op === 'Reduce');
+    expect(nodes).toHaveLength(1);
+    expect(analyze(imported).layers[nodes[0].id].output).toEqual(original.layers.red.output);
+  }, 30000);
+
+  it.each([
     // Affinity is the whole point of these cases: an affine-free normalization is what the
     // functional F.layer_norm / F.rms_norm / F.group_norm forms produce, and `elementwise_affine: 0`
     // used to be unrepresentable on the import side (LayerNorm required bias, GroupNorm required
