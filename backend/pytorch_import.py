@@ -1232,9 +1232,9 @@ class Parser:
         elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (tuple, list)) and len(target.elts) == len(value):
             for item, child in zip(target.elts, value): self.assign(item, child, env)
         elif isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (tuple, list)):
-            # `q, k, v = qkv.chunk(2, -1)` -- PyTorch drops empty tail pieces, so the requested
-            # count is an upper bound, not a guarantee. Say so instead of a generic unpack error.
-            raise ImportIssue(f"解包需要 {len(target.elts)} 个值，但该调用返回 {len(value)} 个（chunk 份数是上限，不足时会减少）", target)
+            # `q, k, v = qkv.chunk(2, -1)` -- chunk's requested count is an upper bound, since the
+            # piece size is ceil(len/count) and a piece count of whatever fits is what comes back.
+            raise ImportIssue(f"解包需要 {len(target.elts)} 个值，但该调用返回 {len(value)} 个（chunk 的份数是上限，split 由切分规格决定）", target)
         elif isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and isinstance(env.get(target.value.id), dict):
             env[target.value.id][self.literal(target.slice, env)] = value
         else: raise ImportIssue("不支持此赋值（只支持变量、解包或中间字典）", target)
