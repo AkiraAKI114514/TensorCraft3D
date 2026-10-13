@@ -634,6 +634,92 @@ class Net(nn.Module):
                 torch.testing.assert_close(torch.autograd.grad(actual.square().sum(), x)[0], torch.autograd.grad(expected.square().sum(), x)[0])
                 self.assertEqual(result["analysis"]["shapes"][result["analysis"]["output"]], list(reference(torch.randn(2, 6, 5)).shape))
 
+    def test_chunk_and_split_accept_pytorch_keyword_names(self):
+        # The method and functional forms name the split spec differently -- `Tensor.split(split_size=)`
+        # against `torch.split(split_size_or_sections=)`. Accepting the wrong one would reject valid
+        # source and accept a call torch itself refuses.
+        valid = ('return x.split(split_size=3, dim=-1)[0]',
+                 'return torch.split(x, split_size_or_sections=3, dim=-1)[0]',
+                 'return x.chunk(chunks=3, dim=-1)[0]',
+                 'return torch.chunk(x, chunks=3, dim=-1)[0]')
+        for forward in valid:
+            with self.subTest(forward=forward):
+                _, model = self.parsed(module_source('', forward), input_shapes={"x": [2, 3, 9]})
+                x = torch.randn(2, 3, 9)
+                torch.testing.assert_close(model(x), x[:, :, :3])
+        invalid = ('return x.split(split_size_or_sections=3, dim=-1)[0]',
+                   'return torch.split(x, split_size=3, dim=-1)[0]')
+        for forward in invalid:
+            with self.subTest(forward=forward):
+                # These are exactly the spellings torch raises TypeError on, verified separately so
+                # the pairing cannot drift: a wrong keyword name is a defect in both directions.
+                expression = forward.replace('return ', '')
+                with self.assertRaises(TypeError): eval(expression, {"x": torch.randn(2, 3, 9), "torch": torch})
+                self.reject(module_source('', forward), input_shapes={"x": [2, 3, 9]})
+
+    def test_chunk_and_split_lower_onto_slice(self):
+        # `q, k, v = qkv.chunk(3, -1)` is the fused-projection spelling every attention block uses.
+        # Both chunk and split are pure slicing on a static axis, so they lower onto the existing
+        # Slice op instead of adding a second shape path -- the same move matmul made onto Einsum.
+        cases = [
+            ('q, k, v = x.chunk(3, -1)\nreturn torch.cat([q, k, v], 2)', lambda x: x),
+            ('q, k, v = torch.chunk(x, 3, dim=-1)\nreturn torch.cat([q, k, v], 2)', lambda x: x),
+            ('a, b, c = x.split([3, 4, 2], -1)\nreturn torch.cat([a, b, c], 2)', lambda x: x),
+            ('a, b, c = torch.split(x, (3, 4, 2), -1)\nreturn torch.cat([a, b, c], 2)', lambda x: x),
+            # Unequal tail pieces: chunk(3) on a length-7 axis yields sizes [3, 3, 1].
+            ('a, b, c = torch.split(x, 3, -1)\nreturn torch.cat([a, b, c], 2)', lambda x: x),
+        ]
+        for forward, reference in cases:
+            with self.subTest(forward=forward.splitlines()[0]):
+                result, model = self.parsed(module_source('', forward), input_shapes={"x": [2, 3, 9]})
+                # The pieces are slices of one input, so the graph is slices plus a rejoin.
+                ops = [n["op"] for n in result["graph"]["nodes"]]
+                self.assertGreaterEqual(ops.count("Slice"), 2)
+                self.assertNotIn("Chunk", ops)
+                x = torch.randn(2, 3, 9, requires_grad=True)
+                torch.testing.assert_close(model(x), reference(x))
+
+    def test_chunk_piece_counts_match_pytorch(self):
+        # `torch.chunk` is subtler than it looks: the chunk size is ceil(len/chunks) and the empty
+        # tail is dropped, so the requested count is an upper bound. A spelling that assumed
+        # exactly `chunks` pieces would silently produce a wrong number of slices.
+        import backend.pytorch_import as module
+        parser = module.Parser.__new__(module.Parser)
+        for length in range(1, 25):
+            parser.tensor_shape = lambda tensor, source=None, length=length: [1, length]
+            for chunks in range(1, 10):
+                with self.subTest(length=length, chunks=chunks):
+                    sizes = [end - start for _, start, end in parser.slice_pieces(None, chunks, 1, True, None)]
+                    self.assertEqual(sizes, [int(t.numel()) for t in torch.chunk(torch.arange(length), chunks)])
+                    sizes = [end - start for _, start, end in parser.slice_pieces(None, chunks, 1, False, None)]
+                    self.assertEqual(sizes, [int(t.numel()) for t in torch.split(torch.arange(length), chunks)])
+
+    def test_chunk_and_split_reject_unrepresentable_cuts(self):
+        # The batch axis is rejected here rather than left to the Slice analyzer so the diagnostic
+        # names chunk/split instead of surfacing as a downstream slicing error.
+        for forward in ('p = x.chunk(2, 0)\nreturn p[0]', 'p = x.split(2, 0)\nreturn p[0]'):
+            with self.subTest(forward=forward.splitlines()[0]):
+                result = self.reject(module_source('', forward), input_shapes={"x": [2, 4, 4]})
+                self.assertIn("batch", result["diagnostics"][0]["message"])
+        cases = ['p = x.chunk(0, 1)\nreturn p[0]', 'p = x.split(0, 1)\nreturn p[0]',
+                 'a, b = x.split([3, 3], -1)\nreturn torch.cat([a, b], 2)',
+                 'p = x.chunk(2, x.dim())\nreturn p[0]']
+        for forward in cases:
+            with self.subTest(forward=forward.splitlines()[0]):
+                self.reject(module_source('', forward), input_shapes={"x": [2, 4, 4]})
+        # An out-of-range dim must be rejected as such. Wrapping it with `% rank` would accept a
+        # call torch raises on, and would misreport dim=4 on a rank-4 axis as the batch axis.
+        for dim in (4, -5, 9):
+            with self.subTest(dim=dim):
+                result = self.reject(module_source('', f'return x.chunk(2, {dim})[0]'), input_shapes={"x": [2, 3, 4]})
+                self.assertIn("超出张量维度", result["diagnostics"][0]["message"])
+        # A count that exceeds the axis is an upper bound, not an error, but the mismatch between
+        # the requested unpack and the pieces PyTorch actually returns is reported precisely.
+        result = import_pytorch(module_source('', 'q, k, v = x.chunk(2, -1)\nreturn q + k'), input_shapes={"x": [2, 4, 4]})
+        self.assertIsNone(result["graph"])
+        self.assertIn("返回 2", result["diagnostics"][0]["message"])
+        self.assertEqual(result["diagnostics"][0]["level"], "error")
+
     def test_unsupported_static_and_index_semantics_fail_with_source_locations(self):
         cases = [('', 'return x[0]'), ('', 'return x[:1]'), ('', 'return x[:, [0, 2]]'), ('', 'return x[:, ::-1]'), ('', 'return x[:, :x.size(2)]'), ('', 'return x[:, :other.size(1)]'), ('self.register_buffer("pe", torch.empty(1, 6, 5))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, dtype=torch.float64))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, unexpected=True))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :other.size(1)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(1), :2]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x * self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe.real')]
         for init, forward in cases:
