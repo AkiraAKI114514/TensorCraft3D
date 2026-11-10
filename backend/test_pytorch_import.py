@@ -11,6 +11,18 @@ def module_source(init, forward, name="Net", inputs="x"):
     return f"from torch import nn\nimport torch\nimport torch.nn.functional as F\nimport math\nclass {name}(nn.Module):\n    def __init__(self):\n        super().__init__()\n" + "".join(f"        {line}\n" for line in init.splitlines()) + f"    def forward(self, {inputs}):\n" + "".join(f"        {line}\n" for line in forward.splitlines())
 
 
+def reference_model(forward, inputs="x"):
+    """Compile a forward body straight into a callable, so a test compares against torch itself.
+
+    The returned object is a real `nn.Module` whose `forward` is the same source line the importer
+    parsed; running it is the oracle for "did the graph compute what the source computes". This
+    executes a string the test file authored, never uploaded source.
+    """
+    namespace = {}
+    exec(module_source("", forward, inputs=inputs), namespace)
+    return namespace["Net"]()
+
+
 class PyTorchImportTests(unittest.TestCase):
     def parsed(self, code, **kwargs):
         result = import_pytorch(code, **kwargs)
@@ -719,6 +731,109 @@ class Net(nn.Module):
         self.assertIsNone(result["graph"])
         self.assertIn("返回 2", result["diagnostics"][0]["message"])
         self.assertEqual(result["diagnostics"][0]["level"], "error")
+
+    def test_reduce_lowers_onto_one_reduce_node(self):
+        # The whole family collapses to a single node carrying the method name, the axes and the
+        # keepdim flag, so neither analyzer needs a per-method shape rule. The importer resolves
+        # `-1` against the rank it already knows, so the stored axis is 2 rather than -1; a node
+        # authored by hand keeps whatever the user typed, which is why both analyzers still
+        # normalise on their side.
+        for forward, kind in (("return x.mean(-1)", "mean"), ("return x.sum(dim=-1)", "sum"),
+                              ("return x.amax(-1)", "amax"), ("return x.amin(dim=-1)", "amin")):
+            with self.subTest(forward=forward):
+                result, _ = self.parsed(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                reduces = [n["params"] for n in result["graph"]["nodes"] if n["op"] == "Reduce"]
+                self.assertEqual(reduces, [{"op": kind, "dim": 2, "keepdim": 0}])
+                self.assertEqual(result["analysis"]["shapes"][result["analysis"]["output"]], [2, 5])
+
+    def test_reduce_stores_every_axis_of_a_multi_axis_cut(self):
+        # Several axes are order-independent to torch, so the stored list is sorted and distinct;
+        # that is also the order the analyzer drops them in.
+        result, _ = self.parsed(module_source("", "return x.sum(dim=[2, 1])"), input_shapes={"x": [2, 3, 4, 5]})
+        reduces = [n["params"] for n in result["graph"]["nodes"] if n["op"] == "Reduce"]
+        self.assertEqual(reduces, [{"op": "sum", "dim": [1, 2], "keepdim": 0}])
+        self.assertEqual(result["analysis"]["shapes"][result["analysis"]["output"]], [2, 5])
+
+    def test_reduce_matches_torch_for_every_dim_spelling(self):
+        # Shape is not the claim; the values are. Each case is compared against the same call in
+        # real torch, including the multi-axis and keepdim forms.
+        x = torch.randn(2, 5, 8)
+        for forward in ("return x.mean(-1)", "return x.sum(dim=-1)", "return x.amax(-1)", "return x.amin(dim=2)",
+                        "return x.mean(-1, keepdim=True)", "return torch.sum(x, -1, True)",
+                        "return torch.mean(x, dim=-1)", "return x.sum(dim=[1, 2])", "return x.amax(dim=(1, 2))",
+                        "return x.sum(dim=[1, 2], keepdim=True)"):
+            with self.subTest(forward=forward):
+                result, model = self.parsed(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                reference = reference_model(forward)
+                key = result["inputs"][0]["id"]
+                got = model({key: x})
+                want = reference(x)
+                self.assertEqual(list(got.shape), list(want.shape))
+                self.assertTrue(torch.allclose(got, want))
+
+    def test_reduce_keeps_gradients(self):
+        result, model = self.parsed(module_source("", "return x.mean(-1).sum(-1)"), input_shapes={"x": [2, 5, 8]})
+        x = torch.randn(2, 5, 8, requires_grad=True)
+        model({result["inputs"][0]["id"]: x}).sum().backward()
+        self.assertTrue(torch.isfinite(x.grad).all())
+
+    def test_reduce_rejects_unrepresentable_cuts(self):
+        # `x.sum()` / `dim=None` / `dim=()` reduce every axis including batch, which no other op
+        # here can do. Folding the batch axis would mix samples, so it is refused by name rather
+        # than silently rewritten into a per-sample sum.
+        for forward in ("return x.sum()", "return x.sum(dim=None)", "return x.sum(dim=(), keepdim=True)"):
+            with self.subTest(forward=forward):
+                result = self.reject(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                self.assertIn("约简全部维度", result["diagnostics"][0]["message"])
+        cases = {"return x.sum(dim=0)": "batch", "return x.sum(dim=-3)": "batch",
+                 "return x.sum(dim=3)": "超出张量维度", "return x.sum(dim=-4)": "超出张量维度",
+                 "return x.sum(dim=True)": "必须是整数常量", "return x.sum(dim=[-1, -1])": "不能重复"}
+        for forward, expected in cases.items():
+            with self.subTest(forward=forward):
+                result = self.reject(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                self.assertIn(expected, result["diagnostics"][0]["message"])
+        # `max`/`min` hand back (values, indices); the graph has no second output, so they are
+        # refused with the matching reduction-only spelling named rather than reported as an
+        # unknown operation.
+        for forward, expected in (("return x.max(-1)", "amax"), ("v, i = x.max(-1)\nreturn v", "amax"),
+                                  ("return x.min()", "amin"), ("return x.min(dim=-1)", "amin")):
+            with self.subTest(forward=forward.splitlines()[0]):
+                result = self.reject(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                self.assertIn(expected, result["diagnostics"][0]["message"])
+
+    def test_reduce_rejection_does_not_swallow_a_two_way_chunk_unpack(self):
+        # The argmax guard has to key on the callee, not on the arity of the unpack: a two-way
+        # chunk unpack is ordinary and must keep reporting chunk's own count mismatch.
+        result = import_pytorch(module_source("", "q, k = x.chunk(3, -1)\nreturn q"), input_shapes={"x": [2, 4, 6]})
+        self.assertIsNone(result["graph"])
+        self.assertIn("返回 3", result["diagnostics"][0]["message"])
+
+    def test_reduce_accepts_the_values_of_an_argmax(self):
+        # `.values` says the indices are not wanted, so this is an `amax`/`amin` and imports;
+        # a bare `.max()` is still refused because it hands back both. The functional spelling
+        # has to be recognised by path, since `torch.max` is itself an attribute named `max`.
+        for forward, kind in (("return x.max(-1).values", "amax"), ("return x.min(dim=-1).values", "amin"),
+                              ("return torch.max(x, -1).values", "amax"), ("return torch.min(x, dim=-1).values", "amin")):
+            with self.subTest(forward=forward):
+                result, model = self.parsed(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                reduces = [n["params"] for n in result["graph"]["nodes"] if n["op"] == "Reduce"]
+                self.assertEqual(reduces, [{"op": kind, "dim": 2, "keepdim": 0}])
+                x = torch.randn(2, 5, 8)
+                got = model({result["inputs"][0]["id"]: x})
+                self.assertTrue(torch.allclose(got, reference_model(forward)(x)))
+        # The indices half needs an argmax the graph cannot carry.
+        result = self.reject(module_source("", "return x.max(-1).indices"), input_shapes={"x": [2, 5, 8]})
+        self.assertIn("argmax", result["diagnostics"][0]["message"])
+
+    def test_reduce_diagnostics_name_the_right_reason_for_max_and_min(self):
+        # A bare `.max()` and an elementwise `torch.max(a, b)` fail for different reasons, so the
+        # message names both rather than pointing at a replacement that only fixes one.
+        for forward in ("return x.max(-1)", "return x.max()", "return torch.max(x, x)", "return x.min(dim=-1)"):
+            with self.subTest(forward=forward):
+                result = self.reject(module_source("", forward), input_shapes={"x": [2, 5, 8]})
+                message = result["diagnostics"][0]["message"]
+                self.assertIn("下标", message)
+                self.assertIn("逐元素", message)
 
     def test_unsupported_static_and_index_semantics_fail_with_source_locations(self):
         cases = [('', 'return x[0]'), ('', 'return x[:1]'), ('', 'return x[:, [0, 2]]'), ('', 'return x[:, ::-1]'), ('', 'return x[:, :x.size(2)]'), ('', 'return x[:, :other.size(1)]'), ('self.register_buffer("pe", torch.empty(1, 6, 5))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, dtype=torch.float64))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5, unexpected=True))', 'return x + self.pe'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :other.size(1)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe[:, :x.size(1), :2]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x * self.pe[:, :x.size(2)]'), ('self.register_buffer("pe", torch.ones(1, 6, 5))', 'return x + self.pe.real')]

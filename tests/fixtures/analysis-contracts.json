@@ -755,6 +755,182 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_drops_a_trailing_axis",
+      "graph": {
+        "version": 1, "name": "reduce_drops_a_trailing_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": -1, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5], "parameters": 0 }
+    },
+    {
+      "id": "reduce_keepdim_leaves_a_singleton",
+      "graph": {
+        "version": 1, "name": "reduce_keepdim_leaves_a_singleton",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "sum", "dim": -1, "keepdim": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 1], "parameters": 0 }
+    },
+    {
+      "id": "reduce_accepts_several_axes_at_once",
+      "graph": {
+        "version": 1, "name": "reduce_accepts_several_axes_at_once",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 3, 4, 5]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "amax", "dim": [1, 2], "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5], "parameters": 0 }
+    },
+    {
+      "id": "reduce_rejects_the_batch_axis",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_the_batch_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": 0, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_rejects_reducing_every_axis",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_reducing_every_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": "all", "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_rejects_a_repeated_axis",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_a_repeated_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "sum", "dim": [-1, -1], "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_rejects_an_unknown_method",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_an_unknown_method",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "max", "dim": -1, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_accepts_an_integral_float_dim",
+      "graph": {
+        "version": 1, "name": "reduce_accepts_an_integral_float_dim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": 1.0, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 0 }
+    },
+    {
+      "id": "reduce_accepts_an_integral_float_keepdim",
+      "graph": {
+        "version": 1, "name": "reduce_accepts_an_integral_float_keepdim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "sum", "dim": -1, "keepdim": 1.0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 1], "parameters": 0 }
+    },
+    {
+      "id": "reduce_rejects_a_fractional_dim",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_a_fractional_dim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": 1.5, "keepdim": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "reduce_rejects_a_stringified_keepdim",
+      "graph": {
+        "version": 1, "name": "reduce_rejects_a_stringified_keepdim",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cut", "op": "Reduce", "params": { "op": "mean", "dim": -1, "keepdim": "1" }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }
