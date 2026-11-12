@@ -118,6 +118,35 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(metrics[0]["source"], "training")
         self.assertEqual(messages[-1], {"type": "done", "reason": "completed"})
 
+    def test_layer_metrics_name_only_the_layers_that_can_have_them(self):
+        # The per-layer panel reads these records by layer id. A parameter-free layer must be
+        # absent rather than reported as 0, which would read as "no gradient reaches it"; and a
+        # zero-activation value must stay a fraction however many instances a node folds.
+        messages = []
+        graph = mlp_graph(); graph["nodes"][2]["repeat"] = 3
+        config = {"epochs": 2, "learningRate": 0.01, "batchSize": 16, "samples": 64, "device": "cpu", "dataset": "synthetic", "validationFraction": 0.2, "earlyStopping": False, "patience": 5}
+        train(graph, config, messages.append, threading.Event())
+        metrics = [m["metric"] for m in messages if m["type"] == "metric"]
+        self.assertEqual(len(metrics), 2)
+        for metric in metrics:
+            self.assertEqual(set(metric["layerGradients"]), {"layer_1", "layer_3"})
+            self.assertTrue(all(value > 0 for value in metric["layerGradients"].values()))
+            self.assertEqual(set(metric["deadRelu"]), {"layer_2"})
+            self.assertTrue(0 <= metric["deadRelu"]["layer_2"] <= 1)
+
+    def test_folded_relu_reports_the_mean_zero_fraction_of_its_instances(self):
+        import torch
+        graph = mlp_graph(); graph["nodes"][2]["repeat"] = 3
+        model, _ = build_model(graph)
+        captured = {}
+        model(torch.randn(64, 4), observer=captured.__setitem__)
+        # Chained ReLUs are idempotent, so every instance zeroes the same elements and the mean
+        # over instances equals the zero fraction of the node's output. Summing them, as the
+        # runtime once did, would report three times this.
+        expected = float((captured["layer_2"] == 0).float().mean())
+        self.assertGreater(expected, 0)
+        self.assertAlmostEqual(model.dead_relu["layer_2"], expected, places=6)
+
     def test_folded_repeat_instantiates_independent_layers_that_match_the_analyzer(self):
         import torch
         baseline_model, _ = build_model(folded_mlp_graph(1))

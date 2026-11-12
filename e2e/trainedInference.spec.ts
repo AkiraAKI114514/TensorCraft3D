@@ -55,6 +55,16 @@ test('observes trained weights, preserves identity on rename, invalidates edits,
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   const metadata = await train(page);
+  // The selected Dense layer owns parameters, so the run that just finished measured a gradient
+  // norm for it in both epochs; the chart is one keyboard stop that scrubs through them.
+  const layerMetrics = page.locator('.layer-metrics');
+  await expect(layerMetrics).toContainText('实测');
+  const gradients = layerMetrics.getByRole('slider', { name: /梯度范数/ });
+  await expect(gradients).toHaveAttribute('aria-valuenow', '2');
+  await gradients.focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(gradients).toHaveAttribute('aria-valuenow', '1');
+  await expect(layerMetrics.locator('.layer-metric-readout')).toContainText('第 1 轮');
   await page.getByRole('button', { name: '张量观测', exact: true }).click();
   const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
   await expect(panel.getByLabel('推理权重来源')).toHaveValue('trained');
@@ -74,6 +84,10 @@ test('observes trained weights, preserves identity on rename, invalidates edits,
   expect((await infer(page)).model!.modelId).toBe(metadata.modelId);
   await page.getByRole('button', { name: '层属性', exact: true }).click();
   await page.getByLabel('out_features', { exact: true }).fill('9');
+  // Editing the graph discards the run's metrics, so the panel returns to its empty state
+  // instead of keeping a curve measured on a layer that no longer exists in that form.
+  await expect(layerMetrics.getByRole('slider')).toHaveCount(0);
+  await expect(layerMetrics).toContainText('真实训练后');
   await page.getByRole('button', { name: '张量观测', exact: true }).click();
   await expect(panel).toContainText('当前计算图没有已确认的训练权重');
   await expect(panel.getByRole('button', { name: '运行单样本推理', exact: true })).toBeDisabled();

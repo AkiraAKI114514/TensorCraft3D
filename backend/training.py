@@ -143,7 +143,9 @@ def build_model(graph):
                         value = instance(*args) if index == 0 else instance(value, *args[1:])
                         if op in ("ReLU", "LeakyReLU"): dead += float((value.detach() == 0).float().mean().item())
                     values[key] = value
-                    if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = dead
+                    # A folded node reports the mean over its instances, so the value stays a
+                    # fraction in [0, 1] whatever `repeat` is.
+                    if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = dead / (len(instances) if isinstance(instances, nn.ModuleList) else 1)
                 observe(key, values[key])
             return values[info["output"]]
     return GraphModel(), info
@@ -276,7 +278,12 @@ def train(graph, config, emit, stop, retain_model=None):
             if not torch.isfinite(loss): raise ValueError("Loss became NaN/Inf. Reduce learning rate and inspect inputs")
             loss.backward(); square = 0.0
             for key, layer in model.layers.items():
-                value = sum(float(p.grad.detach().square().sum().item()) for p in layer.parameters() if p.grad is not None)
+                parameters = list(layer.parameters())
+                # A layer that owns no parameters has no gradient norm. Reporting 0 for it would
+                # be indistinguishable from "no gradient reaches this layer", which is the reading
+                # a per-layer chart exists to surface.
+                if not parameters: continue
+                value = sum(float(p.grad.detach().square().sum().item()) for p in parameters if p.grad is not None)
                 norm = math.sqrt(value)
                 if not math.isfinite(norm): raise ValueError(f"Layer {key} gradient became NaN/Inf")
                 norms[key] = norms.get(key, 0) + norm; square += value
