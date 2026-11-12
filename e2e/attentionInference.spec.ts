@@ -28,7 +28,17 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), graph);
 });
 
+// This file sorts first, so the training below is the first one the CI server process ever
+// runs. The first optimizer step lazily imports torch._dynamo and sympy, about 790 modules; the
+// two epochs themselves take roughly 20 ms each, so that import is the whole cost. On a hosted
+// Windows runner the whole test measured 49 s on two green runs and then ran out of its 30 s
+// training wait on a third, with the status still at "准备数据" and nothing else wrong. That is
+// a budget too tight for a cold start, not a regression, so give the cold start its own budget
+// the same way the slow scene cases in editing.spec.ts have one.
+const coldTrainingTimeout = 90_000;
+
 test('observes actual cross-attention heads, offsets, KV groups and trained state on CPU/CUDA', async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   let calls = 0; page.on('request', request => { if (request.url().endsWith('/api/infer')) calls++; });
   await page.goto('/');
@@ -79,7 +89,7 @@ test('observes actual cross-attention heads, offsets, KV groups and trained stat
   await page.getByLabel('合成样本数', { exact: true }).fill('64');
   await page.locator('label.field-label').filter({ hasText: '计算设备' }).locator('select').selectOption('cpu');
   await page.getByRole('button', { name: '开始真实训练', exact: true }).click();
-  await expect(page.locator('.train-status')).toContainText('训练完成', { timeout: 30000 });
+  await expect(page.locator('.train-status')).toContainText('训练完成', { timeout: coldTrainingTimeout });
   await expect(panel.getByLabel('推理权重来源')).toHaveValue('trained');
   response = page.waitForResponse('**/api/infer'); await run.click();
   const trained = await waitForReport(await response);
