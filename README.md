@@ -4,6 +4,8 @@
 
 A local **3D neural network workbench**: build visually or import PyTorch code, explore your model, run real training, then export code and diagrams. Chinese and English UI supported.
 
+![The TensorCraft3D workbench: a residual CNN in the 3D view, the loss curves of a finished training run, and the selected convolution's own gradient-norm curve in the properties panel](docs/images/workbench.png)
+
 ## ✨ What can you do?
 
 | Feature | What you get |
@@ -11,11 +13,22 @@ A local **3D neural network workbench**: build visually or import PyTorch code, 
 | **Build visually** | Drag in layers, wire nodes and edit parameters. See shapes and parameter counts update, with checks for invalid connections. |
 | **Explore in 3D** | Explore CNNs, MLPs, residual networks and Transformers in 3D and topology views, including Attention's Q/K/V, heads and shared projections. |
 | **Use your code** | Import supported PyTorch source, preview and edit its structure, then export a runnable `nn.Module`. |
-| **Train for real** | Train on synthetic data or a local CSV using CPU / CUDA. Track real loss, accuracy, gradients and risk warnings. |
-| **Inspect tensors** | Inspect tensor values, statistics and distributions with single-sample inference; view Q/K/V, scores and probability heatmaps in Attention Inspector. |
+| **Train for real** | Train on synthetic data or a local CSV using CPU / CUDA. Track real loss, accuracy and risk warnings, plus the selected layer's own gradient-norm curve. |
+| **Inspect tensors** | Inspect tensor values, statistics and distributions with single-sample inference; read a slice as a feature map with a channel grid or as a position × feature heatmap, and view Q/K/V, scores and probabilities in Attention Inspector. |
 | **Save and share** | Autosave, undo/redo, project JSON import/export, plus high-resolution PNG and editable SVG diagrams. |
 
 **Templates:** CNN · MLP · Residual CNN · Transformer Encoder · MQA · GQA · Cross-Attention. You can also start with a blank canvas.
+
+<table>
+  <tr>
+    <td width="68%"><img src="docs/images/export-transformer.png" alt="Exported diagram of a two-layer Transformer encoder: Q/K/V projections, LayerNorm, FFN and both residual paths, wrapped onto two rows"></td>
+    <td><img src="docs/images/channel-grid.png" alt="Channel grid from the Tensor Inspector: the measured feature maps of a convolution's sixteen channels on one shared colour scale" width="234"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A diagram exported from the Transformer Encoder template</sub></td>
+    <td align="center"><sub>Measured feature maps, one tile per channel</sub></td>
+  </tr>
+</table>
 
 ## 🚀 Quick start (Windows)
 
