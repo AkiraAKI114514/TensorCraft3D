@@ -461,8 +461,8 @@ class Parser:
             "Upsample": (["size", "scale_factor", "mode", "align_corners", "recompute_scale_factor", "antialias"], {"size": None, "scale_factor": None, "mode": "nearest", "align_corners": None, "recompute_scale_factor": None, "antialias": False}),
             "MultiheadAttention": (["embed_dim", "num_heads", "dropout", "bias", "add_bias_kv", "add_zero_attn", "kdim", "vdim", "batch_first", "device", "dtype"], {"dropout": 0.0, "bias": True, "add_bias_kv": False, "add_zero_attn": False, "kdim": None, "vdim": None, "batch_first": False, "device": None, "dtype": None}),
             "TransformerEncoderLayer": (["d_model", "nhead", "dim_feedforward", "dropout", "activation", "layer_norm_eps", "batch_first", "norm_first", "bias", "device", "dtype"], {"dim_feedforward": 2048, "dropout": 0.1, "activation": "relu", "layer_norm_eps": 1e-5, "batch_first": False, "norm_first": False, "bias": True, "device": None, "dtype": None}),
-            "TensorLabAttention": (["embed_dim", "num_heads", "kv_heads", "dropout", "attention_type", "branches"], {"num_heads": 1, "kv_heads": None, "dropout": 0.1, "attention_type": "self", "branches": 1}),
-            "TensorLabTransformer": (["embed_dim", "num_heads", "kv_heads", "ff_dim", "dropout", "attention_type", "branches", "norm_first", "activation"], {"num_heads": 1, "kv_heads": None, "ff_dim": 128, "dropout": 0.1, "attention_type": "self", "branches": 1, "norm_first": True, "activation": "gelu"}),
+            "TensorLabAttention": (["embed_dim", "num_heads", "kv_heads", "dropout", "attention_type", "branches", "causal"], {"num_heads": 1, "kv_heads": None, "dropout": 0.1, "attention_type": "self", "branches": 1, "causal": False}),
+            "TensorLabTransformer": (["embed_dim", "num_heads", "kv_heads", "ff_dim", "dropout", "attention_type", "branches", "norm_first", "activation", "causal"], {"num_heads": 1, "kv_heads": None, "ff_dim": 128, "dropout": 0.1, "attention_type": "self", "branches": 1, "norm_first": True, "activation": "gelu", "causal": False}),
         }
         if kind == "TransformerEncoder":
             if not expression.args: raise ImportIssue("TransformerEncoder 缺少编码器层", expression)
@@ -575,6 +575,11 @@ class Parser:
             expected = args["embed_dim"]; params = args.copy()
             if params["kv_heads"] is None: params["kv_heads"] = 1 if params["attention_type"] == "multi_query" else params["num_heads"]
             if kind == "TensorLabTransformer": params["norm_first"] = int(bool(params["norm_first"]))
+            # `causal` is stored only when it is on, so a graph that never used a mask keeps the
+            # exact parameters it had before the flag existed.
+            causal = params.pop("causal")
+            if type(causal) is not bool: raise ImportIssue("causal 需要布尔常量 True 或 False", expression)
+            if causal: params["causal"] = 1
             kind = "Transformer" if kind == "TensorLabTransformer" else "MultiHeadAttention"
         return Module(kind, params=params, expected=expected, node=expression)
 

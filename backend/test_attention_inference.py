@@ -98,6 +98,32 @@ class AttentionInspectorRuntimeTests(unittest.TestCase):
         actual = torch.tensor(item["tensors"]["headOutput"]["slice"]["values"])
         torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
+    def test_causal_mask_is_reported_and_the_recomputed_matrices_reproduce_the_executed_head(self):
+        for kind, kv_heads, transformer in (("self", 4, False), ("multi_query", 1, False), ("grouped_query", 2, True)):
+            with self.subTest(kind=kind):
+                graph = attention_graph(kind=kind, kv_heads=kv_heads, transformer=transformer)
+                graph["nodes"][1]["params"]["causal"] = 1
+                item = run_inference(self.request(graph, selection={"head": 2}))["attentions"][0]
+                self.assertEqual(item["mask"], "causal")
+                probabilities = torch.tensor(item["tensors"]["probabilities"]["slice"]["values"])
+                future = torch.ones(5, 5, dtype=torch.bool).triu(1)
+                # Every key after the query's own position is exactly zero, not merely small, and
+                # what remains is still a distribution.
+                self.assertTrue((probabilities[future] == 0).all())
+                self.assertTrue((probabilities[~future] > 0).all())
+                torch.testing.assert_close(probabilities.sum(-1), torch.ones(5), atol=1e-5, rtol=0)
+                # Scores stay the unmasked product: all finite, including above the diagonal.
+                self.assertEqual(item["tensors"]["scores"]["nonFiniteCount"], 0)
+                self.assertEqual(item["tensors"]["probabilities"]["nonFiniteCount"], 0)
+                scores = torch.tensor(item["tensors"]["scores"]["slice"]["values"])
+                torch.testing.assert_close(scores.masked_fill(future, float("-inf")).softmax(-1), probabilities, atol=1e-5, rtol=1e-5)
+                # The head output is what the real SDPA produced with `is_causal`; the recomputed
+                # probabilities have to reproduce it, or the inspector is showing another model.
+                values = torch.tensor(item["tensors"]["v"]["slice"]["values"])
+                actual = torch.tensor(item["tensors"]["headOutput"]["slice"]["values"])
+                torch.testing.assert_close(actual, probabilities @ values, atol=1e-5, rtol=1e-5)
+        self.assertEqual(run_inference(self.request(attention_graph()))["attentions"][0]["mask"], "none")
+
     def test_observer_does_not_change_output_or_global_rng(self):
         graph = attention_graph()
         model, _ = build_model(graph)

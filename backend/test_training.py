@@ -285,6 +285,66 @@ class TrainingTests(unittest.TestCase):
         self.assertGreater(metrics[0]["layerGradients"]["layer_1"], 0)
         self.assertEqual(messages[-1]["reason"], "completed")
 
+    def test_causal_attention_cannot_see_later_positions_and_matches_a_hand_built_mask(self):
+        import math
+        import torch
+        from .attention import TensorLabAttention
+        torch.manual_seed(0)
+        for kind, heads, kv_heads in (("self", 2, 2), ("multi_query", 4, 1), ("grouped_query", 4, 2)):
+            with self.subTest(kind=kind):
+                layer = TensorLabAttention(8, heads, kv_heads, 0.0, kind, causal=True).eval()
+                x = torch.randn(2, 5, 8)
+                later = x.clone(); later[:, 3:] += torch.randn(2, 2, 8)
+                base, moved = layer(x), layer(later)
+                # Positions 0..2 cannot attend to positions 3..4, so changing those leaves the
+                # earlier outputs exactly where they were.
+                torch.testing.assert_close(moved[:, :3], base[:, :3], atol=1e-6, rtol=0)
+                self.assertFalse(torch.allclose(moved[:, 3:], base[:, 3:]))
+                # The same weights without the mask do see them, so the check above is not vacuous.
+                full = TensorLabAttention(8, heads, kv_heads, 0.0, kind).eval(); full.load_state_dict(layer.state_dict())
+                self.assertFalse(torch.allclose(full(later)[:, :3], full(x)[:, :3]))
+                # And the result is the textbook computation, written out without `is_causal`.
+                branch = layer.branches[0]; head_dim = 8 // heads
+                q = branch.q_proj(x).view(2, 5, heads, head_dim).transpose(1, 2)
+                k = branch.k_proj(x).view(2, 5, kv_heads, head_dim).transpose(1, 2).repeat_interleave(heads // kv_heads, dim=1)
+                v = branch.v_proj(x).view(2, 5, kv_heads, head_dim).transpose(1, 2).repeat_interleave(heads // kv_heads, dim=1)
+                scores = (q @ k.transpose(-2, -1)) / math.sqrt(head_dim)
+                weights = scores.masked_fill(torch.ones(5, 5, dtype=torch.bool).triu(1), float("-inf")).softmax(-1)
+                expected = branch.out_proj((weights @ v).transpose(1, 2).reshape(2, 5, 8))
+                torch.testing.assert_close(base, expected, atol=1e-5, rtol=1e-5)
+
+    def test_causal_flag_reaches_the_built_model_and_is_refused_where_it_means_nothing(self):
+        import torch
+        from .attention import TensorLabAttention
+        for op in ("MultiHeadAttention", "Transformer"):
+            with self.subTest(op=op):
+                graph = transformer_graph(op); graph["nodes"][1]["params"]["causal"] = 1
+                model, info = build_model(graph)
+                layer = model.layers["layer_1"]
+                self.assertTrue((layer.attention if op == "Transformer" else layer).causal)
+                # The flag owns no parameters.
+                plain = transformer_graph(op)
+                self.assertEqual(info["totalParameters"], analyze_graph(plain)["totalParameters"])
+                self.assertFalse((build_model(plain)[0].layers["layer_1"].attention if op == "Transformer" else build_model(plain)[0].layers["layer_1"]).causal)
+                # Through LayerNorm, the residual and the position-wise FFN the layer stays causal.
+                model.eval(); x = torch.randn(1, 4, 8); later = x.clone(); later[:, 2:] += 1.0
+                captured = {}
+                model(x, observer=captured.__setitem__); first = captured["layer_1"]
+                model(later, observer=captured.__setitem__)
+                torch.testing.assert_close(captured["layer_1"][:, :2], first[:, :2], atol=1e-6, rtol=0)
+        # Cross-attention has no "later" key positions, and a K/V of another length has no square mask.
+        cross = cross_graph(); cross["nodes"][1]["params"]["causal"] = 1
+        with self.assertRaisesRegex(ValueError, "causal"): analyze_graph(cross)
+        with self.assertRaisesRegex(ValueError, "self-attention"): TensorLabAttention(8, 2, 1, 0.0, "cross", causal=True)
+        with self.assertRaisesRegex(ValueError, "boolean"): TensorLabAttention(8, 2, 2, 0.0, "self", causal=1)
+        longer = transformer_graph("MultiHeadAttention"); longer["nodes"][1]["params"]["causal"] = 1
+        longer["nodes"].append({"id": "memory", "op": "Input", "params": {"shape": [1, 6, 8]}})
+        longer["edges"].extend({"source": "memory", "target": "layer_1", "targetPort": f"b0:{role}{index}"} for role in ("k", "v") for index in range(2))
+        with self.assertRaisesRegex(ValueError, "causal"): analyze_graph(longer)
+        for value in (2, -1, 0.5, "1"):
+            invalid = transformer_graph(); invalid["nodes"][1]["params"]["causal"] = value
+            with self.assertRaises(ValueError): analyze_graph(invalid)
+
     def test_architectures_forward_backward_and_exact_parameters(self):
         import torch
         torch.manual_seed(0)

@@ -21,6 +21,9 @@ groups = [n for n in r["graph"]["nodes"] if n["op"] == "Group"]
 assert len(groups) == p["groups"], ("group count", len(groups), p["groups"])
 if groups and p["repeat"]:
     assert groups[0].get("repeat") == p["repeat"], ("repeat", groups[0].get("repeat"), p["repeat"])
+if "causal" in p:
+    flags = [n["params"].get("causal", 0) for n in r["graph"]["nodes"] if n["op"] in ("Transformer", "MultiHeadAttention")]
+    assert flags == p["causal"], ("causal flags", flags, p["causal"])
 imported, info = build_model(r["graph"])
 assert info["totalParameters"] == p["parameters"], (info["totalParameters"], p["parameters"])
 assert sum(v.numel() for v in imported.parameters()) == p["parameters"]
@@ -91,6 +94,37 @@ function roundtrip(graph: Graph, groups: number, repeat: number | null, inputs: 
   const result = execFileSync('.venv/Scripts/python.exe', ['-c', SCRIPT], { input: JSON.stringify({ code, parameters: analysis.parameters, groups, repeat, inputs, forward }), encoding: 'utf8', timeout });
   return { analysis, code, result };
 }
+
+describe('causal attention export roundtrip', () => {
+  it.each([['Transformer'], ['MultiHeadAttention']])('writes causal=True for a %s and reads it back as the same computation', op => {
+    const graph = repeatedAttention(undefined, op);
+    graph.nodes[1].params = { ...graph.nodes[1].params, causal: 1 };
+    const analysis = analyze(graph), code = generatePython(graph);
+    expect(analysis.valid, JSON.stringify(analysis.diagnostics)).toBe(true);
+    expect(code).toMatch(new RegExp(`TensorLab${op === 'Transformer' ? 'Transformer' : 'Attention'}\\(embed_dim=8[^\\n]*, causal=True\\)`));
+    // The script runs the exported module and the re-imported graph on the same weights and
+    // input and requires equal outputs, so the mask has to survive both directions.
+    const result = execFileSync('.venv/Scripts/python.exe', ['-c', SCRIPT], { input: JSON.stringify({ code, parameters: analysis.parameters, groups: 0, repeat: null, inputs: { n0: [2, 4, 8] }, causal: [1] }), encoding: 'utf8', timeout: 60000 });
+    expect(result).toContain('matched');
+  }, 60000);
+
+  it('leaves an unmasked attention exactly as it was exported before the flag existed', () => {
+    const plain = repeatedAttention(), off = repeatedAttention();
+    off.nodes[1].params = { ...off.nodes[1].params, causal: 0 };
+    const code = generatePython(plain);
+    expect(generatePython(off)).toBe(code);
+    expect(code).not.toMatch(/TensorLabTransformer\(embed_dim=8[^\n]*causal/);
+    const result = execFileSync('.venv/Scripts/python.exe', ['-c', SCRIPT], { input: JSON.stringify({ code, parameters: analyze(plain).parameters, groups: 0, repeat: null, inputs: { n0: [2, 4, 8] }, causal: [0] }), encoding: 'utf8', timeout: 60000 });
+    expect(result).toContain('matched');
+  }, 60000);
+
+  it('refuses to export a mask where it means nothing', () => {
+    const cross = crossAttention();
+    cross.nodes[2].params = { ...cross.nodes[2].params, causal: 1 };
+    expect(analyze(cross).valid).toBe(false);
+    expect(() => generatePython(cross)).toThrow();
+  });
+});
 
 describe('repeated attention export roundtrip', () => {
   it.each([[2], [3], [6]])('reimports a self-attention folded %i times as one Group', repeat => {

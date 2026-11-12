@@ -107,6 +107,40 @@ test('observes actual cross-attention heads, offsets, KV groups and trained stat
   expect(errors).toEqual([]);
 });
 
+test('turns the causal mask on in the properties panel and observes it in the executed head', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const causal = PRESETS.mqa(); causal.name = 'Causal fixture';
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), causal);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByLabel('causal', { exact: true }).selectOption('1');
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  const response = page.waitForResponse('**/api/infer');
+  await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
+  const item = (await waitForReport(await response)).attentions[0];
+  expect(item.mask).toBe('causal');
+  // 16 positions: every key after the query's own is exactly zero and each row still sums to one.
+  const values = item.tensors.probabilities.slice.values;
+  expect(values).toHaveLength(16);
+  values.forEach((row, query) => {
+    row.forEach((value, key) => { if (key > query) expect(value).toBe(0); else expect(value).toBeGreaterThan(0); });
+    expect(row.reduce<number>((sum, value) => sum + value!, 0)).toBeCloseTo(1, 4);
+  });
+  expect(item.tensors.scores.nonFiniteCount).toBe(0);
+  const attention = panel.getByRole('region', { name: 'Attention Inspector', exact: true });
+  await expect(attention).toContainText('causal 掩码 · dropout=0');
+  await expect(attention.locator('.matrix-mask-layer')).toHaveCount(16 * 15 / 2);
+  // Projections are not masked, only what the softmax consumes and produces.
+  await attention.getByLabel('Attention 内部张量').selectOption('q');
+  await expect(attention.locator('.matrix-mask-layer')).toHaveCount(0);
+  // The exported module carries the flag, so the standalone code computes the same thing.
+  await page.getByRole('button', { name: '导出代码', exact: true }).click();
+  await expect(page.locator('.code-preview, pre').first()).toContainText('causal=True');
+  expect(errors).toEqual([]);
+});
+
 test('keeps attention requests bounded and reports resource errors without a silent fallback', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '张量观测', exact: true }).click();

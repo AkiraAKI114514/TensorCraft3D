@@ -203,7 +203,7 @@ export function generatePython(graph: Graph) {
         case 'MultiHeadAttention':
         case 'Transformer': {
           const cfg = attentionConfig(p);
-          expr = `${node.op === 'Transformer' ? 'TensorLabTransformer' : 'TensorLabAttention'}(embed_dim=${p.embed_dim ?? 64}, num_heads=${cfg.heads}, kv_heads=${cfg.kvHeads}, dropout=${p.dropout ?? 0.1}, attention_type=${JSON.stringify(cfg.type)}, branches=${cfg.branches}${node.op === 'Transformer' ? `, ff_dim=${p.ff_dim ?? 128}, norm_first=${Number(p.norm_first ?? 1) ? 'True' : 'False'}, activation=${JSON.stringify(p.activation ?? 'gelu')}` : ''})`;
+          expr = `${node.op === 'Transformer' ? 'TensorLabTransformer' : 'TensorLabAttention'}(embed_dim=${p.embed_dim ?? 64}, num_heads=${cfg.heads}, kv_heads=${cfg.kvHeads}, dropout=${p.dropout ?? 0.1}, attention_type=${JSON.stringify(cfg.type)}, branches=${cfg.branches}${node.op === 'Transformer' ? `, ff_dim=${p.ff_dim ?? 128}, norm_first=${Number(p.norm_first ?? 1) ? 'True' : 'False'}, activation=${JSON.stringify(p.activation ?? 'gelu')}` : ''}${Number(p.causal ?? 0) ? ', causal=True' : ''})`;
           break;
         }
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;

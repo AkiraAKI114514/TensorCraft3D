@@ -63,6 +63,8 @@ export const diagnosticEnglish: Record<string, string> = {
   '每个 Q/K/V 端口只能指定一个输入对象': 'Each Q/K/V port can have only one input object',
   '{label} 输入需要 [B,S,embed_dim]，Q 序列长度与 Query 一致': '{label} input must be [B,S,embed_dim], with Q sequence length matching Query',
   '同一分支 K/V 的序列长度必须一致': 'K/V sequence lengths must match within the same branch',
+  'causal 掩码只适用于自注意力，Cross-Attention 不支持': 'A causal mask applies to self-attention only; Cross-Attention does not support it',
+  'causal 掩码要求 K/V 序列长度与 Query 一致': 'A causal mask requires the K/V sequence length to equal the Query length',
   'dropout 需要在 [0,1) 范围内': 'dropout must be in the range [0,1)',
   '注意力矩阵超过 1600 万元素，请减少序列长度或头数': 'The attention matrix exceeds 16 million elements; reduce the sequence length or number of heads',
   '编码器 activation 需要为 relu 或 gelu': 'Encoder activation must be relu or gelu',

@@ -410,9 +410,18 @@ def _capture_attention(node_id: str, selection: AttentionSelection, record: dict
     native_v = record["v"][0, selection.head // record["repeats"]]
     weighted = record["weighted"][0, selection.head]
     scale = 1.0 / math.sqrt(q.shape[-1])
+    causal = bool(record["params"].get("causal"))
     with torch.no_grad():
         scores = (q.float() @ native_k.float().transpose(-2, -1)) * scale
-        probabilities = torch.softmax(scores, dim=-1)
+        if causal:
+            # The executed SDPA sets every key after the query's own position to -inf before the
+            # softmax. `scores` stays the unmasked product, so its statistics are those of real
+            # numbers; the mask is applied to what the softmax receives, which makes the masked
+            # probabilities exactly zero.
+            future = torch.ones(scores.shape[-2:], dtype=torch.bool, device=scores.device).triu(1)
+            probabilities = torch.softmax(scores.masked_fill(future, float("-inf")), dim=-1)
+        else:
+            probabilities = torch.softmax(scores, dim=-1)
     tensors = {
         "q": _attention_matrix("q", q, selection.queryStart, 0, torch),
         "k": _attention_matrix("k", native_k, selection.keyStart, 0, torch),
@@ -430,7 +439,7 @@ def _capture_attention(node_id: str, selection: AttentionSelection, record: dict
         "kvHead": selection.head // record["repeats"], "numHeads": int(params["heads"]),
         "kvHeads": int(params["kv_heads"]), "branches": int(params["branches"]),
         "headDim": int(q.shape[-1]), "queryLength": int(q.shape[-2]), "keyLength": int(native_k.shape[-2]),
-        "scale": scale, "mask": "none", "dropout": 0, "scoreSource": "projected-qk",
+        "scale": scale, "mask": "causal" if causal else "none", "dropout": 0, "scoreSource": "projected-qk",
         "outputSource": "scaled_dot_product_attention", "tensors": tensors,
     }
 
@@ -500,7 +509,7 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
                 params = by_id[node_id]["params"]
                 heads = int(params.get("num_heads", 1))
                 kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
-                record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1))}
+                record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1)), "causal": bool(params.get("causal", 0))}
                 record["repeats"] = heads // kv_heads
                 record["merged"] = tensors["output"].detach()
                 attention_results[node_id] = _capture_attention(node_id, selection, record, torch)

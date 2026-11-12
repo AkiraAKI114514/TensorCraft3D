@@ -57,7 +57,8 @@ export interface AttentionSnapshot extends AttentionSelection {
   queryLength: number;
   keyLength: number;
   scale: number;
-  mask: 'none';
+  /** `causal`: every key after the query's own position was set to −∞ before the softmax. */
+  mask: 'none' | 'causal';
   dropout: 0;
   scoreSource: 'projected-qk';
   outputSource: 'scaled_dot_product_attention';

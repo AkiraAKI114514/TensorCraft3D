@@ -1,6 +1,7 @@
 """Attention runtime shared by real training and standalone Python exports.
 
-BSE tensors; non-causal full attention. Independent branches are averaged.
+BSE tensors. Attention is full by default; `causal=True` masks every key position after
+the query's own, for self-attention only. Independent branches are averaged.
 """
 import torch
 from torch import nn
@@ -8,12 +9,13 @@ from torch.nn import functional as F
 
 
 class AttentionBranch(nn.Module):
-    def __init__(self, embed_dim, num_heads, kv_heads, dropout):
+    def __init__(self, embed_dim, num_heads, kv_heads, dropout, causal=False):
         super().__init__()
         self.num_heads = num_heads
         self.kv_heads = kv_heads
         self.head_dim = embed_dim // num_heads
         self.dropout = dropout
+        self.causal = bool(causal)
         kv_dim = self.head_dim * kv_heads
         self.q_proj = nn.Linear(embed_dim, embed_dim)
         self.k_proj = nn.Linear(embed_dim, kv_dim)
@@ -48,7 +50,12 @@ class AttentionBranch(nn.Module):
         repeats = self.num_heads // self.kv_heads
         k = k_native.repeat_interleave(repeats, dim=1) if repeats > 1 else k_native
         v = v_native.repeat_interleave(repeats, dim=1) if repeats > 1 else v_native
-        result_heads = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
+        # A causal mask is square by definition: position t may attend to keys 0..t. A K/V
+        # override of another length would make torch build a rectangular lower triangle that
+        # means nothing, so refuse it here as well as in the graph analyzers.
+        if self.causal and k.shape[-2] != query_length:
+            raise ValueError("Causal attention requires the key length to equal the query length")
+        result_heads = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0, is_causal=self.causal)
         if observer is not None:
             observer("weighted", branch_index, {"weighted": result_heads})
         result = result_heads.transpose(1, 2).contiguous().view(batch, query_length, embed)
@@ -59,7 +66,7 @@ class AttentionBranch(nn.Module):
 
 
 class TensorLabAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads=1, kv_heads=None, dropout=0.1, attention_type="self", branches=1):
+    def __init__(self, embed_dim, num_heads=1, kv_heads=None, dropout=0.1, attention_type="self", branches=1, causal=False):
         super().__init__()
         kv_heads = (1 if attention_type == "multi_query" else num_heads) if kv_heads is None else kv_heads
         if attention_type not in ("self", "multi_query", "grouped_query", "cross", "multi_branch"):
@@ -74,10 +81,17 @@ class TensorLabAttention(nn.Module):
             raise ValueError("MQA requires kv_heads = 1")
         if attention_type == "multi_branch" and branches < 2:
             raise ValueError("Multi-Branch attention requires at least two branches")
+        if not isinstance(causal, bool):
+            raise ValueError("causal must be a boolean")
+        # Query and Context are different sequences in cross-attention, so "positions after
+        # the query's own" has no meaning there.
+        if causal and attention_type == "cross":
+            raise ValueError("Causal masking applies to self-attention only")
         self.attention_type = attention_type
         self.num_heads = num_heads
         self.kv_heads = kv_heads
-        self.branches = nn.ModuleList([AttentionBranch(embed_dim, num_heads, kv_heads, dropout) for _ in range(branches)])
+        self.causal = causal
+        self.branches = nn.ModuleList([AttentionBranch(embed_dim, num_heads, kv_heads, dropout, causal) for _ in range(branches)])
 
     def forward(self, query, context=None, observer=None):
         return self.forward_with_ports(query, context, observer=observer)[0]
@@ -103,12 +117,12 @@ class TensorLabAttention(nn.Module):
 
 
 class TensorLabTransformer(nn.Module):
-    def __init__(self, embed_dim, num_heads=1, kv_heads=None, ff_dim=128, dropout=0.1, attention_type="self", branches=1, norm_first=True, activation="gelu"):
+    def __init__(self, embed_dim, num_heads=1, kv_heads=None, ff_dim=128, dropout=0.1, attention_type="self", branches=1, norm_first=True, activation="gelu", causal=False):
         super().__init__()
         if activation not in ("relu", "gelu"):
             raise ValueError("Encoder activation must be relu or gelu")
         self.norm_first = bool(norm_first)
-        self.attention = TensorLabAttention(embed_dim, num_heads, kv_heads, dropout, attention_type, branches)
+        self.attention = TensorLabAttention(embed_dim, num_heads, kv_heads, dropout, attention_type, branches, causal)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)

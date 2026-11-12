@@ -1085,6 +1085,114 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "attention_causal_keeps_shape_and_parameters",
+      "graph": {
+        "version": 1, "name": "attention_causal_keeps_shape_and_parameters",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 8], "parameters": 288 }
+    },
+    {
+      "id": "attention_causal_accepts_an_integral_float",
+      "graph": {
+        "version": 1, "name": "attention_causal_accepts_an_integral_float",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "Transformer", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 1, "attention_type": "multi_query", "branches": 1, "ff_dim": 16, "dropout": 0, "causal": 1.0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 8], "parameters": 528 }
+    },
+    {
+      "id": "attention_causal_rejects_cross_attention",
+      "graph": {
+        "version": 1, "name": "attention_causal_rejects_cross_attention",
+        "nodes": [
+          { "id": "n0", "name": "Query", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cross", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "cross", "branches": 1, "dropout": 0, "causal": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Context", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1", "targetPort": "query" },
+          { "id": "e1", "source": "n3", "target": "n1", "targetPort": "context" },
+          { "id": "e2", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "attention_causal_rejects_keys_of_another_length",
+      "graph": {
+        "version": 1, "name": "attention_causal_rejects_keys_of_another_length",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Memory", "op": "Input", "params": {"shape": [2, 9, 8]}, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n3", "target": "n1", "targetPort": "b0:k0" },
+          { "id": "e2", "source": "n3", "target": "n1", "targetPort": "b0:k1" },
+          { "id": "e3", "source": "n3", "target": "n1", "targetPort": "b0:v0" },
+          { "id": "e4", "source": "n3", "target": "n1", "targetPort": "b0:v1" },
+          { "id": "e5", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "attention_keys_of_another_length_are_fine_without_a_mask",
+      "graph": {
+        "version": 1, "name": "attention_keys_of_another_length_are_fine_without_a_mask",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Full", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Memory", "op": "Input", "params": {"shape": [2, 9, 8]}, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n3", "target": "n1", "targetPort": "b0:k0" },
+          { "id": "e2", "source": "n3", "target": "n1", "targetPort": "b0:k1" },
+          { "id": "e3", "source": "n3", "target": "n1", "targetPort": "b0:v0" },
+          { "id": "e4", "source": "n3", "target": "n1", "targetPort": "b0:v1" },
+          { "id": "e5", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 8], "parameters": 288 }
+    },
+    {
+      "id": "attention_causal_rejects_a_value_that_is_not_a_flag",
+      "graph": {
+        "version": 1, "name": "attention_causal_rejects_a_value_that_is_not_a_flag",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 2 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

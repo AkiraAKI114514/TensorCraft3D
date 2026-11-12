@@ -259,6 +259,14 @@ function analyzeExpanded(graph: Graph): Analysis {
           const lengths = projectionPorts(n).filter(p => p.branch === b && p.role !== 'Q').map(p => portShapes[p.id][1]);
           if (new Set(lengths).size !== 1) throw new Error('同一分支 K/V 的序列长度必须一致');
         }
+        // A causal mask lets position t attend to keys 0..t, which only means something when
+        // keys and queries are the same positions: self-attention, with every K/V the query's
+        // own length. Cross-attention and a K/V override of another length are refused rather
+        // than given a rectangular triangle. backend/graph.py makes the same call.
+        if (integer('causal', 0, 0, 1)) {
+          if (type === 'cross') throw new Error('causal 掩码只适用于自注意力，Cross-Attention 不支持');
+          if (Array.from({ length: branches }, (_, b) => portShapes[`b${b}:k0`][1]).some(length => length !== output[1])) throw new Error('causal 掩码要求 K/V 序列长度与 Query 一致');
+        }
         const dropout = n.params.dropout ?? 0.1;
         if (typeof dropout !== 'number' || !Number.isFinite(dropout) || dropout < 0 || dropout >= 1) throw new Error('dropout 需要在 [0,1) 范围内');
         const attentionElements = output[0] * heads * output[1] * Array.from({ length: branches }, (_, b) => portShapes[`b${b}:k0`][1]).reduce((a, b) => a + b, 0);

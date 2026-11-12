@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import AttentionMatrix, { matrixStep } from './AttentionMatrix';
 import AttentionInspector from './AttentionInspector';
+import { I18nProvider } from './i18n';
 import type { AttentionMatrix as Matrix, AttentionSnapshot } from './inferenceTypes';
 
 const matrix: Matrix = {
@@ -56,5 +57,28 @@ describe('bounded attention presentation', () => {
     expect(markup).toContain('最终输出还包含残差与 FFN');
     expect(markup).toContain('分支输出 · Wₒ 后');
     expect(markup).toContain('Head 输出 · 实际 SDPA');
+    // 没有掩码时不出现任何掩码标记。
+    expect(markup).not.toContain('matrix-mask-layer');
+    expect(markup).not.toContain('causal');
+  });
+
+  it('marks the keys a causal mask hides by their position in the full matrix, not in the window', () => {
+    // 窗口从 Key 1 开始：Query 0 的两个格子（Key 1、2）都在自己之后，Query 1 只有 Key 2 在之后。
+    const markup = renderToStaticMarkup(<AttentionInspector snapshot={{ ...snapshot, mask: 'causal' }} transformer={false} />);
+    expect(markup).toContain('causal 掩码 · dropout=0');
+    expect(markup).not.toContain('无 mask');
+    expect(markup).toContain('斜线格被 causal 掩码屏蔽');
+    expect(markup.match(/class="matrix-mask-layer"/g)).toHaveLength(3);
+    expect(markup).toContain('Query 0 · Key 1：-2 · 已被 causal 掩码屏蔽');
+    expect(markup).toContain('aria-label="Softmax 概率 · Query 1 · Key 1：2"');
+    expect(markup.match(/class="matrix-masked-value"/g)).toHaveLength(3);
+  });
+
+  it('only masks score and probability matrices, and translates the mask wording', () => {
+    const projections = renderToStaticMarkup(<AttentionMatrix matrix={matrix} title="Q" />);
+    expect(projections).not.toContain('matrix-mask-layer');
+    const english = renderToStaticMarkup(<I18nProvider initialLanguage="en"><AttentionInspector snapshot={{ ...snapshot, mask: 'causal' }} transformer={false} /></I18nProvider>);
+    expect(english).not.toMatch(/[㐀-鿿]/);
+    expect(english).toContain('masked by the causal mask');
   });
 });

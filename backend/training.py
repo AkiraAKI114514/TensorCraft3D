@@ -68,7 +68,7 @@ def build_model(graph):
                     elif op == "Softplus": return nn.Softplus(float(p.get("beta", 1.0)), float(p.get("threshold", 20.0)))
                     elif op in ("Softmax", "LogSoftmax"): return getattr(nn, op)(dim=int(p.get("dim", -1)))
                     elif op in ("MultiHeadAttention", "Transformer"):
-                        args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1))}
+                        args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1)), "causal": bool(p.get("causal", 0))}
                         return TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
                     else: return None
                 try:

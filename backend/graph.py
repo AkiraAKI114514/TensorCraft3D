@@ -419,6 +419,13 @@ def analyze_expanded_graph(graph):
                 for branch in range(branches):
                     lengths = {s[1] for port, s in sources.items() if port.startswith(f"b{branch}:") and ":q" not in port}
                     if len(lengths) != 1: raise ValueError("All K/V lengths within a branch must match")
+                # A causal mask lets position t attend to keys 0..t, which only means something
+                # when keys and queries are the same positions: self-attention, with every K/V
+                # the query's own length. Cross-attention and a K/V override of another length
+                # are refused rather than given a rectangular triangle. Must mirror src/analysis.ts.
+                if integer("causal", 0, 0, 1):
+                    if kind == "cross": raise ValueError(f"{key}: causal masking applies to self-attention only")
+                    if any(sources[f"b{b}:k0"][1] != shape[1] for b in range(branches)): raise ValueError(f"{key}: causal masking requires K/V length equal to the query length")
                 elements = shape[0] * heads * shape[1] * sum(sources[f"b{b}:k0"][1] for b in range(branches))
                 if elements > 16_000_000: raise ValueError("Attention matrix exceeds local limits")
                 activation += elements // shape[0] * 4

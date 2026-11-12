@@ -26,12 +26,15 @@ export default function Parameters({ node, disabled, onUpdate }: { node: Layer; 
   // and that order is only the order its inputs were connected in. Say so where it is edited.
   if (node.op === 'Divide') return <>{repeatField}<p className="muted-text">{t('先连接的输入是被除数，后连接的是除数。除数形状须与被除数一致，或在非 batch 维度上为 1。')}</p></>;
   const attention = isAttention(node.op), cfg = attentionConfig(node.params);
-  const params = { ...DEFAULTS[node.op], ...(node.op === 'Transformer' ? { norm_first: 1, activation: 'gelu' } : {}), ...node.params, ...(attention ? { kv_heads: cfg.kvHeads, branches: cfg.branches, attention_type: cfg.type } : {}) };
+  const params = { ...DEFAULTS[node.op], ...(node.op === 'Transformer' ? { norm_first: 1, activation: 'gelu' } : {}), ...node.params, ...(attention ? { kv_heads: cfg.kvHeads, branches: cfg.branches, attention_type: cfg.type, causal: Number(node.params.causal ?? 0) ? 1 : 0 } : {}) };
   if (!Object.keys(params).length) return <>{repeatField}<p className="muted-text">{t('此算子无可配置参数')}</p></>;
   return <>{repeatField}{Object.entries(params).filter(([key]) => key !== 'qkv_count').map(([key, value]) => key === 'attention_type' ?
     <label className="field-label" key={key}>attention_type<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}>{Object.entries(ATTENTION_TYPES).map(([type, label]) => <option key={type} value={type}>{label}</option>)}</select></label> : key === 'activation' ?
     <label className="field-label" key={key}>activation<select aria-label={key} disabled={disabled} value={String(value)} onChange={e => onUpdate(key, e.target.value)}><option value="gelu">GELU</option><option value="relu">ReLU</option></select></label> : key === 'norm_first' ?
-    <label className="field-label" key={key}>{t('LayerNorm 位置')}<select aria-label={key} disabled={disabled} value={Number(value)} onChange={e => onUpdate(key, Number(e.target.value))}><option value={1}>{t('Pre-Norm · 相加前')}</option><option value={0}>{t('Post-Norm · 相加后')}</option></select></label> :
+    <label className="field-label" key={key}>{t('LayerNorm 位置')}<select aria-label={key} disabled={disabled} value={Number(value)} onChange={e => onUpdate(key, Number(e.target.value))}><option value={1}>{t('Pre-Norm · 相加前')}</option><option value={0}>{t('Post-Norm · 相加后')}</option></select></label> : key === 'causal' ?
+    // Cross-Attention has no causal mask, so the switch is closed there -- but a mask left on from
+    // another type has to stay reachable, or the error it raises could not be cleared.
+    <label className="field-label" key={key}>{t('causal 掩码')}<select aria-label={key} disabled={disabled || (cfg.type === 'cross' && !Number(value))} value={Number(value) ? 1 : 0} onChange={e => onUpdate(key, Number(e.target.value))}><option value={0}>{t('关闭 · 每个位置关注全部位置')}</option><option value={1}>{t('开启 · 只关注当前及之前的位置')}</option></select></label> :
     node.op === 'Slice' && (key === 'start' || key === 'end') ?
     <label className="parameter-field" key={key}><span>{key}</span><input type="text" aria-label={key} disabled={disabled} key={`${node.id}_${key}_${String(value)}`} defaultValue={String(value)} placeholder="none" onBlur={e => { const raw = e.target.value.trim(); if (raw === 'none' || /^-?\d+$/.test(raw)) onUpdate(key, raw === 'none' ? raw : Number(raw)); else e.target.value = String(value); }} /></label> :
     node.op === 'Squeeze' && key === 'dim' ?
