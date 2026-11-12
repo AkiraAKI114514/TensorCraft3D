@@ -61,6 +61,7 @@ CI runs frontend checks on Ubuntu and automatically discovers every `backend/tes
 
 ## The workbench
 
+- The **?** button in the header opens a getting-started checklist of five steps: pick a template, select a layer, run one sample, train, export. It ticks a step when you do it yourself, in any order, and remembers the progress in this browser (`tensorcraft-guide`). Each step's button only navigates — it switches the view or tab, or opens a dialog — and never starts inference or training.
 - Ships with Compact CNN, Feature MLP, Residual CNN, Transformer Encoder, MQA, GQA, Cross-Attention and a blank template. The layer library supports both clicking and dragging into the scene. New layers connect to the currently selected layer and are inserted before the final output.
 - The 3D view generates solid layers from each tensor's spatial dimensions and channels; geometric sizes use a logarithmic mapping so extreme sizes don't occlude each other.
 - Clicking any 3D layer centres rotation and zoom on that layer; attention heads and their QKV, weight matrices, LN, FFN, merge and add modules can each be clicked and centred individually. Add-focused framing keeps the full residual bypass intact while centring on the Add node.

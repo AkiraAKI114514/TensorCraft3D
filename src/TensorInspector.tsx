@@ -12,10 +12,10 @@ import { analyze } from './analysis';
 import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import './TensorInspector.css';
 
-type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void };
+type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void; onObserved?: () => void };
 type Result = { graph: Graph; settings: string; report: InferenceReport };
 
-export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy }: Props) {
+export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy, onObserved }: Props) {
   const { t } = useI18n();
   const [weightMode, setWeightMode] = useState<'random' | 'trained'>(trainedModel ? 'trained' : 'random');
   const modelId = weightMode === 'trained' ? trainedModel?.modelId : undefined;
@@ -70,7 +70,7 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `单样本推理失败 (${response.status})`);
       if (modelId ? body.weights !== 'trained' || body.model?.modelId !== modelId : body.weights !== 'random-initialized') throw new Error('推理返回的权重来源与请求不一致，请更新并重启后端');
       if (attentionNode && attentionReady && !body.attentions?.some((value: { nodeId: string; branch: number; head: number }) => value.nodeId === attentionNode.id && value.branch === attentionSelection.branch && value.head === attentionSelection.head)) throw new Error('推理响应缺少所选 Attention 观测，请更新并重启后端');
-      if (mounted.current) setResult({ graph, settings, report: body as InferenceReport });
+      if (mounted.current) { setResult({ graph, settings, report: body as InferenceReport }); onObserved?.(); }
     } catch (reason) {
       if (mounted.current && (reason as Error).name !== 'AbortError') { setResult(null); setError((reason as Error).message || '无法连接推理服务'); }
     } finally {

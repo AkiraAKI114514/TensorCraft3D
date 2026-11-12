@@ -152,3 +152,49 @@ test('shows CUDA diagnostics and setup without automatically running GPU tests',
   await page.screenshot({ path: testInfo.outputPath('cuda-mobile.png') });
   expect(errors).toEqual([]);
 });
+
+test('the getting-started guide follows what the user does and never runs anything itself', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const inferCalls: string[] = []; page.on('request', request => { if (request.url().endsWith('/api/infer')) inferCalls.push(request.url()); });
+  let sockets = 0; page.on('websocket', () => { sockets++; });
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '上手引导', exact: true }).click();
+  const guide = page.getByRole('region', { name: '上手引导', exact: true });
+  await expect(guide).toContainText('已完成 0 / 5 步');
+  // Each button only navigates: here it moves focus to the template picker.
+  await guide.getByRole('button', { name: '去选模板', exact: true }).click();
+  await expect(page.getByLabel('模型模板')).toBeFocused();
+  await page.getByLabel('模型模板').selectOption('mlp');
+  await expect(guide).toContainText('已完成 1 / 5 步');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node').first().click();
+  await expect(guide).toContainText('已完成 2 / 5 步');
+  // Opening the inspector is not an observation; only the user's own run completes the step.
+  await guide.getByRole('button', { name: '打开张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  const run = panel.getByRole('button', { name: '运行单样本推理', exact: true });
+  await expect(run).toBeEnabled();
+  await expect(guide).toContainText('已完成 2 / 5 步');
+  expect(inferCalls).toHaveLength(0);
+  const response = page.waitForResponse('**/api/infer');
+  await run.click();
+  expect((await response).ok()).toBe(true);
+  await expect(guide).toContainText('已完成 3 / 5 步');
+  // The training step opens the dialog and stops there: no socket, no progress.
+  await guide.getByRole('button', { name: '打开训练设置', exact: true }).click();
+  await expect(page.getByRole('button', { name: '开始真实训练', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
+  expect(sockets).toBe(0);
+  await expect(guide).toContainText('已完成 3 / 5 步');
+  await guide.getByRole('button', { name: '打开代码导出', exact: true }).click();
+  await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
+  await expect(guide).toContainText('已完成 4 / 5 步');
+  // Progress is the user's, so it survives a reload and can be started over.
+  await page.reload();
+  await page.getByRole('button', { name: '上手引导', exact: true }).click();
+  await expect(guide).toContainText('已完成 4 / 5 步');
+  await guide.getByRole('button', { name: '重新开始', exact: true }).click();
+  await expect(guide).toContainText('已完成 0 / 5 步');
+  expect(errors).toEqual([]);
+});
