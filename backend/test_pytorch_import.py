@@ -97,6 +97,52 @@ class PyTorchImportTests(unittest.TestCase):
             "return self.wide(x) * self.narrow(x)")
         self.reject(code, input_shapes={"x": [2, 4, 8]})
 
+    def test_runtime_division_imports_as_divide(self):
+        # A router's renormalisation: positive gate weights divided by their own sum. The
+        # reduction already imported; before Divide existed the `/` that consumes it failed with
+        # "不支持此张量运算".
+        code = module_source(
+            "self.gate = nn.Linear(8, 4)\nself.positive = nn.Softplus()",
+            "w = self.positive(self.gate(x))\nreturn w / w.sum(dim=-1, keepdim=True)")
+        result, model = self.parsed(code, input_shapes={"x": [2, 5, 8]})
+        nodes = result["graph"]["nodes"]
+        self.assertEqual([n["op"] for n in nodes], ["Input", "Linear", "Softplus", "Reduce", "Divide", "Output"])
+        by_op = {n["op"]: n["id"] for n in nodes}
+        # Operand order is edge order, so the dividend has to be the first edge into the node.
+        self.assertEqual([e["source"] for e in result["graph"]["edges"] if e["target"] == by_op["Divide"]], [by_op["Softplus"], by_op["Reduce"]])
+        output = model(torch.randn(2, 5, 8))
+        self.assertEqual(list(output.shape), [2, 5, 4])
+        torch.testing.assert_close(output.sum(-1), torch.ones(2, 5))
+        output.square().sum().backward()
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
+    def test_divide_matches_torch_in_both_operand_orders(self):
+        # Shape cannot tell `x / y` from `y / x`; the values can. Each case is compared against the
+        # same line executed by real torch, including the keepdim divisors that broadcast.
+        tensors = {"x": torch.rand(2, 5, 8) + 0.5, "y": torch.rand(2, 5, 8) + 0.5}
+        cases = (("return x / x.sum(dim=-1, keepdim=True)", "x"), ("return x / x.amax(dim=(1, 2), keepdim=True)", "x"),
+                 ("return x / y", "x, y"), ("return y / x", "x, y"))
+        for forward, inputs in cases:
+            with self.subTest(forward=forward):
+                names = inputs.split(", ")
+                result, model = self.parsed(module_source("", forward, inputs=inputs), input_shapes={name: [2, 5, 8] for name in names})
+                got = model({i["id"]: tensors[i["name"]] for i in result["inputs"]})
+                want = reference_model(forward, inputs)(*(tensors[name] for name in names))
+                self.assertEqual(list(got.shape), list(want.shape))
+                torch.testing.assert_close(got, want)
+
+    def test_divide_rejects_broadcasts_it_cannot_represent(self):
+        # Only the divisor may be a singleton, and only at the dividend's rank. Each of these is
+        # valid torch, so the refusal has to name the node and point at the source line.
+        cases = (("", "return x.sum(dim=-1, keepdim=True) / x"),  # the dividend would have to expand
+                 ("", "return x / x.sum(dim=-1)"),                 # the divisor lost a rank
+                 ("self.wide = nn.Linear(8, 16)\nself.narrow = nn.Linear(8, 4)", "return self.wide(x) / self.narrow(x)"))
+        for init, forward in cases:
+            with self.subTest(forward=forward):
+                result = self.reject(module_source(init, forward), "STRUCTURE", input_shapes={"x": [2, 5, 8]})
+                self.assertIn("Divide", result["diagnostics"][0]["message"])
+                self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
     def test_matmul_lowers_to_einsum(self):
         # `a @ b` carries no new IR surface: it becomes an Einsum node with a synthesized
         # equation, so both analyzers keep using the contraction rule they already share.

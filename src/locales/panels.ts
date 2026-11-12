@@ -1,5 +1,5 @@
 export const panelEnglish: Record<string, string> = {
-  '输入形状': 'Input shape', '固定常量': 'Fixed constant', '此算子无可配置参数': 'This operator has no configurable parameters', '重复实例数': 'Number of repeated instances',
+  '输入形状': 'Input shape', '固定常量': 'Fixed constant', '此算子无可配置参数': 'This operator has no configurable parameters', '先连接的输入是被除数，后连接的是除数。除数形状须与被除数一致，或在非 batch 维度上为 1。': 'The input connected first is the dividend and the one connected second is the divisor. The divisor must match the dividend shape or be 1 on non-batch dimensions.','重复实例数': 'Number of repeated instances',
   'LayerNorm 位置': 'LayerNorm position', 'Pre-Norm · 相加前': 'Pre-Norm · before addition', 'Post-Norm · 相加后': 'Post-Norm · after addition', '启用': 'Enabled', '禁用': 'Disabled',
   'dim · all 移除所有大小为 1 的维度': 'dim · all removes all dimensions of size 1', '移除所有大小为 1 的维度': 'remove all dimensions of size 1', 'all、1 或 1, -1': 'all, 1, or 1, -1', 'num_heads · Q 数量': 'num_heads · Q count',
   'num_heads / kv_heads / branches 改变真实模型。每个分支独立计算后取平均。': 'num_heads / kv_heads / branches change the actual model. Each branch is computed independently and then averaged.',

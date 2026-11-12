@@ -144,8 +144,9 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (parents.length !== 2 || new Set(inputEdges.map(e => crossInputRole(graph, n, e.id))).size !== 2) throw new Error('Cross-Attention 需要两个输入：一个 Query 和一个 Context');
       } else {
         if (inputEdges.some(e => e.targetPort)) throw new Error('Query / Context 端口只适用于 Cross-Attention');
-        if (!['Input', 'Add', 'Multiply', 'Concat', 'Einsum', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply、Concat 或 Einsum');
+        if (!['Input', 'Add', 'Multiply', 'Divide', 'Concat', 'Einsum', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply、Concat 或 Einsum');
         if (n.op === 'Bilinear' && parents.length !== 2) throw new Error('Bilinear 需要两个输入');
+        if (n.op === 'Divide' && parents.length !== 2) throw new Error('Divide 需要两个输入：先连接被除数，再连接除数');
       }
       let output = [...(input[0] || [])], count = 0;
       if (n.op === 'Input') {
@@ -284,6 +285,13 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Add 至少需要两个完全相同形状的输入');
       } else if (n.op === 'Multiply') {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Multiply 至少需要两个完全相同形状的输入');
+      } else if (n.op === 'Divide') {
+        // `dividend / divisor` in edge order. The divisor either matches the dividend or is 1 on
+        // any non-batch axis -- the shape `x.sum(-1, keepdim=True)` leaves -- so the result always
+        // has the dividend's shape. The dividend itself is never broadcast, and neither operand
+        // may differ in rank: that is the whole of the broadcasting this graph admits.
+        const divisor = input[1];
+        if (divisor.length !== output.length || divisor[0] !== output[0] || divisor.some((size, axis) => axis > 0 && size !== 1 && size !== output[axis])) throw new Error('Divide 的除数形状须与被除数一致，或在非 batch 维度上为 1');
       } else if (n.op === 'Scale') {
         // Shape-preserving elementwise scale; the factor is the attention `1/sqrt(d)` or similar.
         const factor = n.params.factor;

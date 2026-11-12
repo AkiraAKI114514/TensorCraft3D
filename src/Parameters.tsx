@@ -22,6 +22,9 @@ export default function Parameters({ node, disabled, onUpdate }: { node: Layer; 
     <label className="parameter-field" key="dim"><span>dim</span><input type="text" aria-label="dim" disabled={disabled} key={`${node.id}_dim_${String(node.params.dim)}`} defaultValue={Array.isArray(node.params.dim) ? node.params.dim.join(', ') : String(node.params.dim ?? -1)} placeholder="-1、1, -1" onBlur={e => { const parts = e.target.value.trim().split(',').map(part => part.trim()); if (parts.length && parts.every(part => /^-?\d+$/.test(part))) onUpdate('dim', parts.length === 1 ? Number(parts[0]) : parts.map(Number)); else e.target.value = Array.isArray(node.params.dim) ? node.params.dim.join(', ') : String(node.params.dim ?? -1); }} /></label>
     <label className="field-label" key="keepdim">keepdim<select aria-label="keepdim" disabled={disabled} value={Number(node.params.keepdim ?? 0) ? 1 : 0} onChange={e => onUpdate('keepdim', Number(e.target.value))}><option value={0}>{t('移除维度')}</option><option value={1}>{t('保留为 1')}</option></select></label>
   </>;
+  // `Divide` has no parameters, but it is the one merge whose operand order changes the result,
+  // and that order is only the order its inputs were connected in. Say so where it is edited.
+  if (node.op === 'Divide') return <>{repeatField}<p className="muted-text">{t('先连接的输入是被除数，后连接的是除数。除数形状须与被除数一致，或在非 batch 维度上为 1。')}</p></>;
   const attention = isAttention(node.op), cfg = attentionConfig(node.params);
   const params = { ...DEFAULTS[node.op], ...(node.op === 'Transformer' ? { norm_first: 1, activation: 'gelu' } : {}), ...node.params, ...(attention ? { kv_heads: cfg.kvHeads, branches: cfg.branches, attention_type: cfg.type } : {}) };
   if (!Object.keys(params).length) return <>{repeatField}<p className="muted-text">{t('此算子无可配置参数')}</p></>;

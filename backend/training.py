@@ -100,6 +100,9 @@ def build_model(graph):
                     product = args[0]
                     for value in args[1:]: product = product * value
                     values[key] = product
+                # Edge order is operand order: the first input is the dividend. The analyzer has
+                # already limited the divisor to the dividend's shape or keepdim singletons.
+                elif op == "Divide": values[key] = args[0] / args[1]
                 elif op == "Concat": values[key] = torch.cat(args, dim=int(node["params"].get("dim", 1)))
                 elif op == "Einsum": values[key] = torch.einsum(node["params"]["equation"], *args)
                 elif op == "Scale": values[key] = args[0] * float(node["params"]["factor"])

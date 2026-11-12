@@ -625,7 +625,7 @@ class Parser:
         node = next(n for n in self.graph["nodes"] if n["id"] == tensor.node)
         # Shape-preserving ops and the folded-block instance pass their declared dimension
         # upstream; a `Group` node is transparent, so a body's expectation reaches the Input.
-        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Multiply", "Group"):
+        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Multiply", "Divide", "Group"):
             for edge in self.graph["edges"]:
                 if edge["target"] == node["id"]: self.hint(Tensor(edge["source"], edge.get("sourcePort")), module)
         if node["op"] != "Input" or node["params"]["shape"]: return
@@ -967,6 +967,12 @@ class Parser:
             if isinstance(expression.op, ast.Mult) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 # Element-wise gating (`gate * value`), the shape of a SwiGLU/GLU feed-forward.
                 return self.add("Multiply", {}, [(left, None), (right, None)], "逐元素相乘", expression)
+            if isinstance(expression.op, ast.Div) and isinstance(left, Tensor) and isinstance(right, Tensor):
+                # Division of one runtime tensor by another, the shape of a renormalisation
+                # (`w / w.sum(-1, keepdim=True)`). Operand order is kept as edge order, so the left
+                # operand is the dividend; the final analysis rejects a divisor that is neither the
+                # dividend's shape nor a keepdim singleton, and reports this source location.
+                return self.add("Divide", {}, [(left, None), (right, None)], "逐元素相除", expression)
             if isinstance(expression.op, ast.MatMult) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 return self.contract(left, right, expression)
             # One runtime tensor paired with a statically-reduced number: the attention scale

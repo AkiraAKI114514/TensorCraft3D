@@ -72,6 +72,8 @@ export const diagnosticEnglish: Record<string, string> = {
   'dim 超出输入维度': 'dim is outside the input dimensions',
   'Add 至少需要两个完全相同形状的输入': 'Add requires at least two inputs with exactly matching shapes',
   'Multiply 至少需要两个完全相同形状的输入': 'Multiply requires at least two inputs with exactly matching shapes',
+  'Divide 需要两个输入：先连接被除数，再连接除数': 'Divide requires two inputs: connect the dividend first, then the divisor',
+  'Divide 的除数形状须与被除数一致，或在非 batch 维度上为 1': 'The Divide divisor must match the dividend shape or be 1 on non-batch dimensions',
   'Concat 至少需要两个输入': 'Concat requires at least two inputs',
   'Concat 非拼接维度必须一致': 'Concat dimensions other than the concatenation dimension must match',
   '该层超过本地工作台限制（1600 万激活 / 5000 万参数）': 'This layer exceeds the local workspace limits (16 million activations / 50 million parameters)',

@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
@@ -261,7 +261,7 @@ def analyze_expanded_graph(graph):
             shape = list(shape)
         else:
             cross = op in ("Transformer", "MultiHeadAttention") and p.get("attention_type") == "cross"
-            required_inputs = 2 if cross or op == "Bilinear" else 1
+            required_inputs = 2 if cross or op in ("Bilinear", "Divide") else 1
             if not parents or (op not in ("Add", "Multiply", "Concat", "Einsum") and len(parents) != required_inputs): raise ValueError(f"{key}: invalid input count")
             shape = list(in_shapes[0])
             if op in _TRANSPOSE_CONVS:
@@ -447,6 +447,14 @@ def analyze_expanded_graph(graph):
                 if len(parents) < 2 or any(s != shape for s in in_shapes): raise ValueError(f"{key}: Add input shapes must match")
             elif op == "Multiply":
                 if len(parents) < 2 or any(s != shape for s in in_shapes): raise ValueError(f"{key}: Multiply input shapes must match")
+            elif op == "Divide":
+                # `dividend / divisor` in edge order. The divisor either matches the dividend or is
+                # 1 on any non-batch axis -- the shape `x.sum(-1, keepdim=True)` leaves -- so the
+                # result always has the dividend's shape. The dividend itself is never broadcast,
+                # and neither operand may differ in rank. Must mirror src/analysis.ts.
+                divisor = in_shapes[1]
+                if len(divisor) != len(shape) or divisor[0] != shape[0] or any(size not in (1, full) for size, full in zip(divisor[1:], shape[1:])):
+                    raise ValueError(f"{key}: Divide divisor must match the dividend shape or be 1 on non-batch axes")
             elif op == "Concat":
                 dim = integer("dim", 1, maximum=len(shape) - 1)
                 if len(parents) < 2 or any(len(s) != len(shape) or any(v != shape[i] for i, v in enumerate(s) if i != dim) for s in in_shapes): raise ValueError(f"{key}: Concat dimensions must match")
