@@ -184,6 +184,74 @@ class InferenceRuntimeTests(unittest.TestCase):
         self.assertEqual((result["slice"]["rows"], result["slice"]["columns"]), (16, 16))
         self.assertTrue(result["slice"]["truncated"])
 
+    def test_channel_page_shows_the_same_window_for_the_channels_around_the_selected_one(self):
+        # 40 channels page in sixteens, so channel 20 belongs to the page 16..31. Each map has to
+        # be the very window the main slice would show for that channel.
+        value = torch.arange(40 * 20 * 20, dtype=torch.float32).reshape(1, 40, 20, 20)
+        result = _describe("x", value, [0, 20], torch)
+        page = result["channels"]
+        self.assertEqual((page["start"], page["count"], page["total"], page["selected"]), (16, 16, 40, 20))
+        self.assertEqual((page["shape"], page["rows"], page["columns"], page["truncated"]), ([20, 20], 16, 16, True))
+        self.assertEqual(len(page["maps"]), 16)
+        self.assertEqual(page["maps"][20 - 16], result["slice"]["values"])
+        for offset in (0, 7, 15):
+            self.assertEqual(page["maps"][offset], _describe("x", value, [0, 16 + offset], torch)["slice"]["values"])
+
+    def test_channel_page_statistics_cover_the_whole_channel_not_the_window(self):
+        # Channel 1 is zero everywhere inside the 16 x 16 window and active only outside it. A
+        # window statistic would call it dead; the channel statistic must not.
+        value = torch.zeros(1, 3, 20, 20)
+        value[0, 0] = -2.0
+        value[0, 1, 19, 19] = 5.0
+        value[0, 2, 0, 0] = float("nan"); value[0, 2, 1, 1] = 3.0
+        page = _describe("x", value, [0, 0], torch)["channels"]
+        self.assertEqual((page["start"], page["count"], page["total"]), (0, 3, 3))
+        self.assertEqual(page["stats"][0], {"min": -2.0, "max": -2.0, "mean": -2.0})
+        self.assertTrue(all(item == 0.0 for row in page["maps"][1] for item in row))
+        self.assertEqual((page["stats"][1]["min"], page["stats"][1]["max"]), (0.0, 5.0))
+        self.assertAlmostEqual(page["stats"][1]["mean"], 5.0 / 400)
+        # A non-finite element is reported as such in the map and left out of the statistics.
+        self.assertIsNone(page["maps"][2][0][0])
+        self.assertEqual(page["stats"][2]["max"], 3.0)
+        self.assertAlmostEqual(page["stats"][2]["mean"], 3.0 / 399)
+        empty = torch.full((1, 1, 2, 2), float("inf"))
+        self.assertEqual(_describe("x", empty, [0, 0], torch)["channels"]["stats"], [{"min": None, "max": None, "mean": None}])
+
+    def test_channel_page_ends_at_the_last_channel_and_follows_the_depth_index(self):
+        import json
+        value = torch.arange(40 * 3 * 4 * 5, dtype=torch.float32).reshape(1, 40, 3, 4, 5)
+        result = _describe("x", value, [0, 35, 2], torch)
+        page = result["channels"]
+        # The last page is short rather than padded.
+        self.assertEqual((page["start"], page["count"], page["selected"]), (32, 8, 35))
+        self.assertEqual((page["shape"], page["rows"], page["columns"], page["truncated"]), ([4, 5], 4, 5, False))
+        self.assertEqual(page["maps"][35 - 32], value[0, 35, 2].tolist())
+        self.assertEqual(page["maps"][0], value[0, 32, 2].tolist())
+        # Statistics still describe the whole channel volume, across every depth.
+        self.assertEqual(page["stats"][0]["min"], float(value[0, 32].min()))
+        self.assertEqual(page["stats"][0]["max"], float(value[0, 32].max()))
+        json.dumps(result, allow_nan=False)
+
+    def test_only_channel_first_spatial_tensors_get_a_channel_page(self):
+        # A sequence has no channel axis to page through, and neither does a feature vector.
+        self.assertIsNone(_describe("x", torch.randn(1, 6, 8), [0], torch)["channels"])
+        self.assertIsNone(_describe("x", torch.randn(1, 8), [], torch)["channels"])
+        self.assertIsNone(_describe("x", torch.randn(4), [], torch)["channels"])
+        result = run_inference(self.request(self.mlp_graph(), ["n1"]))
+        self.assertIsNone(result["tensors"][0]["channels"])
+
+    def test_inference_reports_the_channel_page_of_the_requested_slice(self):
+        specs = [("Input", {"shape": [3, 2, 6, 6]}), ("Conv2d", {"out_channels": 20, "kernel_size": 3, "stride": 1, "padding": 1}), ("Flatten", {}), ("Linear", {"out_features": 2}), ("Output", {})]
+        nodes = [{"id": f"n{i}", "op": op, "params": params} for i, (op, params) in enumerate(specs)]
+        graph = {"version": 1, "nodes": nodes, "edges": [{"source": f"n{i}", "target": f"n{i + 1}"} for i in range(4)]}
+        result = run_inference(self.request(graph, ["n1"], slices={"n1": [0, 17]}))
+        tensor = result["tensors"][0]
+        self.assertEqual(tensor["shape"], [1, 20, 6, 6])
+        page = tensor["channels"]
+        self.assertEqual((page["start"], page["count"], page["total"], page["selected"]), (16, 4, 20, 17))
+        self.assertEqual(page["maps"][1], tensor["slice"]["values"])
+        self.assertFalse(page["truncated"])
+
     def test_single_sample_limits_do_not_apply_to_submitted_batch(self):
         graph = self.mlp_graph(batch=65536)
         self.assertEqual(run_inference(self.request(graph))["tensors"][0]["shape"], [1, 4])

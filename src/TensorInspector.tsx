@@ -6,6 +6,7 @@ import type { AttentionSelection, InferenceReport } from './inferenceTypes';
 import { tensorNumber } from './inferenceTypes';
 import type { TrainedModelMetadata } from './trainedModel';
 import TensorHistogram from './TensorHistogram';
+import TensorSemanticView from './TensorSemanticView';
 import AttentionInspector from './AttentionInspector';
 import { analyze } from './analysis';
 import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
@@ -137,6 +138,7 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
         {snapshot.nonFiniteCount > 0 && <p className="tensor-stale">{t('存在 NaN/Inf；统计和分布只包含有限元素，切片中以“非有限值”标注。')}</p>}
       </div>
       <TensorHistogram key={result!.report.runId + snapshot.nodeId} histogram={snapshot.histogram} />
+      <TensorSemanticView key={`${result!.report.runId}${snapshot.nodeId}semantic`} snapshot={snapshot} disabled={busy} onSelectChannel={channel => changeIndex(1, channel)} />
       <div className="inspector-section"><h3>{t('张量切片')}<span>{t('最多 16 × 16')}</span></h3>
         <p className="tensor-note">{t('固定前置轴，显示末尾{count}维 {shape} 的左上区域。', { count: snapshot.slice.shape.length, shape: `[${snapshot.slice.shape.join(', ')}]` })}{snapshot.slice.truncated ? t('已截断，表格不是完整张量。') : t('该切片已完整显示。')}</p>
         <div className="tensor-table-scroll" tabIndex={0} role="region" aria-label={t('实测张量切片')}>

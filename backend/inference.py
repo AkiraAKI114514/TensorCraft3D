@@ -16,6 +16,9 @@ MAX_INPUT_ELEMENTS = 4_000_000
 MAX_PARAMETERS = 5_000_000
 MAX_PARAMETER_BYTES = 20 * 1024 * 1024
 MAX_SLICE_SIDE = 16
+# A channel-first tensor is also shown as a page of feature maps. Each map is one bounded
+# MAX_SLICE_SIDE window, so a page is at most 16 windows of 16 x 16 values.
+MAX_CHANNEL_MAPS = 16
 HISTOGRAM_BINS = 12
 
 
@@ -262,6 +265,53 @@ def _slice(value: Any, indices: list[int], torch: Any) -> dict[str, Any]:
     }
 
 
+def _channel_page(value: Any, indices: list[int], torch: Any) -> dict[str, Any] | None:
+    """Feature maps for the page of channels around the selected one, or None.
+
+    Only a rank-4/5 tensor has a channel axis followed by spatial axes, so only `[1,C,H,W]`
+    and `[1,C,D,H,W]` get this view; a sequence `[1,S,E]` has no channel axis to page through
+    and its position x feature slice already is its semantic view. Every map is the same
+    top-left window the main slice shows, taken at the same depth index for a rank-5 tensor.
+    The statistics describe the whole channel, not the window, so a dead channel reads as dead
+    even when the window happens to miss its few active elements.
+
+    Channels are reduced one at a time. The scratch this needs never exceeds one channel, which
+    is less than `_describe` already uses to summarise the whole tensor.
+    """
+    shape = [int(size) for size in value.shape]
+    if len(shape) not in (4, 5) or len(indices) != len(shape) - 2:
+        return None
+    channels, selected = shape[1], int(indices[1])
+    start = selected // MAX_CHANNEL_MAPS * MAX_CHANNEL_MAPS
+    count = min(MAX_CHANNEL_MAPS, channels - start)
+    rows, columns = shape[-2], shape[-1]
+    display_rows, display_cols = min(rows, MAX_SLICE_SIDE), min(columns, MAX_SLICE_SIDE)
+    maps: list[list[list[float | None]]] = []
+    stats: list[dict[str, float | None]] = []
+    for channel in range(start, start + count):
+        whole = value[indices[0], channel]
+        plane = whole[tuple(indices[2:])] if len(shape) == 5 else whole
+        window = plane[:display_rows, :display_cols].detach().cpu().tolist()
+        maps.append([[float(item) if _finite(item) else None for item in row] for row in window])
+        finite = whole[torch.isfinite(whole)].to(torch.float64)
+        if finite.numel():
+            stats.append({"min": float(finite.min().item()), "max": float(finite.max().item()), "mean": float(finite.mean().item())})
+        else:
+            stats.append({"min": None, "max": None, "mean": None})
+    return {
+        "start": start,
+        "count": count,
+        "total": channels,
+        "selected": selected,
+        "shape": [rows, columns],
+        "rows": display_rows,
+        "columns": display_cols,
+        "truncated": rows > display_rows or columns > display_cols,
+        "maps": maps,
+        "stats": stats,
+    }
+
+
 def _describe(node_id: str, value: Any, indices: list[int], torch: Any) -> dict[str, Any]:
     detached = value.detach()
     flat = detached.reshape(-1)
@@ -286,6 +336,7 @@ def _describe(node_id: str, value: Any, indices: list[int], torch: Any) -> dict[
         "stats": stats,
         "histogram": _histogram(flat, torch),
         "slice": _slice(detached, indices, torch),
+        "channels": _channel_page(detached, indices, torch),
     }
 
 

@@ -10,6 +10,22 @@ export interface TensorSnapshot {
   stats: { min: number | null; max: number | null; mean: number | null; std: number | null };
   histogram: { edges: number[]; counts: number[] };
   slice: { indices: number[]; shape: number[]; rows: number; columns: number; values: (number | null)[][]; truncated: boolean };
+  /** Feature maps for the page of channels around the selected one; only `[1,C,H,W]` and `[1,C,D,H,W]` have it, and an older backend sends none. */
+  channels?: ChannelPage | null;
+}
+
+/** One page of at most 16 channels. Every map is the same bounded window as the main slice; the statistics cover each whole channel. */
+export interface ChannelPage {
+  start: number;
+  count: number;
+  total: number;
+  selected: number;
+  shape: number[];
+  rows: number;
+  columns: number;
+  truncated: boolean;
+  maps: (number | null)[][][];
+  stats: { min: number | null; max: number | null; mean: number | null }[];
 }
 
 export interface AttentionSelection {

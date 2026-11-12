@@ -37,6 +37,23 @@ test('inspects real single-sample tensors, slices and stale snapshots on desktop
   expect(report.weights).toBe('random-initialized');
   await expect(panel).toContainText('已截断');
   expect(report.tensors.every(tensor => tensor.elements === 800 && tensor.finiteCount === 800)).toBe(true);
+  // The same bounded window read as a feature map: a heatmap of the selected channel plus one
+  // tile per channel. Picking a tile only moves the slice index; it never runs inference itself.
+  const semantic = panel.locator('.tensor-semantic');
+  await expect(semantic).toContainText('特征图 · 通道 0');
+  // The colour legend is a bar between its two end labels; outside the attention inspector it
+  // once collapsed into the two numbers run together.
+  expect(await semantic.locator('.attention-scale i').first().evaluate(bar => bar.getBoundingClientRect().width)).toBeGreaterThan(40);
+  const tiles = semantic.locator('.channel-grid-items button');
+  await expect(tiles).toHaveCount(2);
+  await expect(tiles.nth(0)).toHaveAttribute('aria-pressed', 'true');
+  const measured = report.tensors.find(tensor => tensor.nodeId === 'layer_1')!;
+  expect(measured.channels!.maps[0]).toEqual(measured.slice.values);
+  await tiles.nth(1).click();
+  await expect(panel.getByLabel('张量切片轴 1')).toHaveValue('1');
+  await expect(panel.locator('.tensor-stale')).toContainText('旧快照已失效');
+  expect(calls).toHaveLength(1);
+  await panel.getByLabel('张量切片轴 1').fill('0');
   const samples = Array.from({ length: 800 }, (_, i) => i % 5 - 2);
   await panel.getByLabel('推理输入来源').selectOption('provided');
   await panel.getByLabel('推理输入 JSON').fill(JSON.stringify({ layer_0: samples }));
@@ -69,7 +86,7 @@ test('inspects real single-sample tensors, slices and stale snapshots on desktop
   expect(slicedReport.tensors.find(tensor => tensor.nodeId === 'layer_1')!.slice.indices).toEqual([0, 1]);
   await panel.getByText('分布数据表', { exact: true }).click();
   await panel.locator('.tensor-histogram g').first().focus();
-  await expect(panel.locator('.tensor-hover')).toContainText('个元素');
+  await expect(panel.locator('.tensor-histogram .tensor-hover')).toContainText('个元素');
   await panel.locator('.tensor-histogram').scrollIntoViewIfNeeded();
   await page.locator('.inspector').screenshot({ path: testInfo.outputPath('tensor-inspector-desktop.png') });
   await panel.locator('.tensor-histogram').screenshot({ path: testInfo.outputPath('tensor-histogram-desktop.png') });
