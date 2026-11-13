@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatMetricValue, layerMetricKeys, layerSeries, samplePoints, MAX_LAYER_METRIC_KEYS } from './layerMetricSeries';
+import { distributionKeys, distributionSeries, formatMetricValue, layerMetricKeys, layerSeries, samplePoints, MAX_LAYER_METRIC_KEYS } from './layerMetricSeries';
 import { expandGraph } from './subgraph';
 import type { Graph, Layer, Metric } from './types';
 
@@ -87,6 +87,25 @@ describe('layer metric series', () => {
     expect(sampled.at(-1)).toBe(1000);
     expect(new Set(sampled).size).toBe(120);
     expect(samplePoints([1, 2, 3], 120)).toEqual([1, 2, 3]);
+  });
+
+  it('reads one expanded layer\'s weight distribution per epoch and skips records that are not one', () => {
+    const entry = (shift: number) => ({ count: 32, mean: shift, std: 0.5, quantiles: [-1, -0.7, -0.5, -0.2, 0, 0.2, 0.5, 0.7, 1].map(value => value + shift), counts: [1, 2, 4, 8, 8, 4, 2, 1, 1, 1, 0, 0] });
+    const run = [
+      { ...metric(1), weightDistributions: { a: entry(0), b: entry(1) } },
+      { ...metric(2), weightDistributions: { a: { ...entry(0), quantiles: [1, 0, 0, 0, 0, 0, 0, 0, 0] } } },
+      { ...metric(3), weightDistributions: { a: { ...entry(0), counts: [1, -1] } } },
+      { ...metric(4), weightDistributions: { a: { ...entry(0), quantiles: [0, 0, 0] } } },
+      { ...metric(5), weightDistributions: { a: { ...entry(0), mean: 'x' } } },
+      { ...metric(6), weightDistributions: 'oops' },
+      { ...metric(7), weightDistributions: { a: entry(0.25) } },
+    ] as unknown as Metric[];
+    expect(distributionSeries(run, 'a').map(point => [point.epoch, point.quantiles[4]])).toEqual([[1, 0], [7, 0.25]]);
+    expect(distributionSeries(run, 'b')).toEqual([{ epoch: 1, ...entry(1) }]);
+    expect(distributionSeries(run, 'constructor')).toEqual([]);
+    // Keys keep the selection's order and need only one epoch that names them.
+    expect(distributionKeys(run, ['c', 'b', 'a', 'toString'])).toEqual(['b', 'a']);
+    expect(distributionKeys([metric(1)], ['a'])).toEqual([]);
   });
 
   it('keeps small gradient norms readable instead of rounding them to zero', () => {

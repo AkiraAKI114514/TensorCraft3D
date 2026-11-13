@@ -1,3 +1,4 @@
+import math
 import unittest
 import threading
 from .graph import analyze_graph
@@ -133,6 +134,58 @@ class TrainingTests(unittest.TestCase):
             self.assertTrue(all(value > 0 for value in metric["layerGradients"].values()))
             self.assertEqual(set(metric["deadRelu"]), {"layer_2"})
             self.assertTrue(0 <= metric["deadRelu"]["layer_2"] <= 1)
+
+    def test_each_epoch_reports_every_layer_s_weight_distribution(self):
+        messages = []
+        graph = mlp_graph(); graph["nodes"][2]["repeat"] = 3
+        config = {"epochs": 2, "learningRate": 0.05, "batchSize": 16, "samples": 64, "device": "cpu", "dataset": "synthetic", "validationFraction": 0.2, "earlyStopping": False, "patience": 5}
+        train(graph, config, messages.append, threading.Event())
+        metrics = [m["metric"] for m in messages if m["type"] == "metric"]
+        # The layers that own weights, the same ones that report a gradient norm.
+        self.assertEqual([set(metric["weightDistributions"]) for metric in metrics], [{"layer_1", "layer_3"}] * 2)
+        first, second = (metric["weightDistributions"]["layer_1"] for metric in metrics)
+        model, _ = build_model(graph)
+        # Weights only: the Linear's 8 x 4 matrix, not its bias.
+        self.assertEqual(first["count"], model.layers["layer_1"].weight.numel())
+        for entry in (first, second):
+            quantiles = entry["quantiles"]
+            self.assertEqual(len(quantiles), 9)
+            self.assertEqual(quantiles, sorted(quantiles))
+            self.assertLessEqual(quantiles[0], entry["mean"]); self.assertLessEqual(entry["mean"], quantiles[-1])
+            self.assertGreater(entry["std"], 0)
+            self.assertEqual((len(entry["counts"]), sum(entry["counts"])), (12, entry["count"]))
+            self.assertNotIn("nonFinite", entry)
+        # Training moved the weights, so two epochs describe two different distributions.
+        self.assertNotEqual(first["quantiles"], second["quantiles"])
+
+    def test_weight_distributions_read_matrices_scales_and_large_layers_at_a_stride(self):
+        import torch
+        from torch import nn
+        from unittest.mock import patch
+        from .training import weight_distributions
+
+        class Layers(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleDict({"norm": nn.LayerNorm(6), "dense": nn.Linear(50, 4), "flat": nn.Flatten()})
+        model = Layers()
+        with torch.no_grad():
+            model.layers["dense"].weight.copy_(torch.arange(200, dtype=torch.float32).reshape(4, 50))
+            model.layers["norm"].weight.fill_(2.0)
+        result = weight_distributions(model)
+        self.assertEqual(set(result), {"norm", "dense"})
+        # A norm layer has no matrix, so its scale stands for it; every value is the same.
+        self.assertEqual(result["norm"]["quantiles"], [2.0] * 9)
+        self.assertEqual(result["norm"]["counts"], [6] + [0] * 11)
+        dense = result["dense"]
+        self.assertEqual((dense["quantiles"][0], dense["quantiles"][4], dense["quantiles"][-1]), (0.0, 99.5, 199.0))
+        self.assertAlmostEqual(dense["mean"], 99.5)
+        self.assertAlmostEqual(dense["std"], math.sqrt((200 ** 2 - 1) / 12))
+        # More values than the reading limit: the ends, mean and spread still cover all of them.
+        with patch("backend.training.MAX_DISTRIBUTION_VALUES", 64):
+            strided = weight_distributions(model)["dense"]
+        self.assertEqual((strided["quantiles"][0], strided["quantiles"][-1], strided["mean"], strided["count"]), (0.0, 199.0, dense["mean"], 200))
+        self.assertEqual(sum(strided["counts"]), 50)
 
     def test_folded_relu_reports_the_mean_zero_fraction_of_its_instances(self):
         import torch

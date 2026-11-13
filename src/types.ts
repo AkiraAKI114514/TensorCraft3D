@@ -31,7 +31,13 @@ export interface Graph { version: 1; name: string; nodes: Layer[]; edges: Edge[]
 export interface Diagnostic { id: string; level: 'error' | 'warning' | 'info'; code: string; message: string; nodeId?: string; }
 export interface LayerInfo { input: number[][]; output: number[]; parameters: number; repeat: number; }
 export interface Analysis { layers: Record<string, LayerInfo>; order: string[]; diagnostics: Diagnostic[]; parameters: number; activationBytes: number; valid: boolean; }
-export interface Metric { epoch: number; trainLoss: number; valLoss: number; accuracy: number; gradNorm: number; layerGradients?: Record<string, number>; deadRelu?: Record<string, number>; source: 'demo' | 'training' | 'import'; }
+/**
+ * One layer's weights at the end of an epoch (biases left out): nine ascending `quantiles` (the
+ * minimum, the normal distribution's -1.5/-1/-0.5 sigma points, the median, +0.5/+1/+1.5 sigma and
+ * the maximum) and a histogram whose `counts` fill equal bins from the minimum to the maximum.
+ */
+export interface WeightDistribution { count: number; mean: number; std: number; quantiles: number[]; counts: number[]; nonFinite?: number; }
+export interface Metric { epoch: number; trainLoss: number; valLoss: number; accuracy: number; gradNorm: number; layerGradients?: Record<string, number>; deadRelu?: Record<string, number>; weightDistributions?: Record<string, WeightDistribution>; source: 'demo' | 'training' | 'import'; }
 export interface TrainingConfig { epochs: number; learningRate: number; batchSize: number; samples: number; device: 'auto' | 'cpu' | 'cuda'; dataset: 'synthetic' | 'csv'; csv?: string; validationFraction: number; earlyStopping: boolean; patience: number; }
 const shape1d = { kernel_size: 3, stride: 1, padding: 1 };
 const pool1d = { kernel_size: 2, stride: 2, padding: 0 };

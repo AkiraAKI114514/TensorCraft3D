@@ -64,7 +64,14 @@ test('observes trained weights, preserves identity on rename, invalidates edits,
   await gradients.focus();
   await page.keyboard.press('ArrowLeft');
   await expect(gradients).toHaveAttribute('aria-valuenow', '1');
-  await expect(layerMetrics.locator('.layer-metric-readout')).toContainText('第 1 轮');
+  await expect(layerMetrics.locator('.layer-metric-chart').filter({ has: page.getByRole('slider', { name: /梯度范数/ }) }).locator('.layer-metric-readout')).toContainText('第 1 轮');
+  // The same run measured the layer's weights at the end of each epoch.
+  const weights = layerMetrics.getByRole('slider', { name: /权重分布/ });
+  await expect(weights).toHaveAttribute('aria-valuenow', '2');
+  await expect(weights).toHaveAttribute('aria-valuetext', /第 2 轮：中位数 .+，68% 落在 .+ – .+，范围 .+ – .+/);
+  await expect(layerMetrics).toContainText('第 2 轮的直方图 · 虚线为第 1 轮');
+  await expect(layerMetrics.locator('.lm-hist')).toHaveCount(12);
+  await layerMetrics.locator('.layer-metric-chart').filter({ has: page.getByRole('slider', { name: /权重分布/ }) }).screenshot({ path: testInfo.outputPath('weight-distribution.png') });
   await page.getByRole('button', { name: '张量观测', exact: true }).click();
   const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
   await expect(panel.getByLabel('推理权重来源')).toHaveValue('trained');

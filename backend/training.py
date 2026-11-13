@@ -5,6 +5,52 @@ import math
 import uuid
 from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
+# Each epoch reports every layer's weight distribution with the quantiles TensorBoard's
+# distribution view draws (the minimum, the normal distribution's -1.5/-1/-0.5 sigma points, the
+# median, +0.5/+1/+1.5 sigma and the maximum) and a histogram over the same range.
+DISTRIBUTION_QUANTILES = (0.0, 0.0668, 0.1587, 0.3085, 0.5, 0.6915, 0.8413, 0.9332, 1.0)
+DISTRIBUTION_BINS = 12
+# Above this many values a layer's inner quantiles and histogram read an even stride of its
+# weights; the minimum, maximum, mean and spread always cover all of them.
+MAX_DISTRIBUTION_VALUES = 1 << 20
+
+
+def weight_distributions(model):
+    """Every layer's weights as they stand: its matrices and kernels (parameters with two or more
+    axes), or its other non-bias parameters when it has none, such as a norm layer's scale.
+    Biases are left out. A folded layer pools its instances, like its gradient norm."""
+    import torch
+    result = {}
+    with torch.no_grad():
+        for key, layer in model.layers.items():
+            named = [parameter for name, parameter in layer.named_parameters() if "bias" not in name.rsplit(".", 1)[-1]]
+            chosen = [parameter for parameter in named if parameter.dim() >= 2] or named
+            if not chosen:
+                continue
+            values = torch.cat([parameter.detach().reshape(-1).float() for parameter in chosen])
+            finite = values[torch.isfinite(values)]
+            if finite.numel() == 0:
+                continue
+            low, high = finite.min(), finite.max()
+            read = finite[::-(-finite.numel() // MAX_DISTRIBUTION_VALUES)] if finite.numel() > MAX_DISTRIBUTION_VALUES else finite
+            quantiles = torch.quantile(read, torch.tensor(DISTRIBUTION_QUANTILES, dtype=read.dtype, device=read.device))
+            quantiles[0], quantiles[-1] = low, high
+            if high > low:
+                counts = torch.histc(read, bins=DISTRIBUTION_BINS, min=float(low), max=float(high))
+            else:
+                counts = torch.zeros(DISTRIBUTION_BINS, device=read.device)
+                counts[0] = read.numel()
+            exact = finite.double()
+            mean = exact.mean()
+            entry = {
+                "count": int(values.numel()), "mean": float(mean), "std": math.sqrt(float((exact - mean).square().mean())),
+                "quantiles": [float(value) for value in quantiles.tolist()], "counts": [int(value) for value in counts.tolist()],
+            }
+            if finite.numel() != values.numel():
+                entry["nonFinite"] = int(values.numel() - finite.numel())
+            result[key] = entry
+    return result
+
 
 def build_model(graph):
     import torch
@@ -305,7 +351,7 @@ def train(graph, config, emit, stop, retain_model=None):
                 if not math.isfinite(value): raise ValueError("Validation loss became NaN/Inf")
                 val_loss += value * len(by); correct += int((logits.argmax(1) == by).sum().item())
         val_loss /= len(val_y)
-        emit({"type": "metric", "device": device.upper(), "metric": {"epoch": epoch, "trainLoss": total_loss / max(1, seen), "valLoss": val_loss, "accuracy": correct / len(val_y), "gradNorm": grad_total / max(1, norm_count), "layerGradients": {key: value / max(1, norm_count) for key, value in norms.items()}, "deadRelu": {key: value / max(1, norm_count) for key, value in dead_sums.items()}, "source": "training"}})
+        emit({"type": "metric", "device": device.upper(), "metric": {"epoch": epoch, "trainLoss": total_loss / max(1, seen), "valLoss": val_loss, "accuracy": correct / len(val_y), "gradNorm": grad_total / max(1, norm_count), "layerGradients": {key: value / max(1, norm_count) for key, value in norms.items()}, "deadRelu": {key: value / max(1, norm_count) for key, value in dead_sums.items()}, "weightDistributions": weight_distributions(model), "source": "training"}})
         if val_loss < best_loss - 1e-4:
             best_loss, stale, best_epoch = val_loss, 0, epoch
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
