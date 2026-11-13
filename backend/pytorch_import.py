@@ -8,7 +8,8 @@ import copy
 import math
 import operator
 from dataclasses import dataclass, field, replace
-from .graph import MAX_REPEAT, EXPAND_SEP, analyze_graph, einsum_shape
+from . import deepseek_reference
+from .graph import MAX_REPEAT, EXPAND_SEP, analyze_graph, einsum_shape, latent_attention_parameters, moe_parameters
 from .static_tensors import DynamicStaticSlice, StaticTensor, StaticTensorError, f32, new_budget
 
 
@@ -1947,12 +1948,52 @@ class Parser:
                 names += [t.id for t in n.targets if isinstance(t, ast.Name)]
         return names
 
+    def deepseek_reference(self, selected):
+        """The official DeepSeek-V3 model.py, recognised as a whole (see deepseek_reference); None otherwise."""
+        try:
+            found = deepseek_reference.recognise(self.tree)
+            if found is None: return None
+            if selected != "Transformer":
+                raise deepseek_reference.ReferenceIssue("DeepSeek-V3 的官方 model.py 请选择 Transformer 整体导入；MLA、MoE 等单独的类还需要 start_pos、freqs_cis 等运行时参数", found.get(selected))
+            # `model = Transformer(args)` with `args = ModelArgs(...)` at the top level, or the defaults.
+            anchor, call = found["Transformer"], None
+            instance = next((n.value for n in self.tree.body if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) and self.path(n.value.func) == "Transformer"), None)
+            if instance is None:
+                raise deepseek_reference.ReferenceIssue("没有找到顶层的 model = Transformer(args)：默认 ModelArgs 是约 16B 参数、启用 YaRN 的配置；请在文件末尾写一组缩小的 args = ModelArgs(...)，再写 model = Transformer(args)", anchor, "LIMIT")
+            else:
+                anchor = instance
+                arguments = list(instance.args) + [keyword.value for keyword in instance.keywords if keyword.arg == "args"]
+                if len(arguments) != 1 or len(instance.args) + len(instance.keywords) != 1: raise deepseek_reference.ReferenceIssue("Transformer 需要一个 ModelArgs 参数", instance)
+                argument = arguments[0]
+                if isinstance(argument, ast.Name):
+                    assigned = [n.value for n in self.tree.body if isinstance(n, ast.Assign) and any(isinstance(target, ast.Name) and target.id == argument.id for target in n.targets)]
+                    if not assigned: raise deepseek_reference.ReferenceIssue(f"{argument.id} 需要在文件顶层写成 ModelArgs(...)", argument)
+                    argument = assigned[-1]
+                if not isinstance(argument, ast.Call) or self.path(argument.func) != "ModelArgs": raise deepseek_reference.ReferenceIssue("Transformer 的参数需要是 ModelArgs(...) 或指向它的顶层变量", argument)
+                call = argument
+            config = deepseek_reference.model_args(found, call, lambda node: self.literal(node, self.constants))
+            if self.constants.get("attn_impl", "absorb") not in ("naive", "absorb"): raise deepseek_reference.ReferenceIssue('attn_impl 只能是 "naive" 或 "absorb"', anchor)
+            deepseek_reference.check_size(config, latent_attention_parameters, moe_parameters, anchor)
+        except deepseek_reference.ReferenceIssue as issue:
+            raise ImportIssue(str(issue), issue.node, issue.code) from issue
+        tokens = self.input("tokens")
+        node = next(n for n in self.graph["nodes"] if n["id"] == tokens.node)
+        if not node["params"]["shape"]: node["params"]["shape"] = [1, min(16, config["max_seq_len"])]
+        shape = node["params"]["shape"]
+        if len(shape) != 2: raise ImportIssue("tokens 需要 [B,S] 形状的整数序列", anchor, "INPUT_SHAPE")
+        if shape[1] > config["max_seq_len"]: raise ImportIssue(f"序列长度 {shape[1]} 超过 ModelArgs.max_seq_len {config['max_seq_len']}：官方代码的 RoPE 表和 KV cache 放不下", anchor, "INPUT_SHAPE")
+        output = deepseek_reference.emit(config, self.add, tokens, anchor)
+        self.warnings.append({"level": "info", "code": "DEEPSEEK_REFERENCE", "message": f"已识别 DeepSeek-V3 官方 inference/model.py（提交 {deepseek_reference.OFFICIAL_COMMIT[:7]}）：按单卡、bf16、从位置 0 开始的一次前向导入。此时 KV cache 只装着当前序列，结果与不用缓存相同；计算图以 float32 运行，KV cache、分布式与 FP8 路径不在图中。"})
+        return output
+
     def build(self, selected):
         candidates = self.candidates()
         selected = selected or self.default_model(candidates)
         if selected not in candidates: raise ImportIssue("未找到可导入的 nn.Module 类或 nn.Sequential 对象", code="MODEL_NOT_FOUND")
         self.graph["name"] = selected
-        if selected in self.classes:
+        reference = self.deepseek_reference(selected)
+        if reference is not None: output, module = reference, None
+        elif selected in self.classes:
             expression = ast.Call(func=ast.Name(id=selected), args=[], keywords=[])
             # Literal constructor arguments on top-level model instantiation override defaults.
             for n in self.tree.body:
@@ -1991,7 +2032,7 @@ class Parser:
             elif current.children:
                 for child in current.children.values(): collect(child)
             else: registered.append(current)
-        collect(module)
+        if module is not None: collect(module)
         unused = {id(m) for m in registered if id(m) not in self.used_modules}
         if unused: self.warnings.append({"level": "warning", "code": "UNUSED_MODULES", "message": f"有 {len(unused)} 个声明的层未在 forward 中调用，没有加入计算图。"})
         for input_info in self.inputs:

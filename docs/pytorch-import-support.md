@@ -85,6 +85,36 @@ Embedding must match the input's last dimension and be divisible by the Q-head c
 
 The MQA/GQA examples import `backend.attention` and run **from the repository root**. They are not standalone exports. The workbench's Python export embeds the helper runtime for standalone use. Neither source import route loads original trainable weights.
 
+## DeepSeek-V3 reference source
+
+DeepSeek-V3's official [`inference/model.py`](https://github.com/deepseek-ai/DeepSeek-V3/blob/b15f0dbbbe6a4bc403306175698439ef380f5fb5/inference/model.py) imports as a whole. Its forward passes use KV caches, complex-number rotary encoding, distributed collectives and FP8 kernels, so the file cannot be parsed line by line. Instead the importer recognises it.
+
+- **Recognition:** every class and function that computes must match the pinned commit `b15f0db` exactly, docstrings aside. The file's own constants (`attn_impl`, the `ModelArgs` defaults) are read, not fingerprinted.
+  - A file that defines the reference's classes but differs is refused with the names that differ.
+  - Any other file takes the line-by-line path described above.
+- **How to import:** choose `Transformer` and append a scaled-down configuration at the end of the file:
+
+  ```python
+  args = ModelArgs(vocab_size=128, dim=64, inter_dim=128, moe_inter_dim=32, n_layers=3, n_dense_layers=1,
+                   n_heads=4, n_routed_experts=8, n_shared_experts=1, n_activated_experts=2, score_func="sigmoid",
+                   q_lora_rank=32, kv_lora_rank=16, qk_nope_head_dim=16, qk_rope_head_dim=8, v_head_dim=16,
+                   max_seq_len=32, original_seq_len=32)
+  model = Transformer(args)
+  ```
+
+  The input is `tokens`, `[B,S]` integer IDs, with `S` at most `max_seq_len`. The default `ModelArgs` is a 16B-parameter model with YaRN on, far beyond the workbench limits.
+- **Mapping:** each node is named after the module path it stands for (`layers.1.ffn`, `head`).
+  - `ParallelEmbedding` becomes `Embedding`.
+  - Each `Block` becomes RMSNorm → `LatentAttention` (MLA, causal) → residual add, then RMSNorm → feed-forward → residual add.
+  - The feed-forward is Linear/SiLU/Multiply/Linear for the first `n_dense_layers` blocks, `MoE` for the rest.
+  - Then the final RMSNorm, the last position and the bias-free `head`.
+  - The reference gives its gate a bias only at the full width (`dim == 7168`); the import does the same.
+- **What it reproduces:** the single-device bf16 forward from position 0. At that point the KV cache holds just the current sequence, so the result equals the cache-free computation the graph runs, in float32. The "naive" and "absorb" attention implementations compute the same function.
+- **Refused:** `dtype="fp8"`, `max_seq_len > original_seq_len` (YaRN changes the rotary frequencies and the softmax scale), configurations above 128 nodes or 50M parameters, and a `tokens` shape longer than `max_seq_len`.
+- **Weights:** as with every import, checkpoint weights are not loaded.
+
+`tests/fixtures/deepseek_v3/` holds the pinned file with its MIT license. `backend/test_deepseek_reference.py` checks that it is still the pinned blob, imports it, and compares the graph's logits with the reference forward written out from the MLA and MoE transcriptions used by `test_latent_attention.py` and `test_moe.py`. The vendored file itself is never executed.
+
 ## Known semantic limitations
 
 - **Unsupported pool options are rejected, not discarded.** AvgPool requires `ceil_mode=False`, `count_include_pad=True`, and `divisor_override=None`; AdaptiveMaxPool requires `return_indices=False`. The importer reports the source location and returns no graph for non-default values.
