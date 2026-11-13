@@ -6,6 +6,7 @@ import { RESIDUAL_COLOR, type Point3 } from './flowGeometry';
 import { compactImageLayout, DEFAULT_IMAGE_OPTIONS, imageNodeScale, placeImageLabels, type ImageExportOptions, type ImageLabel, type LabelRequest, type Rect } from './imageLayout';
 import { shapeText } from './analysis';
 import { buildAttentionExport, exportStacks } from './attentionExport';
+import { majorGroup } from './tensorBlock';
 import type { Analysis, Graph, Layer } from './types';
 
 interface ExportSource { scene: THREE.Scene; camera: THREE.OrthographicCamera; graph: Graph; analysis: Analysis; dimensions: Record<string, Point3>; expanded: boolean; viewport: { width: number; height: number }; direction?: () => string; }
@@ -55,6 +56,35 @@ function shadedFill(color: THREE.Color, points: THREE.Vector3[]) {
   const normal = new THREE.Vector3().subVectors(points[1], points[0]).cross(new THREE.Vector3().subVectors(points[2], points[0])).normalize();
   const shade = 0.74 + 0.16 * (normal.y * 0.5 + 0.5) + 0.2 * Math.max(0, normal.dot(KEY_LIGHT));
   return `#${color.clone().multiplyScalar(shade).getHexString()}`;
+}
+
+/**
+ * The tensor cell grid of one face of a solid block (see tensorBlock.ts), as a single path. A
+ * face spans two of the block's local axes; each gets the lines of its cell count, and an axis
+ * whose cells would be narrower than 4 px in the image is left out, as in the 3D view.
+ */
+function faceGrid(points: THREE.Vector3[], object: THREE.Object3D, color: THREE.Color, project: (point: THREE.Vector3) => number[], scale: number) {
+  const cells = object.userData.exportCells as Point3 | undefined;
+  if (!cells) return '';
+  const inverse = object.matrixWorld.clone().invert(), local = points.map(p => p.clone().applyMatrix4(inverse));
+  const axisOf = (from: THREE.Vector3, to: THREE.Vector3) => { const d = to.clone().sub(from), size = [Math.abs(d.x), Math.abs(d.y), Math.abs(d.z)]; return size.indexOf(Math.max(...size)); };
+  const [a, b, c, d] = points, minor: string[] = [], major: string[] = [];
+  // Lines across the face at whole cells along `p0 → p1`, each running to the matching point on
+  // `q0 → q1`; every `majorGroup` cells the line is heavier, as in the 3D view.
+  const across = (count: number, p0: THREE.Vector3, p1: THREE.Vector3, q0: THREE.Vector3, q1: THREE.Vector3) => {
+    const [x0, y0] = project(p0), [x1, y1] = project(p1), length = Math.hypot(x1 - x0, y1 - y0), group = majorGroup(count);
+    if (count < 2) return;
+    for (let i = 1; i < count; i++) {
+      const heavy = group > 1 && i % group === 0;
+      if (length / (heavy ? count / group : count) < 4 * scale) continue;
+      (heavy ? major : minor).push(`M${project(p0.clone().lerp(p1, i / count)).join(',')} L${project(q0.clone().lerp(q1, i / count)).join(',')}`);
+    }
+  };
+  across(cells[axisOf(local[0], local[1])], a, b, d, c);
+  across(cells[axisOf(local[0], local[3])], a, d, b, c);
+  const stroke = `#${color.clone().multiplyScalar(0.62).getHexString()}`, width = Math.max(0.5, 0.7 * scale);
+  return (minor.length ? `<path d="${minor.join(' ')}" fill="none" stroke="${stroke}" stroke-width="${width}" stroke-opacity="0.3"/>` : '')
+    + (major.length ? `<path d="${major.join(' ')}" fill="none" stroke="${stroke}" stroke-width="${width * 1.4}" stroke-opacity="0.6"/>` : '');
 }
 const layoutDimensions = (source: ExportSource) => Object.fromEntries(source.graph.nodes.map(node => [node.id, isAttention(node.op) ? attentionLayout(node, source.expanded, true, exportStacks(source.graph, node)).dimensions : scaled(source.dimensions[node.id], BLOCK_LAYOUT_SCALE)]));
 
@@ -296,6 +326,9 @@ export function exportSceneSvg(source: ExportSource, width: number, options = DE
           const depth = points.reduce((sum, p) => sum + p.clone().applyMatrix4(image.camera.matrixWorldInverse).z, 0) / points.length;
           const fill = solid ? shadedFill(material.color, points) : `#${material.color.getHexString()}`;
           polygons.push({ depth, text: `<polygon${identity} points="${points.map(p => project(p).join(',')).join(' ')}" fill="${fill}" fill-opacity="${material.opacity}" stroke="${fill}" stroke-width="0.4"/>` });
+          const grid = solid && points.length === 4 ? faceGrid(points, object, material.color, project, image.width / 1920) : '';
+          // Just in front of its face, so the depth sort draws the grid right after the face.
+          if (grid) polygons.push({ depth: depth + 1e-6, text: grid });
         }
       }
     });

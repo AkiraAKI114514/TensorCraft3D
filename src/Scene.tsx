@@ -10,6 +10,7 @@ import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
 import { outerResidualCurve, residualEdges } from './graphRoutes';
 import { crossInputRole, isCrossAttention, isProjectionPort } from './attentionConfig';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
+import { createTensorMaterial, majorGroup, tensorCells } from './tensorBlock';
 import type { ImageExportOptions } from './imageLayout';
 import { useI18n } from './i18n';
 
@@ -103,6 +104,20 @@ function NodeOutline({ dims, color }: { dims: [number, number, number]; color: s
 
 /** The block's own hue, darker: edges that read as the block's, not as a second colour. */
 const edgeTone = (color: string) => `#${new THREE.Color(color).multiplyScalar(0.62).getHexString()}`;
+
+/**
+ * A layer drawn as the tensor it outputs: a solid block whose faces carry that tensor's cell
+ * grid, so channels, rows and columns are counted on the block instead of implied by its size.
+ * The footprint is unchanged, which keeps the layout, routes and image export where they were.
+ */
+function TensorBlock({ dims, color, glow, cells }: { dims: [number, number, number]; color: string; glow: number; cells: [number, number, number] }) {
+  const block = useMemo(createTensorMaterial, []);
+  useEffect(() => () => block.material.dispose(), [block]);
+  block.material.color.set(color); block.material.emissive.set(color); block.material.emissiveIntensity = glow;
+  block.uniforms.uCells.value.set(...cells); block.uniforms.uGroups.value.set(...cells.map(majorGroup) as [number, number, number]);
+  block.uniforms.uHalf.value.set(dims[0] / 2, dims[1] / 2, dims[2] / 2); block.uniforms.uLine.value.set(edgeTone(color));
+  return <mesh userData={{ exportMesh: true, exportShade: true, exportCells: cells }} material={block.material}><boxGeometry args={dims} /></mesh>;
+}
 
 const GROUND_Y = -0.09;
 let shadowTexture: THREE.CanvasTexture | null = null;
@@ -298,10 +313,9 @@ function World(props: Props) {
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} /> : <>
         {/* Solid, matte blocks: a translucent block blended with whatever stood behind it, which
-            muddied both colours wherever neighbours overlapped. */}
-        <mesh userData={{ exportMesh: true, exportShade: true }}>
-          <boxGeometry args={dims} /><meshStandardMaterial color={color} roughness={0.62} metalness={0.04} emissive={color} emissiveIntensity={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} />
-        </mesh>
+            muddied both colours wherever neighbours overlapped. A merge node's small cube stands
+            for the operation, not for a tensor, so it has no grid. */}
+        <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} />
         <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}
         {!isAttention(n.op) && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
