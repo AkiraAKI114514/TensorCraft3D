@@ -11,7 +11,9 @@ MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 def graph_fingerprint(graph):
     computation = {
-        "nodes": [{"id": node["id"], "op": node["op"], "params": node["params"]} for node in graph["nodes"]],
+        # `shares` changes which weights a layer uses, so it is part of the computation; it is
+        # added only when present, which keeps every existing fingerprint unchanged.
+        "nodes": [{"id": node["id"], "op": node["op"], "params": node["params"], **({"shares": node["shares"]} if node.get("shares") is not None else {})} for node in graph["nodes"]],
         "edges": [{key: edge[key] for key in ("source", "target", "sourcePort", "targetPort") if key in edge} for edge in graph["edges"]],
     }
     return hashlib.sha256(json.dumps(computation, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()

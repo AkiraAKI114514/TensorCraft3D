@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import type { Graph } from '../src/types';
 
 const source = `import math
 import torch
@@ -196,5 +197,52 @@ test('the getting-started guide follows what the user does and never runs anythi
   await expect(guide).toContainText('已完成 4 / 5 步');
   await guide.getByRole('button', { name: '重新开始', exact: true }).click();
   await expect(guide).toContainText('已完成 0 / 5 步');
+  expect(errors).toEqual([]);
+});
+
+test('imports a layer called twice as shared weights and lets the panel untie and retie it', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const tied = `from torch import nn
+import torch.nn.functional as F
+
+class TiedNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cell = nn.Linear(8, 8)
+        self.head = nn.Linear(8, 2)
+    def forward(self, x):
+        x = F.relu(self.cell(x))
+        x = F.relu(self.cell(x))
+        return self.head(x)
+`;
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '导入 PyTorch 代码', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '导入 PyTorch 代码', exact: true });
+  await dialog.getByRole('textbox', { name: 'PyTorch 源代码', exact: true }).fill(tied);
+  await dialog.getByRole('button', { name: '解析代码', exact: true }).click();
+  await dialog.getByLabel('导入输入形状 x').fill('2, 8');
+  await dialog.getByRole('button', { name: '解析代码', exact: true }).click();
+  await expect(dialog.locator('.diagnostic-item.info', { hasText: 'SHARED_WEIGHTS' })).toContainText('已导入为权重共享');
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('button', { name: '导入模型', exact: true }).click();
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  // 8*8+8 for the cell, counted once, plus 8*2+2 for the head.
+  const total = page.locator('.model-summary strong').first();
+  await expect(total).toHaveText('90');
+  const graph = await page.evaluate(() => JSON.parse(localStorage.getItem('tensorlab-project')!) as Graph);
+  const sharing = graph.nodes.filter(node => node.shares !== undefined);
+  expect(sharing).toHaveLength(1);
+  const [{ id, shares: owner }] = sharing;
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator(`.react-flow__node[data-id="${id}"]`).click();
+  const share = page.getByLabel('共享权重自', { exact: true });
+  await expect(share).toHaveValue(owner!);
+  await share.selectOption('');
+  await expect(total).toHaveText('162');
+  await share.selectOption(owner!);
+  await expect(total).toHaveText('90');
+  await page.getByRole('button', { name: '导出代码', exact: true }).click();
+  await expect(page.locator('.code-preview')).toContainText(`values["${id}"] = self.layers["${owner}"](`);
   expect(errors).toEqual([]);
 });

@@ -119,6 +119,9 @@ function candidateBlocks(graph: Graph, order: string[]): Block[] {
  */
 export function autoGroup(graph: Graph): { graph: Graph; groups: number } {
   if (graph.nodes.some(isGroup)) return { graph, groups: 0 };
+  // 权重共享的层签名完全相同，看起来正是「重复的块」；但折成块实例后每个实例各有一份权重，
+  // 共享就丢了。宁可不分：图里有共享时整体不做自动分组。
+  if (graph.nodes.some(node => node.shares !== undefined)) return { graph, groups: 0 };
   const order = topologicalOrder(graph);
   // 拓扑排序必须覆盖所有节点，否则图里有环，交给分析器去报错。
   if (order.length !== graph.nodes.length || order.length < 4) return { graph, groups: 0 };
@@ -213,6 +216,8 @@ function inspectSelection(graph: Graph, members: string[]): { entry: string; exi
   const inside = new Set(members);
   if (inside.size !== members.length) return '选择中包含重复节点';
   if (members.some(id => !graph.nodes.some(n => n.id === id))) return '选择中包含不存在的节点';
+  // 块的每个实例各有一份权重，共享关系进不了块：共享层和被共享的层都留在顶层。
+  if (graph.nodes.some(n => n.shares !== undefined && (inside.has(n.id) || inside.has(n.shares)))) return '共享权重的层不能放进结构块';
   const internalIn = new Set<string>(), internalOut = new Set<string>();
   for (const edge of graph.edges) {
     if (!inside.has(edge.source) || !inside.has(edge.target)) continue;

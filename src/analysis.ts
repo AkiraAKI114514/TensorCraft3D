@@ -40,6 +40,7 @@ export function validateGraph(value: unknown): Graph {
     if (n.repeat !== undefined && (!Number.isInteger(n.repeat) || n.repeat < 1 || n.repeat > MAX_REPEAT)) throw new Error(`节点 repeat 必须是 1–${MAX_REPEAT} 的整数`);
     if (n.op === GROUP_OP) { if (typeof n.subgraph !== 'string' || !n.subgraph) throw new Error('结构块实例必须指定 subgraph'); }
     else if (n.subgraph !== undefined) throw new Error('只有结构块实例可以指定 subgraph');
+    if (n.shares !== undefined && (typeof n.shares !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.shares) || n.op === GROUP_OP)) throw new Error('共享权重引用无效');
     for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= ((n.op === 'ConstantAdd' || n.op === 'ConstantMul') && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
@@ -54,6 +55,8 @@ export function validateGraph(value: unknown): Graph {
   for (const [name, def] of Object.entries(subgraphs)) {
     if (!def || typeof def.name !== 'string' || !Array.isArray(def.nodes) || !Array.isArray(def.edges) || !['auto', 'manual'].includes(def.origin)) throw new Error(`子图 ${name} 定义无效`);
     if (def.nodes.length > 128 || def.edges.length > 512) throw new Error(`子图 ${name} 超过限制（128 层 / 512 连线）`);
+    // 块的每个实例各有一份权重，块内的层 id 在展开时还会被改写，所以共享只允许出现在顶层。
+    if (def.nodes.some(inner => inner?.shares !== undefined)) throw new Error(`子图 ${name} 内的层不能共享权重`);
     let depth = 0;
     const probe = new Set<string>([name]);
     const walk = (key: string) => { if (depth > MAX_SUBGRAPH_DEPTH) throw new Error(`子图嵌套超过 ${MAX_SUBGRAPH_DEPTH} 层`); const target = subgraphs[key]; if (!target) return; depth += 1; for (const inner of target.nodes) if (inner.op === GROUP_OP && inner.subgraph) { if (probe.has(inner.subgraph)) throw new Error(`子图 ${inner.subgraph} 形成循环引用`); probe.add(inner.subgraph); walk(inner.subgraph); probe.delete(inner.subgraph); } depth -= 1; };
@@ -368,6 +371,23 @@ function analyzeExpanded(graph: Graph): Analysis {
   }
   const batches = graph.nodes.filter(n => n.op === 'Input' && layers[n.id]).map(n => layers[n.id].output[0]);
   if (new Set(batches).size > 1) add('INPUT_BATCH', '所有模型输入的 batch 维度必须一致');
+  // 权重共享：带 `shares` 的层复用另一层的模块，所以它自己不拥有参数。两层必须是同一个算子、
+  // 参数逐项相同，并且各自算出的参数量相同——对这里的算子来说，这等价于权重形状相同。
+  // backend/graph.py 给出同样的判断。
+  const canonical = (params: Record<string, unknown>) => JSON.stringify(Object.keys(params).sort().map(key => [key, params[key]]));
+  for (const n of graph.nodes) {
+    if (n.shares === undefined) continue;
+    const info = layers[n.id], owner = graph.nodes.find(other => other.id === n.shares), ownerInfo = owner ? layers[owner.id] : undefined;
+    const fail = (message: string) => add('SHARED_WEIGHTS', message, n.id);
+    if (!owner || owner.id === n.id) fail('共享权重需要指向另一层');
+    else if (owner.shares !== undefined) fail('共享权重只能指向拥有参数的层，不能指向另一个共享层');
+    else if (owner.op !== n.op || canonical(owner.params) !== canonical(n.params)) fail('共享权重的两层必须是相同算子且参数一致');
+    else if (repeatOf(n) !== 1 || repeatOf(owner) !== 1) fail('共享权重的层不能使用 repeat 折叠');
+    else if (!info || !ownerInfo) continue;
+    else if (!ownerInfo.parameters) fail('被共享的层没有可共享的参数');
+    else if (info.parameters !== ownerInfo.parameters) fail('共享权重的两层输入形状不同，权重形状不一致');
+    else { parameters -= info.parameters; layers[n.id] = { ...info, parameters: 0 }; }
+  }
   if (parameters > 50e6) add('PARAMETER_LIMIT', '模型总参数超过 5000 万，请减少头维度或分支数');
   if (parameters > 0) Object.entries(layers).forEach(([id, info]) => { if (info.parameters > 1e4 && info.parameters / parameters > 0.7) add('PARAMETER_HOG', `该层占总参数 ${(info.parameters / parameters * 100).toFixed(0)}%，考虑池化或降维`, id, 'warning'); });
   return { layers, order, diagnostics, parameters, activationBytes, valid: !diagnostics.some(d => d.level === 'error') };

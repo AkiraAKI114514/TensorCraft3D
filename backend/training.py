@@ -21,8 +21,13 @@ def build_model(graph):
             super().__init__()
             self.layers = nn.ModuleDict()
             self.dead_relu = {}
+            # A node with `shares` calls its owner's module instead of owning one. It is
+            # deliberately not registered under a second name: the weights would then appear
+            # twice in the state dict and in the per-layer gradient record.
+            self.shared = {node["id"]: node["shares"] for node in graph["nodes"] if node.get("shares") is not None}
             for node in graph["nodes"]:
                 key, op, p = node["id"], node["op"], node["params"]
+                if key in self.shared: continue
                 repeat = int(node.get("repeat", 1) or 1)
                 edge = info["baseEdges"][key][0] if info["baseEdges"][key] else None
                 in_shape = (info["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else info["shapes"][edge["source"]]) if edge else []
@@ -93,6 +98,7 @@ def build_model(graph):
             by_id = {node["id"]: node for node in graph["nodes"]}
             for key in info["order"]:
                 node = by_id[key]; op = node["op"]; args = [edge_value(e) for e in info["baseEdges"][key]]
+                module_key = self.shared.get(key, key)
                 if op == "Input": values[key] = x[key] if isinstance(x, dict) else x
                 elif op == "Output": values[key] = args[0]
                 elif op == "Add": values[key] = sum(args)
@@ -126,14 +132,14 @@ def build_model(graph):
                     attention_callback = None
                     if attention_observer is not None:
                         attention_callback = lambda stage, branch, tensors, node_id=key: attention_observer(node_id, stage, branch, tensors)
-                    instances = self.layers[key]
+                    instances = self.layers[module_key]
                     query, context = args[0], (args[1] if len(args) > 1 else None)
                     for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
                         value, ports[key] = instance.forward_with_ports(query, context, overrides, observer=attention_callback)
                         query = value
                     values[key] = query
-                elif key in self.layers:
-                    instances = self.layers[key]
+                elif module_key in self.layers:
+                    instances = self.layers[module_key]
                     # Folded nodes run their independent instances in series; shapes are preserved.
                     dead = 0.0; value = None
                     for index, instance in enumerate(instances if isinstance(instances, nn.ModuleList) else (instances,)):

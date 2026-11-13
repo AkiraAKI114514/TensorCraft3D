@@ -259,8 +259,12 @@ export function generatePython(graph: Graph) {
         }
         declared = `${className}()`;
       }
-      declare(node.id, declared, repeat);
-      const accessor = attr(node.id);
+      // A layer that shares weights declares nothing: it calls its owner's module, which is what
+      // makes the two calls one set of weights in the generated code and on re-import. The
+      // analyzers only admit sharing between unfolded top-level layers, so the owner is always
+      // an entry of this same `self.layers`.
+      if (node.shares === undefined) declare(node.id, declared, repeat);
+      const accessor = attr(node.shares ?? node.id);
       if (isAttention(node.op)) {
         const overrideMap = `{${overrides.map(e => `${JSON.stringify(e.targetPort)}: ${value(e)}`).join(', ')}}`;
         if (repeat === 1) forward.push(`        values[${key}], ports[${key}] = ${accessor}.forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrideMap})`);

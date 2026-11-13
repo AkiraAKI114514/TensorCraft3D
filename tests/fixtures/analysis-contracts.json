@@ -1193,6 +1193,188 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "shared_linear_counts_its_weights_once",
+      "graph": {
+        "version": 1, "name": "shared_linear_counts_its_weights_once",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 72 }
+    },
+    {
+      "id": "shared_layer_rejects_different_parameters",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_different_parameters",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8, "bias": 0 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_different_operator",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_different_operator",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "LayerNorm", "params": { "normalized_shape": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_different_input_width",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_different_input_width",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Wide", "op": "Linear", "params": { "out_features": 16 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 16 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_missing_owner",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_missing_owner",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "ghost" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_itself",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_itself",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n3" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_folded_instance",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_folded_instance",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "repeat": 2, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_an_owner_without_parameters",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_an_owner_without_parameters",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "ReLU", "params": {}, "position": { "x": 300, "y": 0 }, "shares": "n2" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_an_owner_that_shares",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_an_owner_that_shares",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n4", "name": "Third", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 400, "y": 0 }, "shares": "n3" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n4" },
+          { "id": "e4", "source": "n4", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

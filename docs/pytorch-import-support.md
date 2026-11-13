@@ -71,7 +71,7 @@ The MQA/GQA examples import `backend.attention` and run **from the repository ro
 
 - **Unsupported pool options are rejected, not discarded.** AvgPool requires `ceil_mode=False`, `count_include_pad=True`, and `divisor_override=None`; AdaptiveMaxPool requires `return_indices=False`. The importer reports the source location and returns no graph for non-default values.
 - **Softmax/LogSoftmax need explicit `dim`.** An unspecified dimension maps to `-1`, not every PyTorch implicit-axis behavior.
-- Repeated parameter-bearing layer calls are rejected rather than treated as supported weight sharing.
+- **Calling one parameter-owning layer more than once is weight sharing.** The first call builds the layer; each later call becomes a node that reuses its weights, so the parameters are counted, trained and exported once. This covers a layer called twice in `forward` and an index-free loop such as `for _ in range(n): x = self.layer(x)`. The calls must give the layer the same weight shapes (torch would fail the same model at run time otherwise). A parameter-free layer called twice is simply two layers. Sharing into, out of or across a folded block is still rejected with `SHARED_WEIGHTS`, because each block instance owns its weights.
 - Missing input shapes may be conservatively inferred with a warning. Indexing/positional buffers need sufficiently explicit shapes. Import success does not guarantee every runtime value or unrepresented PyTorch option is valid.
 - Float32 transcendental constants are compared with numerical tolerances, not a cross-platform bitwise guarantee.
 

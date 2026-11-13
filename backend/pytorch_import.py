@@ -129,6 +129,11 @@ class Parser:
         self.group_map = {}
         # Counts Group applications, so a loop can tell whether index 0 covered all instances.
         self.group_applies = 0
+        # First node built for each parameter-owning module, so a second call of the same module
+        # becomes a node that shares the first one's weights instead of a second set of weights.
+        self.module_nodes = {}
+        # Depth of folded-block replays in progress; sharing is not expressible inside a block.
+        self.group_depth = 0
         self.constraints = []
         self.warnings = []
         self.calls = 0
@@ -669,15 +674,23 @@ class Parser:
             # infer the body from the finished graph.
             before = len(self.graph["nodes"])
             unit = module.children["0"]
+            self.group_depth += 1
             try: value = self.apply(unit, [Tensor(identifier.node)], {}, f"{name}.0", call)
             except ImportIssue as error:
                 error.diagnostic.setdefault("occurrences", module.count)
                 raise
+            finally: self.group_depth -= 1
             self.group_bodies[identifier.node] = [candidate["id"] for candidate in self.graph["nodes"][before:]]
             return identifier
         if module.kind in ("ModuleDict", "ModuleList"): raise ImportIssue("容器需选取具体层或静态遍历", call)
-        if id(module) in self.used_modules and module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention"):
-            raise ImportIssue("同一参数层被多次调用涉及权重共享，目前无法忠实转换", call, "SHARED_WEIGHTS")
+        # Calling one parameter-owning module twice is weight sharing: the second call becomes a
+        # node that reuses the first node's weights. A block instance owns its weights and its
+        # inner ids are rewritten on expansion, so sharing into or out of a folded block has no
+        # faithful form and keeps the rejection.
+        stateful = module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "RMSNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention")
+        owner = self.module_nodes.get(id(module)) if stateful else None
+        if stateful and (self.group_depth and id(module) in self.used_modules or owner is not None and (self.group_depth or any(owner in body for body in self.group_bodies.values()))):
+            raise ImportIssue("结构块内的参数层被重复调用：块实例各自拥有权重，这种权重共享目前无法忠实转换", call, "SHARED_WEIGHTS")
         self.used_modules[id(module)] = module
         params = module.params.copy()
         standard = False
@@ -718,6 +731,8 @@ class Parser:
                 self.hint(tensor, Module("Bilinear", expected=params["in2_features"]) if module.kind == "Bilinear" and i == 1 else module)
             sources = [(tensor, None) for tensor in args]
         result = self.add(module.kind, params, sources, name, call)
+        if owner is not None: self.graph["nodes"][-1]["shares"] = owner
+        elif stateful: self.module_nodes[id(module)] = result.node
         if module.expected is not None: self.constraints.append((result.node, module.expected, module.kind, call))
         if standard:
             return (result, "attention_weights_unsupported")
@@ -1382,11 +1397,16 @@ class Parser:
                     # is not, the remaining instances are replayed normally.
                     count = self.range_count(statement.iter, env)
                     if count is None: raise ImportIssue("循环只支持静态层容器", statement)
-                    if self.referenced(statement.body, statement.target) != 1: raise ImportIssue("循环体需要恰好使用一次循环变量", statement)
+                    uses = self.referenced(statement.body, statement.target)
+                    if uses > 1: raise ImportIssue("循环体最多使用一次循环变量", statement)
                     before = self.group_applies
                     self.assign(statement.target, 0, env)
                     self.statements(statement.body, env, attrs)
-                    if self.group_applies == before:
+                    # A body that ignores the index -- `for _ in range(n): x = self.layer(x)` --
+                    # calls the same modules on every pass. That is weight sharing, so each pass
+                    # is replayed and the repeated calls become sharing nodes. A body that uses
+                    # the index is replayed too unless index 0 already stood for a folded chain.
+                    if uses == 0 or self.group_applies == before:
                         for ordinal in range(1, count):
                             self.assign(statement.target, ordinal, env)
                             self.statements(statement.body, env, attrs)
@@ -1513,6 +1533,19 @@ class Parser:
             input_info["shape"] = node["params"]["shape"]
             if input_info["inferred"]:
                 self.warnings.append({"level": "warning", "code": "INFERRED_SHAPE", "message": f"输入 {input_info['name']} 使用推断形状 {input_info['shape']}，请确认批次、序列长度或图像尺寸。"})
+        sharing = [node for node in self.graph["nodes"] if node.get("shares") is not None]
+        if sharing:
+            # A module called twice only shares something if it owns parameters. An affine-free
+            # norm does not, and two calls of it are simply two identical layers, so those
+            # references are dropped rather than refused as "nothing to share". The probe runs
+            # on the graph without any sharing; if it fails, the real analysis below reports why.
+            try:
+                counts = analyze_graph({**self.graph, "nodes": [{key: value for key, value in node.items() if key != "shares"} for node in self.graph["nodes"]]})["parameters"]
+                for node in sharing:
+                    if not counts.get(node["shares"]): del node["shares"]
+            except (ValueError, TypeError, KeyError, OverflowError): pass
+            kept = sum(1 for node in sharing if node.get("shares") is not None)
+            if kept: self.warnings.append({"level": "info", "code": "SHARED_WEIGHTS", "message": f"有 {kept} 处重复调用同一参数层，已导入为权重共享：这些层复用首次调用的权重，不重复计入参数量。"})
         try: analysis = analyze_graph(self.graph)
         except (ValueError, TypeError, KeyError, OverflowError) as error:
             source = self.node_sources.get(str(error).split(":", 1)[0])

@@ -528,6 +528,22 @@ def analyze_expanded_graph(graph):
         if prod(shape) > 16_000_000 or count * repeat > 50_000_000: raise ValueError(f"{key}: layer exceeds local memory limits")
         shapes[key] = shape; parameters[key] = count * repeat
         total += count * repeat; activation += prod(shape[1:]) * 4 * repeat
+    # Weight sharing: a node with `shares` reuses another node's module, so it owns no
+    # parameters itself. Both must be the same operator with identical parameters and the same
+    # standalone parameter count, which for these operators means the same weight shapes.
+    # Must mirror src/analysis.ts.
+    for node in nodes:
+        owner_id = node.get("shares")
+        if owner_id is None: continue
+        key = node["id"]
+        owner = by_id.get(owner_id) if isinstance(owner_id, str) else None
+        if owner is None or owner_id == key: raise ValueError(f"{key}: shares must name another layer")
+        if owner.get("shares") is not None: raise ValueError(f"{key}: shares must name a layer that owns its parameters")
+        if node["op"] != owner["op"] or node["params"] != owner["params"]: raise ValueError(f"{key}: a shared layer needs the same operator and parameters as {owner_id}")
+        if int(node.get("repeat", 1) or 1) != 1 or int(owner.get("repeat", 1) or 1) != 1: raise ValueError(f"{key}: shared layers cannot be folded with repeat")
+        if not parameters[owner_id]: raise ValueError(f"{key}: {owner_id} has no parameters to share")
+        if parameters[key] != parameters[owner_id]: raise ValueError(f"{key}: shared weights need the input shape {owner_id} has")
+        total -= parameters[key]; parameters[key] = 0
     if total > 50_000_000: raise ValueError("Model exceeds 50M parameters")
     if len({shapes[n["id"]][0] for n in inputs}) != 1: raise ValueError("All model inputs must have the same batch dimension")
     return {"order": order, "shapes": shapes, "portShapes": port_shapes, "baseEdges": base_edges, "overrideEdges": override_edges, "incoming": incoming, "parameters": parameters, "totalParameters": total, "activationBytesPerSample": activation, "input": inputs[0]["id"], "inputs": [n["id"] for n in inputs], "output": outputs[0]["id"], "nodes": nodes}
@@ -553,7 +569,15 @@ def analyze_graph(graph):
                 raise ValueError(f"{node['id']}: Group requires a subgraph name")
         elif node.get("subgraph") is not None:
             raise ValueError(f"{node['id']}: only Group nodes may declare a subgraph")
+        shares = node.get("shares")
+        if shares is not None and (not isinstance(shares, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,63}", shares) or node["op"] == "Group"):
+            raise ValueError(f"{node['id']}: invalid shares reference")
         authored[node["id"]] = node
+    # Each instance of a block owns its weights, and expansion rewrites the ids inside it, so
+    # sharing is only ever expressed between top-level layers.
+    for name, definition in (graph.get("subgraphs") or {}).items():
+        if isinstance(definition, dict) and any(isinstance(inner, dict) and inner.get("shares") is not None for inner in definition.get("nodes") or []):
+            raise ValueError(f"Subgraph {name}: layers inside a block cannot share weights")
     for edge in authored_edges:
         if not isinstance(edge, dict) or edge.get("source") not in authored or edge.get("target") not in authored:
             raise ValueError("Invalid or duplicate edge")

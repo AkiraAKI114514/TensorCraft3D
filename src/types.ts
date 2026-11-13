@@ -18,7 +18,11 @@ export const repeatOf = (layer: { repeat?: number }) => layer.repeat ?? 1;
 /** 子图实例的哨兵算子。它是节点，但没有自己的 params：结构来自 Graph.subgraphs。 */
 export const GROUP_OP = 'Group';
 export const MAX_SUBGRAPH_DEPTH = 16;
-export interface Layer { id: string; name: string; op: Op; params: Params; position: { x: number; y: number }; repeat?: number; subgraph?: string; }
+/**
+ * `shares` 让这一层复用另一层的模块：同一份权重在图里被调用两次。它只出现在顶层图里，
+ * 指向一个自己拥有参数、算子与参数完全相同的层；共享层自己的参数计为 0。旧项目没有这个字段。
+ */
+export interface Layer { id: string; name: string; op: Op; params: Params; position: { x: number; y: number }; repeat?: number; subgraph?: string; shares?: string; }
 /** 子图定义。origin 只影响能否被自动解散：手动分组永不被自动识别撤销。 */
 export interface SubgraphDef { id: string; name: string; nodes: Layer[]; edges: Edge[]; origin: 'auto' | 'manual'; }
 export const isGroup = (layer: { op: Op }): boolean => layer.op === GROUP_OP;
