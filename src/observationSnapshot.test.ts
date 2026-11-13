@@ -94,6 +94,14 @@ describe('offline observation snapshots', () => {
     expect(snapshot.attentions).toHaveLength(1);
     expect(snapshot.attentions[0]).toMatchObject({ nodeId: 'attn', branch: 0, head: 0, mask: 'causal' });
     expect(snapshot.attentions[0].tensors.probabilities.slice.values[0].slice(1).every(value => value === 0)).toBe(true);
+    // Both heads of the branch, the captured one equal to its detail window.
+    const overview = snapshot.attentions[0].overview!;
+    expect(overview.map(entry => entry.head)).toEqual([0, 1]);
+    expect(overview[0].values).toEqual(snapshot.attentions[0].tensors.probabilities.slice.values);
+    const edit = (change: (entry: Record<string, any>) => void) => { const value = JSON.parse(attended.snapshot) as Record<string, any>; change(value.attentions[0]); return () => parseObservationSnapshot(JSON.stringify(value)); };
+    expect(edit(entry => { entry.overview[1].entropy = 1.5; })).toThrow('观测快照内容无效：attentions[0].overview[1].entropy');
+    expect(edit(entry => { entry.overview[1].head = 2; })).toThrow('观测快照内容无效：attentions[0].overview[1].head');
+    expect(edit(entry => { entry.overview = undefined; })().attentions[0].overview).toBeUndefined();
     const moved = attention(); moved.name = 'Renamed'; moved.nodes[1] = { ...moved.nodes[1], name: 'self-attention', position: { x: 300, y: 40 } };
     expect(snapshotMatches(moved, snapshot)).toBe(true);
     const changed = attention(); changed.nodes[1].params.causal = 0;

@@ -56,6 +56,21 @@ export const ATTENTION_TENSORS = {
 } as const;
 export type AttentionTensor = keyof typeof ATTENTION_TENSORS;
 
+/**
+ * One query head of the selected branch in the overview: its softmax probabilities at the
+ * selected window (at most 16 × 16), the mean normalized row entropy (0 = one key, 1 = evenly
+ * spread over the keys a row may see) and the mean of each row's largest probability.
+ */
+export interface HeadSummary {
+  head: number;
+  kvHead: number;
+  rows: number;
+  columns: number;
+  values: (number | null)[][];
+  entropy: number | null;
+  peak: number | null;
+}
+
 export interface AttentionSnapshot extends AttentionSelection {
   nodeId: string;
   kvHead: number;
@@ -72,6 +87,8 @@ export interface AttentionSnapshot extends AttentionSelection {
   scoreSource: 'projected-qk';
   outputSource: 'scaled_dot_product_attention';
   tensors: Record<AttentionTensor, AttentionMatrix>;
+  /** Every head of the branch; an older backend or snapshot has none. */
+  overview?: HeadSummary[];
 }
 
 export interface InferenceReport {

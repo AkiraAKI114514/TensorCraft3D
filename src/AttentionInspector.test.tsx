@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import AttentionMatrix, { matrixStep } from './AttentionMatrix';
 import AttentionInspector from './AttentionInspector';
 import { I18nProvider } from './i18n';
-import type { AttentionMatrix as Matrix, AttentionSnapshot } from './inferenceTypes';
+import type { AttentionMatrix as Matrix, AttentionSnapshot, HeadSummary } from './inferenceTypes';
 
 const matrix: Matrix = {
   nodeId: 'attention', shape: [2, 3], dtype: 'float32', elements: 6, finiteCount: 5, nonFiniteCount: 1,
@@ -16,6 +16,10 @@ const snapshot: AttentionSnapshot = {
   queryStart: 0, keyStart: 1, scoreSource: 'projected-qk', outputSource: 'scaled_dot_product_attention',
   tensors: { q: matrix, k: matrix, v: matrix, scores: matrix, probabilities: matrix, headOutput: matrix, branchOutput: matrix, mergedOutput: matrix }
 };
+const overview: HeadSummary[] = [0, 1, 2, 3].map(head => ({
+  head, kvHead: head >> 1, rows: 2, columns: 2, values: head === 0 ? [[1, 0], [null, 0.5]] : [[0.5, 0.5], [0.2, 0.8]],
+  entropy: head === 0 ? null : 0.25, peak: head === 0 ? null : 0.9,
+}));
 
 describe('bounded attention presentation', () => {
   it('encodes probability with a fixed scale and signed matrices symmetrically', () => {
@@ -77,8 +81,30 @@ describe('bounded attention presentation', () => {
   it('only masks score and probability matrices, and translates the mask wording', () => {
     const projections = renderToStaticMarkup(<AttentionMatrix matrix={matrix} title="Q" />);
     expect(projections).not.toContain('matrix-mask-layer');
-    const english = renderToStaticMarkup(<I18nProvider initialLanguage="en"><AttentionInspector snapshot={{ ...snapshot, mask: 'causal' }} transformer={false} /></I18nProvider>);
+    const english = renderToStaticMarkup(<I18nProvider initialLanguage="en"><AttentionInspector snapshot={{ ...snapshot, mask: 'causal', overview }} transformer={false} onSelectHead={() => undefined} /></I18nProvider>);
     expect(english).not.toMatch(/[㐀-鿿]/);
     expect(english).toContain('masked by the causal mask');
+    expect(english).toContain('All heads · B2 · probability window');
+  });
+
+  it('sets every head of the branch side by side and marks the one the detail shows', () => {
+    const live = renderToStaticMarkup(<AttentionInspector snapshot={{ ...snapshot, overview }} transformer={false} onSelectHead={() => undefined} />);
+    expect(live).toContain('全部 Head · B2 · 概率窗口');
+    expect(live.match(/aria-pressed="(true|false)"/g)).toEqual(['aria-pressed="false"', 'aria-pressed="false"', 'aria-pressed="false"', 'aria-pressed="true"']);
+    expect(live).toContain('aria-label="H4：平均熵 0.25，平均最大概率 0.90"');
+    expect(live).toContain('aria-label="H1：平均熵 —，平均最大概率 —"');
+    expect(live).toContain('需要重新运行');
+    expect(live).not.toContain('aria-disabled');
+    // The fixed 0–1 scale: one is the darkest step, zero is neutral, a missing value is marked.
+    expect(live).toContain('matrix-positive-6');
+    expect(live).toContain('matrix-neutral');
+    expect(live).toContain('matrix-nonfinite');
+    // A snapshot only holds the captured head's detail: the tiles stay readable but choose nothing.
+    const offline = renderToStaticMarkup(<AttentionInspector snapshot={{ ...snapshot, overview }} transformer={false} />);
+    expect(offline.match(/aria-disabled="true"/g)).toHaveLength(4);
+    expect(offline).toContain('快照只含采集时那个 head 的详情');
+    // One head has nothing to compare, and an older report has no overview at all.
+    expect(renderToStaticMarkup(<AttentionInspector snapshot={{ ...snapshot, overview: overview.slice(3) }} transformer={false} />)).not.toContain('head-overview');
+    expect(renderToStaticMarkup(<AttentionInspector snapshot={snapshot} transformer={false} />)).not.toContain('head-overview');
   });
 });

@@ -53,11 +53,32 @@ test('observes actual cross-attention heads, offsets, KV groups and trained stat
   validateAttention(random.attentions[0]);
   expect(random.weights).toBe('random-initialized'); expect(random.attentions[0].kvHead).toBe(0);
   const attention = panel.getByRole('region', { name: 'Attention Inspector', exact: true });
+  const detail = attention.locator('.attention-matrix:not(.head-overview)'), overview = attention.locator('.head-overview');
   await expect(attention).toContainText('融合 SDPA 有浮点差异');
   await attention.getByText('矩阵数值表 · 当前窗口', { exact: true }).click();
-  await expect(attention.locator('table')).toBeVisible();
-  await attention.locator('g[tabindex]').first().focus();
-  await expect(attention.locator('.tensor-hover')).toContainText('Query 0 · Key 0');
+  await expect(detail.locator('table')).toBeVisible();
+  await detail.locator('g[tabindex]').first().focus();
+  await expect(detail.locator('.tensor-hover')).toContainText('Query 0 · Key 0');
+  // Every query head of the branch sits above the detail; the shown head's tile is its window.
+  const heads = random.attentions[0].overview!;
+  expect(heads.map(entry => [entry.head, entry.kvHead])).toEqual([[0, 0], [1, 0], [2, 1], [3, 1]]);
+  expect(heads[0].values).toEqual(random.attentions[0].tensors.probabilities.slice.values);
+  for (const entry of heads) {
+    expect([entry.rows, entry.columns]).toEqual([16, 16]);
+    expect(entry.entropy!).toBeGreaterThan(0); expect(entry.entropy!).toBeLessThanOrEqual(1);
+    expect(entry.peak!).toBeGreaterThanOrEqual(1 / 24); expect(entry.peak!).toBeLessThanOrEqual(1);
+  }
+  const tiles = overview.getByRole('group', { name: '全部 Head', exact: true }).getByRole('button');
+  await expect(tiles).toHaveCount(4);
+  await expect(tiles.nth(0)).toHaveAttribute('aria-pressed', 'true');
+  await tiles.nth(2).focus();
+  await expect(overview.locator('.tensor-hover')).toContainText('H3：平均熵');
+  await overview.screenshot({ path: testInfo.outputPath('attention-overview.png') });
+  // Choosing a tile picks the head the detail shows, which needs a new run.
+  await tiles.nth(2).click();
+  await expect(panel.getByLabel('Attention Head')).toHaveValue('2');
+  await expect(panel.locator('.tensor-stale')).toContainText('旧快照已失效');
+  await expect(attention).toHaveCount(0);
   await panel.getByLabel('Attention 分支').selectOption('1');
   await panel.getByLabel('Attention Head').selectOption('3');
   await panel.getByLabel('Attention Query 起点').fill('4');
@@ -70,19 +91,23 @@ test('observes actual cross-attention heads, offsets, KV groups and trained stat
   expect(selected.branch).toBe(1); expect(selected.head).toBe(3); expect(selected.kvHead).toBe(1);
   expect(selected.tensors.probabilities.rowStart).toBe(4); expect(selected.tensors.probabilities.columnStart).toBe(9);
   expect(selected.tensors.probabilities.slice.rows).toBe(16); expect(selected.tensors.probabilities.slice.columns).toBe(15);
+  expect(selected.overview![3].values).toEqual(selected.tensors.probabilities.slice.values);
+  await expect(tiles).toHaveCount(4);
+  await expect(tiles.nth(3)).toHaveAttribute('aria-pressed', 'true');
   await attention.getByLabel('Attention 内部张量').selectOption('scores');
   await expect(attention).toContainText('缩放分数');
   await attention.getByLabel('Attention 内部张量').selectOption('headOutput');
   await expect(attention).toContainText('实际 SDPA');
   await attention.getByLabel('Attention 内部张量').selectOption('probabilities');
   await page.evaluate(() => document.documentElement.dataset.theme = 'dark');
-  await attention.locator('.attention-matrix').screenshot({ path: testInfo.outputPath('attention-dark.png') });
+  await detail.screenshot({ path: testInfo.outputPath('attention-dark.png') });
   await page.evaluate(() => document.documentElement.dataset.theme = 'light');
-  await attention.locator('.attention-matrix').screenshot({ path: testInfo.outputPath('attention-light.png') });
+  await detail.screenshot({ path: testInfo.outputPath('attention-light.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-  await attention.locator('.attention-matrix').screenshot({ path: testInfo.outputPath('attention-mobile.png') });
+  await detail.screenshot({ path: testInfo.outputPath('attention-mobile.png') });
+  await overview.screenshot({ path: testInfo.outputPath('attention-overview-mobile.png') });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole('button', { name: '训练', exact: true }).click();
   await page.getByLabel('训练轮次', { exact: true }).fill('2');

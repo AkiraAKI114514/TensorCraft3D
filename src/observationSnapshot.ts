@@ -1,5 +1,5 @@
 import { validateGraph } from './analysis';
-import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type ParameterSnapshot, type TensorSnapshot } from './inferenceTypes';
+import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type HeadSummary, type ParameterSnapshot, type TensorSnapshot } from './inferenceTypes';
 import { expandGraph } from './subgraph';
 import { computationKey } from './trainedModel';
 import type { Graph } from './types';
@@ -102,7 +102,17 @@ function attention(value: unknown, field: string): AttentionSnapshot {
     return [key, described];
   })) as Record<keyof typeof ATTENTION_TENSORS, AttentionMatrix>;
   const numHeads = integer(item.numHeads, `${field}.numHeads`, 1, 16), branches = integer(item.branches, `${field}.branches`, 1, 8), kvHeads = integer(item.kvHeads, `${field}.kvHeads`, 1, numHeads);
+  // Optional: every head's thumbnail, from files written after the overview existed.
+  const share = (value: unknown, path: string) => { const parsed = measured(value, path); return parsed === null || (parsed >= -1e-6 && parsed <= 1 + 1e-6) ? parsed : invalid(path); };
+  const overview = item.overview === undefined ? undefined : list(item.overview, `${field}.overview`, 16).map((raw, index): HeadSummary => {
+    const entry = record(raw, `${field}.overview[${index}]`), path = `${field}.overview[${index}]`;
+    const rows = integer(entry.rows, `${path}.rows`, 0, MAX_SIDE), columns = integer(entry.columns, `${path}.columns`, 0, MAX_SIDE);
+    const values = rows ? matrix(entry.values, rows, columns, `${path}.values`) : (list(entry.values, `${path}.values`, 0), []);
+    values.forEach((row, r) => row.forEach((value, c) => share(value, `${path}.values[${r}][${c}]`)));
+    return { head: integer(entry.head, `${path}.head`, 0, numHeads - 1), kvHead: integer(entry.kvHead, `${path}.kvHead`, 0, kvHeads - 1), rows, columns, values, entropy: share(entry.entropy, `${path}.entropy`), peak: share(entry.peak, `${path}.peak`) };
+  });
   return {
+    ...(overview ? { overview } : {}),
     nodeId: text(item.nodeId, `${field}.nodeId`, 512), branch: integer(item.branch, `${field}.branch`, 0, branches - 1), head: integer(item.head, `${field}.head`, 0, numHeads - 1),
     queryStart: integer(item.queryStart, `${field}.queryStart`), keyStart: integer(item.keyStart, `${field}.keyStart`), kvHead: integer(item.kvHead, `${field}.kvHead`, 0, kvHeads - 1),
     numHeads, kvHeads, branches, headDim: integer(item.headDim, `${field}.headDim`, 1), queryLength: integer(item.queryLength, `${field}.queryLength`, 1), keyLength: integer(item.keyLength, `${field}.keyLength`, 1),

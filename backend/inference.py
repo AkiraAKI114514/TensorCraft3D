@@ -86,6 +86,12 @@ def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
+def _share(value: float) -> float | None:
+    """A summary that lies in [0, 1] by definition, without the float32 rounding that can step past
+    an end; a non-finite input has no share at all."""
+    return min(1.0, max(0.0, float(value))) if _finite(value) else None
+
+
 def _shape_elements(shape: list[int]) -> int:
     result = 1
     for value in shape:
@@ -425,6 +431,43 @@ def _validate_attention(attention: dict[str, AttentionSelection], info: dict[str
         raise InferenceError("Attention inspection scratch exceeds 64 MB")
 
 
+def _head_overview(record: dict[str, Any], selection: AttentionSelection, causal: bool, torch: Any) -> list[dict[str, Any]]:
+    """Every query head of the selected branch, side by side: each head's softmax probabilities at
+    the selected window, at most 16 x 16, with two summaries over the whole matrix.
+
+    `entropy` is the mean over query rows of the row's entropy divided by the largest it could be
+    (the log of the keys that row may see, so causal rows count only their visible keys): near 0
+    the head looks at one key, near 1 it spreads evenly. `peak` is the mean of each row's largest
+    probability. Heads are computed one at a time, so the scratch is one score matrix, which the
+    selected-head limit already bounds.
+    """
+    q_all, k_all, repeats = record["q"][0], record["k"][0], record["repeats"]
+    overview = []
+    for head in range(int(q_all.shape[0])):
+        q, k = q_all[head].float(), k_all[head // repeats].float()
+        with torch.no_grad():
+            # The detail's exact expression, so the selected head's thumbnail equals its matrix.
+            scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(q.shape[-1]))
+            rows, keys = int(scores.shape[-2]), int(scores.shape[-1])
+            if causal:
+                scores = scores.masked_fill(torch.ones((rows, keys), dtype=torch.bool, device=scores.device).triu(1), float("-inf"))
+                visible = torch.arange(1, rows + 1, device=scores.device).clamp(max=keys).float()
+            else:
+                visible = torch.full((rows,), float(keys), device=scores.device)
+            probabilities = torch.softmax(scores, dim=-1)
+            entropy = -(probabilities * torch.log(probabilities.clamp_min(1e-30))).sum(-1)
+            largest = torch.log(visible)
+            spread = torch.where(largest > 0, entropy / largest.clamp_min(1e-12), torch.zeros_like(entropy))
+            peak = probabilities.max(-1).values
+        window = probabilities[selection.queryStart:selection.queryStart + MAX_SLICE_SIDE, selection.keyStart:selection.keyStart + MAX_SLICE_SIDE].detach().cpu().tolist()
+        overview.append({
+            "head": head, "kvHead": head // repeats, "rows": len(window), "columns": len(window[0]) if window else 0,
+            "values": [[float(item) if _finite(item) else None for item in row] for row in window],
+            "entropy": _share(spread.mean().item()), "peak": _share(peak.mean().item()),
+        })
+    return overview
+
+
 def _capture_attention(node_id: str, selection: AttentionSelection, record: dict[str, Any], torch: Any) -> dict[str, Any]:
     q = record["q"][0, selection.head]
     native_k = record["k"][0, selection.head // record["repeats"]]
@@ -462,6 +505,7 @@ def _capture_attention(node_id: str, selection: AttentionSelection, record: dict
         "headDim": int(q.shape[-1]), "queryLength": int(q.shape[-2]), "keyLength": int(native_k.shape[-2]),
         "scale": scale, "mask": "causal" if causal else "none", "dropout": 0, "scoreSource": "projected-qk",
         "outputSource": "scaled_dot_product_attention", "tensors": tensors,
+        "overview": _head_overview(record, selection, causal, torch),
     }
 
 

@@ -86,6 +86,24 @@ class AttentionInspectorRuntimeTests(unittest.TestCase):
             observed = model(x, attention_observer=lambda *_: None)
             torch.testing.assert_close(expected, observed)
 
+    def test_the_overview_holds_every_head_of_the_branch_as_the_detail_computes_it(self):
+        for kind, kv_heads, causal in (("grouped_query", 2, 0), ("self", 4, 1)):
+            with self.subTest(kind=kind, causal=causal):
+                graph = attention_graph(kind=kind, kv_heads=kv_heads, heads=4, query=6, key=6)
+                graph["nodes"][1]["params"]["causal"] = causal
+                item = run_inference(self.request(graph, selection={"head": 2}))["attentions"][0]
+                overview = item["overview"]
+                self.assertEqual([entry["head"] for entry in overview], [0, 1, 2, 3])
+                self.assertEqual([entry["kvHead"] for entry in overview], [head // (4 // kv_heads) for head in range(4)])
+                # The selected head's thumbnail is the detail's probability window.
+                self.assertEqual(overview[2]["values"], item["tensors"]["probabilities"]["slice"]["values"])
+                for entry in overview:
+                    self.assertEqual((entry["rows"], entry["columns"]), (6, 6))
+                    self.assertTrue(0.0 <= entry["entropy"] <= 1.0 + 1e-6 and 0.0 < entry["peak"] <= 1.0 + 1e-6)
+                    if causal:
+                        # Nothing after the query's own position, so the first row is all on key 0.
+                        self.assertEqual(entry["values"][0][1:], [0.0] * 5)
+
     def test_scores_softmax_and_explicit_v_match_sdpa(self):
         graph = attention_graph(kind="grouped_query", kv_heads=2, heads=4)
         result = run_inference(self.request(graph, selection={"head": 2}))

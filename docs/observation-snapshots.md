@@ -69,7 +69,7 @@ Every node of the executed graph has one `tensors` entry. Folded blocks are expa
 - a window of at most 16 × 16 at the chosen leading indices
 - for `[1,C,H,W]` and `[1,C,D,H,W]`, the page of up to 16 channels that contains the selected one
 
-An `attentions` entry holds Q/K/V, scores, probabilities and outputs for one branch and head. Each matrix has statistics over the full matrix and a window of at most 16 × 16.
+An `attentions` entry holds Q/K/V, scores, probabilities and outputs for one branch and head. Each matrix has statistics over the full matrix and a window of at most 16 × 16. Its `overview` lists every Query head of that branch with the head's probability window and its mean entropy and peak, so the workbench can compare heads; only the captured head has the full detail. Files written before this field existed open without the overview.
 
 `parameters` holds the weights and biases of every layer that has any, taken from the model the sample ran. These are the weights you trained, which is often the reason to write a snapshot. Each tensor has a `name` and is described like an activation, at the default leading indices. A convolution weight shows filter 0's kernels across input channels. A layer that shares weights names its `owner`. Files written before this field existed still open, without weights. Non-finite values are written as `null`. The writer refuses to write a file over 16 MiB, which is also the most the workbench will read.
 
