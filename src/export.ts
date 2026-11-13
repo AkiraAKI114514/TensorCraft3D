@@ -3,6 +3,7 @@ import { expandGraph, EXPAND_SEP } from './subgraph';
 import { isGroup, repeatOf, type Graph, type Layer, type SubgraphDef } from './types';
 import { attentionConfig, incomingEdges, inspectsAttention, isAttention, isProjectionPort } from './attentionConfig';
 import attentionRuntime from '../backend/attention.py?raw';
+import moeRuntime from '../backend/moe.py?raw';
 import tensorRuntime from '../backend/tensor_ops.py?raw';
 
 export function download(content: string | Blob, name: string, mime = 'text/plain') {
@@ -208,6 +209,8 @@ export function generatePython(graph: Graph) {
         }
         // MLA is a plain single-input module (no ports), so it takes the ordinary call path below.
         case 'LatentAttention': expr = `TensorLabLatentAttention(embed_dim=${p.embed_dim ?? 64}, num_heads=${p.num_heads ?? 4}, q_lora_rank=${p.q_lora_rank ?? 32}, kv_lora_rank=${p.kv_lora_rank ?? 32}, qk_nope_head_dim=${p.qk_nope_head_dim ?? 16}, qk_rope_head_dim=${p.qk_rope_head_dim ?? 8}, v_head_dim=${p.v_head_dim ?? 16}, rope_theta=${p.rope_theta ?? 10000}, causal=${Number(p.causal ?? 1) ? 'True' : 'False'}, eps=${p.eps ?? 1e-6})`; break;
+        // MoE is a plain single-input module over the last axis, like MLA.
+        case 'MoE': expr = `TensorLabMoE(dim=${info.input[0].at(-1)}, experts=${p.experts ?? 8}, top_k=${p.top_k ?? 2}, shared_experts=${p.shared_experts ?? 1}, expert_dim=${p.expert_dim ?? 64}, score_func=${JSON.stringify(p.score_func ?? 'sigmoid')}, route_scale=${p.route_scale ?? 1}, groups=${p.groups ?? 1}, topk_groups=${p.topk_groups ?? 1}, gate_bias=${Number(p.gate_bias ?? 1) ? 'True' : 'False'})`; break;
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
         case 'Multiply': forward.push(`        values[${key}] = ${inputs.join(' * ')}`); continue;
         // Operand order is edge order: the first input is the dividend. `/` broadcasts a keepdim
@@ -282,7 +285,7 @@ export function generatePython(graph: Graph) {
   let emitted = emitScope(graph, '', 'moduleDict', null, null, []);
   if (!emitted) { definitions.length = 0; classMemo.clear(); attentionClassMemo.clear(); emitted = emitScope(expanded, '', 'moduleDict', null, null, []); }
   if (!emitted) throw new Error('请先修复形状或连线错误后导出代码');
-  const helper = (expanded.nodes.some(n => inspectsAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul') ? `\n${tensorRuntime}\n` : '');
+  const helper = (expanded.nodes.some(n => inspectsAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'MoE') ? `\n${moeRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
   for (const node of expanded.nodes.filter(n => n.op === 'Embedding')) {
     const edge = expanded.edges.find(e => e.target === node.id && !e.targetPort);

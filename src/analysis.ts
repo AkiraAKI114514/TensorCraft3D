@@ -35,6 +35,15 @@ export function latentAttentionParameters(embed: number, heads: number, qLora: n
   const query = qLora ? embed * qLora + qLora + qLora * heads * (nope + rope) : embed * heads * (nope + rope);
   return query + embed * (kvLora + rope) + kvLora + kvLora * heads * (nope + value) + heads * value * embed;
 }
+export const MOE_SCORE_FUNCTIONS = ['softmax', 'sigmoid'] as const;
+/**
+ * Weights of DeepSeek-style MoE (no biases): the gate's expert-by-dim matrix, three SwiGLU matrices
+ * per routed expert, and one SwiGLU `shared * hidden` wide for the shared experts. The gate's
+ * balancing bias is a buffer, not a trained parameter. Mirrors `moe_parameters` in backend/graph.py.
+ */
+export function moeParameters(dim: number, experts: number, shared: number, hidden: number) {
+  return dim * experts + experts * 3 * dim * hidden + (shared ? 3 * dim * shared * hidden : 0);
+}
 export const shapeText = (shape?: number[]) => shape ? shape.join(' × ') : '—';
 export const formatNumber = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
 
@@ -312,6 +321,24 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (elements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
         activationBytes += elements * 4;
         count = latentAttentionParameters(embed, heads, qLora, kvLora, nope, rope, value);
+      } else if (n.op === 'MoE') {
+        // DeepSeek-style mixture of experts over the last axis; keeps the input shape.
+        // backend/graph.py makes the same calls.
+        if (output.length < 2) throw new Error('MoE 需要至少二维输入 [B,...,F]');
+        const experts = integer('experts', 8, 1, 64), topK = integer('top_k', 2, 1, 8), shared = integer('shared_experts', 1, 0, 4);
+        const hidden = integer('expert_dim', 64, 1, 16384), groups = integer('groups', 1, 1, 64), topkGroups = integer('topk_groups', 1, 1, 64);
+        const bias = integer('gate_bias', 1, 0, 1);
+        if (topK > experts) throw new Error('top_k 不能超过路由专家数 experts');
+        if (experts % groups || topkGroups > groups) throw new Error('experts 必须能被 groups 整除，且 topk_groups 不能超过 groups');
+        if (groups > 1 && topK > topkGroups * (experts / groups)) throw new Error('选中的专家组至少要容纳 top_k 个专家');
+        if (groups > 1 && bias && experts / groups < 2) throw new Error('带门控偏置时按每组最好的两个专家给组打分，每组至少需要两个专家');
+        if (!MOE_SCORE_FUNCTIONS.includes((n.params.score_func ?? 'sigmoid') as typeof MOE_SCORE_FUNCTIONS[number])) throw new Error('score_func 只能是 softmax 或 sigmoid');
+        const scale = n.params.route_scale ?? 1;
+        if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0 || scale > 1000) throw new Error('route_scale 需要是不超过 1000 的正数');
+        const tokens = product(output.slice(0, -1));
+        if (tokens * (topK + shared) * hidden > 16e6) throw new Error('MoE 中间激活超过 1600 万元素');
+        activationBytes += tokens * ((topK + shared) * hidden * 3 + experts) * 4;
+        count = moeParameters(output.at(-1)!, experts, shared, hidden);
       } else if (['Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout'].includes(n.op)) {
         const p = n.params.p ?? 0.3; if (typeof p !== 'number' || p < 0 || p >= 1) throw new Error('Dropout p 需要在 [0,1) 范围内');
       } else if (['PReLU'].includes(n.op)) {

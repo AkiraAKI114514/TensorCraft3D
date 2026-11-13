@@ -8,8 +8,16 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "Group"
+    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "MoE", "Group"
 }
+MOE_SCORE_FUNCTIONS = ("softmax", "sigmoid")
+
+
+def moe_parameters(dim, experts, shared, hidden):
+    """Weights of DeepSeek-style MoE (no biases): the gate's expert-by-dim matrix, three SwiGLU
+    matrices per routed expert, and one SwiGLU `shared * hidden` wide for the shared experts. The
+    gate's balancing bias is a buffer, not a trained parameter. Must mirror src/analysis.ts."""
+    return dim * experts + experts * 3 * dim * hidden + (3 * dim * shared * hidden if shared else 0)
 
 
 def latent_attention_parameters(embed, heads, q_lora, kv_lora, nope, rope, value):
@@ -464,6 +472,24 @@ def analyze_expanded_graph(graph):
                 if elements > 16_000_000: raise ValueError("Attention matrix exceeds local limits")
                 activation += elements // shape[0] * 4
                 count = latent_attention_parameters(embed, heads, q_lora, kv_lora, nope, rope, value)
+            elif op == "MoE":
+                # DeepSeek-style mixture of experts over the last axis; keeps the input shape. Must
+                # mirror src/analysis.ts.
+                if len(shape) < 2: raise ValueError(f"{key}: MoE requires at least [B,F]")
+                experts = integer("experts", 8, maximum=64); top_k = integer("top_k", 2, maximum=8); shared = integer("shared_experts", 1, 0, 4)
+                hidden = integer("expert_dim", 64, maximum=16384); groups = integer("groups", 1, maximum=64); topk_groups = integer("topk_groups", 1, maximum=64)
+                bias = integer("gate_bias", 1, 0, 1)
+                if top_k > experts: raise ValueError(f"{key}: top_k cannot exceed experts")
+                if experts % groups or topk_groups > groups: raise ValueError(f"{key}: experts must split evenly into groups and topk_groups cannot exceed groups")
+                if groups > 1 and top_k > topk_groups * (experts // groups): raise ValueError(f"{key}: the chosen groups must hold at least top_k experts")
+                if groups > 1 and bias and experts // groups < 2: raise ValueError(f"{key}: a gate bias rates each group by its two best experts, so a group needs two")
+                if p.get("score_func", "sigmoid") not in MOE_SCORE_FUNCTIONS: raise ValueError(f"{key}: score_func must be softmax or sigmoid")
+                scale = p.get("route_scale", 1.0)
+                if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not isfinite(scale) or not 0 < scale <= 1000: raise ValueError(f"{key}: route_scale must be a positive number up to 1000")
+                tokens = prod(shape[:-1])
+                if tokens * (top_k + shared) * hidden > 16_000_000: raise ValueError("MoE hidden activation exceeds local limits")
+                activation += tokens // shape[0] * ((top_k + shared) * hidden * 3 + experts) * 4
+                count = moe_parameters(shape[-1], experts, shared, hidden)
             elif op in _DROPOUTS:
                 rate = p.get("p", 0.3)
                 if not isinstance(rate, (int, float)) or not isfinite(rate) or not 0 <= rate < 1: raise ValueError("Dropout must be in [0,1)")

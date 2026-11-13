@@ -1503,6 +1503,182 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "moe_routes_a_sequence",
+      "graph": {
+        "version": 1, "name": "moe_routes_a_sequence",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 4, "top_k": 2, "shared_experts": 1, "expert_dim": 8, "score_func": "sigmoid", "route_scale": 1, "groups": 1, "topk_groups": 1, "gate_bias": 1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 16], "parameters": 1984 }
+    },
+    {
+      "id": "moe_without_shared_experts_on_flat_features",
+      "graph": {
+        "version": 1, "name": "moe_without_shared_experts_on_flat_features",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [3, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 4, "top_k": 1, "shared_experts": 0, "expert_dim": 8, "score_func": "softmax", "gate_bias": 0}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [3, 16], "parameters": 1600 }
+    },
+    {
+      "id": "moe_defaults_agree",
+      "graph": {
+        "version": 1, "name": "moe_defaults_agree",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 4, 32], "parameters": 55552 }
+    },
+    {
+      "id": "moe_group_limited_routing",
+      "graph": {
+        "version": 1, "name": "moe_group_limited_routing",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 8, "top_k": 2, "shared_experts": 0, "expert_dim": 4, "groups": 4, "topk_groups": 2, "gate_bias": 1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 16], "parameters": 1664 }
+    },
+    {
+      "id": "moe_allows_single_expert_groups_without_bias",
+      "graph": {
+        "version": 1, "name": "moe_allows_single_expert_groups_without_bias",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 4, "top_k": 2, "shared_experts": 0, "expert_dim": 4, "groups": 4, "topk_groups": 2, "gate_bias": 0}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 16], "parameters": 832 }
+    },
+    {
+      "id": "moe_rejects_top_k_above_experts",
+      "graph": {
+        "version": 1, "name": "moe_rejects_top_k_above_experts",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 2, "top_k": 3}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "moe_rejects_uneven_groups",
+      "graph": {
+        "version": 1, "name": "moe_rejects_uneven_groups",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 6, "top_k": 2, "groups": 4}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "moe_rejects_single_expert_groups_with_a_bias",
+      "graph": {
+        "version": 1, "name": "moe_rejects_single_expert_groups_with_a_bias",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 4, "top_k": 2, "groups": 4, "topk_groups": 2, "gate_bias": 1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "moe_rejects_an_unknown_score_function",
+      "graph": {
+        "version": 1, "name": "moe_rejects_an_unknown_score_function",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 4, "top_k": 2, "score_func": "relu"}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "moe_rejects_a_zero_route_scale",
+      "graph": {
+        "version": 1, "name": "moe_rejects_a_zero_route_scale",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 4, "top_k": 2, "route_scale": 0}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "moe_rejects_sixty_five_experts",
+      "graph": {
+        "version": 1, "name": "moe_rejects_sixty_five_experts",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 16]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MoE", "op": "MoE", "params": {"experts": 65, "top_k": 2}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

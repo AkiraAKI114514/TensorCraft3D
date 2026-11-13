@@ -3,7 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer, type Edge } from './types';
-import { shapeText } from './analysis';
+import { product, shapeText } from './analysis';
 import { EdgeLine, ParticleEdge, ResidualFlow, flowCurve } from './Flow';
 import AttentionModule, { SceneText } from './AttentionModule';
 import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
@@ -46,8 +46,9 @@ function layout(graph: Graph, analysis: Analysis, expanded: boolean) {
 function contentsDimensions(shape: number[] | undefined, op: string, node?: Layer, expanded = false): [number, number, number] {
   if (node && isAttention(op)) return attentionLayout(node, expanded).dimensions;
   if (op === 'Add' || op === 'Multiply' || op === 'Divide') return [0.3, 0.3, 0.3];
-  // Latent attention draws three parts side by side (input, latent, output), so it is wider.
-  if (op === 'LatentAttention') return [1.15, Math.min(2.5, Math.max(0.65, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), 0.8];
+  // Latent attention draws three parts side by side (input, latent, output), so it is wider; MoE
+  // draws its gate, a column of experts, its shared experts and the output, wider still.
+  if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 1.3 : 1.15, Math.min(2.5, Math.max(0.65, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), 0.8];
   if (!shape) return [0.5, 1, 1];
   if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
   return [['ReLU', 'GELU', 'Dropout', 'Flatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
@@ -154,6 +155,32 @@ function LatentAttentionBlock({ dims, color, glow, input, output, latent, paint,
     { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
   ];
   return <>{parts.map((part, index) => <group key={index} position={[part.x, 0, 0]}><TensorBlock dims={part.dims} color={part.color} glow={glow} cells={part.cells} paint={part.paint} /><NodeOutline dims={part.dims} color={outline} /></group>)}</>;
+}
+
+type BlockPart = { x: number; y?: number; dims: [number, number, number]; color: string; cells: [number, number, number]; paint: BlockPaint | null };
+const tintOf = (color: string, amount: number) => `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), amount).getHexString()}`;
+const shadeOf = (color: string, amount: number) => `#${new THREE.Color(color).multiplyScalar(amount).getHexString()}`;
+const drawParts = (parts: BlockPart[], glow: number, outline: string) => <>{parts.map((part, index) => <group key={index} position={[part.x, part.y ?? 0, 0]}><TensorBlock dims={part.dims} color={part.color} glow={glow} cells={part.cells} paint={part.paint} /><NodeOutline dims={part.dims} color={outline} /></group>)}</>;
+
+/** At most this many routed experts are drawn as bars; a larger layer draws this many. */
+const MAX_DRAWN_EXPERTS = 16;
+/**
+ * A mixture-of-experts layer as its parts, inside its own footprint: the gate (its grid is tokens by
+ * experts), one bar per routed expert, the shared experts when there are any, and the output tensor,
+ * which measured values paint.
+ */
+function MoEBlock({ dims, color, glow, output, experts, shared, paint, outline }: { dims: [number, number, number]; color: string; glow: number; output?: number[]; experts: number; shared: number; paint: BlockPaint | null; outline: string }) {
+  const [width, height, depth] = dims, gap = 0.05, gate = 0.16, column = 0.42, sharedWidth = shared ? 0.12 : 0;
+  const rest = width - gate - column - sharedWidth - gap * (shared ? 3 : 2);
+  const drawn = Math.max(1, Math.min(MAX_DRAWN_EXPERTS, experts)), spacing = Math.min(0.04, height * 0.15 / drawn), bar = (height - spacing * (drawn - 1)) / drawn;
+  const columnX = -width / 2 + gate + gap + column / 2;
+  const parts: BlockPart[] = [
+    { x: -width / 2 + gate / 2, dims: [gate, height, depth], color: tintOf(color, 0.32), cells: tensorCells(output ? [output[0], product(output.slice(1, -1)), experts] : undefined), paint: null },
+    ...Array.from({ length: drawn }, (_, index): BlockPart => ({ x: columnX, y: height / 2 - bar / 2 - index * (bar + spacing), dims: [column, bar, depth * 0.85], color, cells: [1, 1, 1], paint: null })),
+    ...(shared ? [{ x: columnX + column / 2 + gap + sharedWidth / 2, dims: [sharedWidth, height * 0.9, depth] as [number, number, number], color: shadeOf(color, 0.78), cells: [1, 1, 1] as [number, number, number], paint: null }] : []),
+    { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
+  ];
+  return drawParts(parts, glow, outline);
 }
 
 const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
@@ -443,7 +470,8 @@ function World(props: Props) {
         {/* Solid, matte blocks: a translucent block blended with whatever stood behind it, which
             muddied both colours wherever neighbours overlapped. A merge node's small cube stands
             for the operation, not for a tensor, so it has no grid. */}
-        {n.op === 'LatentAttention' ? <LatentAttentionBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} latent={Number(n.params.kv_lora_rank ?? 32)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> : <>
+        {n.op === 'LatentAttention' ? <LatentAttentionBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} latent={Number(n.params.kv_lora_rank ?? 32)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> :
+        n.op === 'MoE' ? <MoEBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} output={props.analysis.layers[n.id]?.output} experts={Number(n.params.experts ?? 8)} shared={Number(n.params.shared_experts ?? 1)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> : <>
         <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} paint={paints[n.id] ?? null} />
         <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} /></>}{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}

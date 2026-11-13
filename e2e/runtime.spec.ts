@@ -406,3 +406,40 @@ test('shows one kernel window per convolution and pooling layer, with its measur
   await expect(page.locator('.kernel-value').first()).toHaveText(/^= -?\d/);
   expect(errors).toEqual([]);
 });
+test('trains a mixture-of-experts layer, balancing its gate only when asked, and measures it', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const layer = (id: string, op: string, params: Layer['params']): Layer => ({ id, name: id, op: op as Layer['op'], params, position: { x: 0, y: 0 } });
+  // `layer_1` is the layer the workbench selects on load.
+  const graph: Graph = {
+    version: 1, name: 'MoE fixture',
+    nodes: [layer('layer_0', 'Input', { shape: [1, 6, 16] }), layer('layer_1', 'MoE', { experts: 4, top_k: 2, shared_experts: 1, expert_dim: 8, score_func: 'sigmoid', route_scale: 1, groups: 1, topk_groups: 1, gate_bias: 1 }), layer('layer_2', 'Flatten', {}), layer('layer_3', 'Linear', { out_features: 3 }), layer('layer_4', 'Output', {})],
+    edges: [0, 1, 2, 3].map(i => ({ id: `e${i}`, source: `layer_${i}`, target: `layer_${i + 1}` }))
+  };
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), graph);
+  let sent: Record<string, unknown> | undefined;
+  page.on('websocket', socket => socket.on('framesent', frame => { const message = JSON.parse(String(frame.payload)); if (message.config) sent = message.config; }));
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  // The layer has a gate bias, so the training dialog offers the balancing switch, off by default.
+  await page.getByRole('button', { name: '训练', exact: true }).click();
+  const balancing = page.getByLabel('MoE 负载均衡：每步按专家负载调整门控偏置（无辅助损失）');
+  await expect(balancing).not.toBeChecked();
+  await balancing.check();
+  await page.getByLabel('训练轮次', { exact: true }).fill('2');
+  await page.getByLabel('合成样本数', { exact: true }).fill('64');
+  await page.locator('label.field-label').filter({ hasText: '计算设备' }).locator('select').selectOption('cpu');
+  await page.getByRole('button', { name: '开始真实训练', exact: true }).click();
+  await expect(page.locator('.train-status')).toContainText('训练完成', { timeout: 90000 });
+  expect(sent?.moeBalancing).toBe(true);
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  const response = page.waitForResponse('**/api/infer');
+  await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
+  const report = await (await response).json() as InferenceReport;
+  expect(report.weights).toBe('trained');
+  expect(report.tensors.find(tensor => tensor.nodeId === 'layer_1')!.shape).toEqual([1, 6, 16]);
+  await page.getByRole('button', { name: '导出代码', exact: true }).click();
+  await expect(page.locator('.code-preview, pre').first()).toContainText('TensorLabMoE(dim=16');
+  expect(errors).toEqual([]);
+});
