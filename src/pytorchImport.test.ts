@@ -6,12 +6,12 @@ import { PRESETS } from './presets';
 import { DEFAULTS, type Graph, type Params } from './types';
 
 function roundtrip(graph: Graph) {
-  const script = `import json,sys,ast,torch\nfrom backend.pytorch_import import import_pytorch\nfrom backend.training import build_model\np=json.load(sys.stdin)\nr=import_pytorch(p["code"])\nassert r["graph"] is not None,r["diagnostics"]\na,ia=build_model(p["graph"]);b,ib=build_model(r["graph"])\nfor n in r["graph"]["nodes"]:\n if n["id"] in b.layers:\n  original_id=ast.literal_eval(n["name"].split("self.layers",1)[1][1:-1])\n  b.layers[n["id"]].load_state_dict(a.layers[original_id].state_dict())\na.eval();b.eval()\nx={k:torch.randn(*ia["shapes"][k]) for k in ia["inputs"]}\ny={i["id"]:x[i["name"]] for i in r["inputs"]}\nassert ia["totalParameters"]==ib["totalParameters"]\nassert torch.equal(a(x),b(y)),"Roundtrip changed computation"\nprint(json.dumps(r["graph"]))\n`;
+  const script = `import json,sys,ast,torch\nfrom backend.pytorch_import import import_pytorch\nfrom backend.training import build_model\nfrom backend.inference import _embedding_inputs\np=json.load(sys.stdin)\nr=import_pytorch(p["code"])\nassert r["graph"] is not None,r["diagnostics"]\na,ia=build_model(p["graph"]);b,ib=build_model(r["graph"])\nfor n in r["graph"]["nodes"]:\n if n["id"] in b.layers:\n  original_id=ast.literal_eval(n["name"].split("self.layers",1)[1][1:-1])\n  b.layers[n["id"]].load_state_dict(a.layers[original_id].state_dict())\na.eval();b.eval()\ne=_embedding_inputs(ia)\nx={k:torch.randint(e[k],tuple(ia["shapes"][k])) if k in e else torch.randn(*ia["shapes"][k]) for k in ia["inputs"]}\ny={i["id"]:x[i["name"]] for i in r["inputs"]}\nassert ia["totalParameters"]==ib["totalParameters"]\nassert torch.equal(a(x),b(y)),"Roundtrip changed computation"\nprint(json.dumps(r["graph"]))\n`;
   return JSON.parse(execFileSync('.venv/Scripts/python.exe', ['-c', script], { input: JSON.stringify({ graph, code: generatePython(graph) }), encoding: 'utf8', timeout: 30000 })) as Graph;
 }
 
 describe('PyTorch code imports', () => {
-  it.each(['cnn', 'mlp', 'residual', 'transformer', 'mqa', 'gqa', 'cross_attention', 'decoder'])('reimports exported %s with identical computation', preset => {
+  it.each(['cnn', 'mlp', 'residual', 'transformer', 'mqa', 'gqa', 'cross_attention', 'decoder', 'deepseek'])('reimports exported %s with identical computation', preset => {
     const original = PRESETS[preset](), imported = roundtrip(original);
     expect(validateGraph(imported)).toEqual(imported);
     expect(analyze(imported).valid).toBe(true);
@@ -53,6 +53,36 @@ print("matched")
     expect(analyze(imported).parameters).toBe(analysis.parameters);
     expect(imported.nodes.find(n => n.op === 'Bilinear')!.params.in2_features).toBe(width);
   }, 60000);
+
+  it('round-trips a head split and merge through Unflatten and Flatten', () => {
+    // [B,S,E] -> [B,S,H,D] -> scaled -> [B,S,E]: the export writes nn.Unflatten / nn.Flatten with
+    // their bounds, and re-importing it keeps both nodes and computes the same values.
+    const graph = PRESETS.blank();
+    graph.nodes[0].params.shape = [2, 6, 32];
+    graph.nodes.splice(1, 0,
+      { id: 'proj', name: 'Projection', op: 'Linear', params: { out_features: 32, bias: 0 }, position: { x: 100, y: 100 } },
+      { id: 'split', name: 'Split heads', op: 'Unflatten', params: { dim: -1, sizes: [4, -1] }, position: { x: 200, y: 100 } },
+      { id: 'scale', name: 'Scale', op: 'Scale', params: { factor: 0.5 }, position: { x: 300, y: 100 } },
+      { id: 'merge', name: 'Merge heads', op: 'Flatten', params: { start_dim: 2, end_dim: -1 }, position: { x: 400, y: 100 } });
+    graph.edges = [['layer_0', 'proj'], ['proj', 'split'], ['split', 'scale'], ['scale', 'merge'], ['merge', 'layer_1']].map(([source, target], i) => ({ id: `e${i}`, source, target }));
+    const analysis = analyze(graph), code = generatePython(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.layers.split.output).toEqual([2, 6, 4, 8]);
+    expect(analysis.layers.merge.output).toEqual([2, 6, 32]);
+    expect(code).toContain('nn.Unflatten(-1, (4, -1))');
+    expect(code).toContain('nn.Flatten(start_dim=2, end_dim=-1)');
+    const imported = roundtrip(graph);
+    expect(imported.nodes.filter(n => ['Unflatten', 'Flatten'].includes(n.op)).map(n => [n.op, n.params])).toEqual([['Unflatten', { dim: -1, sizes: [4, -1] }], ['Flatten', { start_dim: 2, end_dim: -1 }]]);
+    expect(analyze(imported).parameters).toBe(analysis.parameters);
+  }, 30000);
+
+  it('keeps the plain flatten export for older projects without bounds', () => {
+    const graph = PRESETS.mlp();
+    graph.nodes.splice(1, 0, { id: 'flat', name: 'Flatten', op: 'Flatten', params: {}, position: { x: 100, y: 100 } });
+    graph.edges = graph.nodes.slice(1).map((node, i) => ({ id: `e${i}`, source: graph.nodes[i].id, target: node.id }));
+    expect(generatePython(graph)).toContain('nn.Flatten(start_dim=1)');
+    expect(analyze(graph).layers.flat.output).toEqual([1, 16]);
+  });
 
   it('round-trips an authored Einsum contraction', () => {
     // Two inputs whose shared `d` axis contracts away; the export must re-import with

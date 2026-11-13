@@ -57,6 +57,7 @@ The sample runs through the same runtime and the same inspection code as `/api/i
   "inputSource": "provided", "weights": "external", "mode": "eval",
   "tensors": ["one entry per executed node"],
   "attentions": ["one entry per captured attention node"],
+  "routings": ["one entry per MoE layer"],
   "parameters": { "layer id": ["one entry per weight or bias tensor"] }
 }
 ```
@@ -70,6 +71,15 @@ Every node of the executed graph has one `tensors` entry. Folded blocks are expa
 - for `[1,C,H,W]` and `[1,C,D,H,W]`, the page of up to 16 channels that contains the selected one
 
 An `attentions` entry holds Q/K/V, scores, probabilities and outputs for one branch and head. Each matrix has statistics over the full matrix and a window of at most 16 × 16. Its `overview` lists every Query head of that branch with the head's probability window and its mean entropy and peak, so the workbench can compare heads; only the captured head has the full detail. Files written before this field existed open without the overview.
+
+A `routings` entry holds one MoE layer's routing for the sample, recorded at the top-left window:
+
+- **Scores:** the gate's scores before its bias, over at most 16 positions × 16 experts.
+- **Weights:** the weight each position gave each expert, 0 where it chose another, over the same window.
+- **Chosen experts:** the experts each windowed position kept.
+- **Load:** the positions every expert received, for all experts.
+
+The workbench checks that every chosen expert exists, that a position keeps `top_k` different experts, and that the load adds up to positions × `top_k`. Files written before routing was recorded open without it.
 
 `parameters` holds the weights and biases of every layer that has any, taken from the model the sample ran. These are the weights you trained, which is often the reason to write a snapshot. Each tensor has a `name` and is described like an activation, at the default leading indices. A convolution weight shows filter 0's kernels across input channels. A layer that shares weights names its `owner`. Files written before this field existed still open, without weights. Non-finite values are written as `null`. The writer refuses to write a file over 16 MiB, which is also the most the workbench will read.
 
