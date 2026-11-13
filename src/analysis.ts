@@ -26,6 +26,15 @@ export function einsumShape(equation: unknown, shapes: number[][]): number[] {
   for (const label of output) if (!(label in sizes)) throw new Error('einsum 输出子脚本必须出现在输入中');
   return [...output].map(label => sizes[label]);
 }
+/**
+ * Weights of DeepSeek-style MLA (no biases): the query path (one projection, or a latent with its
+ * RMSNorm), the shared K/V latent plus rotary key, its RMSNorm, the K/V up-projection and the output
+ * projection. Mirrors `latent_attention_parameters` in backend/graph.py.
+ */
+export function latentAttentionParameters(embed: number, heads: number, qLora: number, kvLora: number, nope: number, rope: number, value: number) {
+  const query = qLora ? embed * qLora + qLora + qLora * heads * (nope + rope) : embed * heads * (nope + rope);
+  return query + embed * (kvLora + rope) + kvLora + kvLora * heads * (nope + value) + heads * value * embed;
+}
 export const shapeText = (shape?: number[]) => shape ? shape.join(' × ') : '—';
 export const formatNumber = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
 
@@ -285,6 +294,24 @@ function analyzeExpanded(graph: Graph): Analysis {
           activationBytes += product(output.slice(0, 2)) * ff * 4;
           count += 2 * embed * ff + ff + 5 * embed;
         }
+      } else if (n.op === 'LatentAttention') {
+        // DeepSeek-style Multi-head Latent Attention: self-attention on [B,S,E] that keeps the input
+        // shape. backend/graph.py makes the same calls.
+        if (output.length !== 3) throw new Error('潜在注意力需要三维输入 [B,S,E]');
+        const embed = integer('embed_dim', 64, 1, 4096), heads = integer('num_heads', 4, 1, 16);
+        const qLora = integer('q_lora_rank', 32, 0, 4096), kvLora = integer('kv_lora_rank', 32, 1, 4096);
+        const nope = integer('qk_nope_head_dim', 16, 1, 512), rope = integer('qk_rope_head_dim', 8, 2, 512), value = integer('v_head_dim', 16, 1, 512);
+        if (rope % 2) throw new Error('qk_rope_head_dim 必须是偶数：旋转位置编码成对转动');
+        if (output[2] !== embed) throw new Error(`输入特征维度 ${output[2]} 与 embed_dim ${embed} 不一致`);
+        for (const [key, fallback, upper] of [['rope_theta', 10000, 1e9], ['eps', 1e-6, 1]] as const) {
+          const number = n.params[key] ?? fallback;
+          if (typeof number !== 'number' || !Number.isFinite(number) || number <= 0 || number > upper) throw new Error(`${key} 需要是不超过 ${upper} 的正数`);
+        }
+        integer('causal', 1, 0, 1);
+        const elements = output[0] * heads * output[1] * output[1];
+        if (elements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
+        activationBytes += elements * 4;
+        count = latentAttentionParameters(embed, heads, qLora, kvLora, nope, rope, value);
       } else if (['Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout'].includes(n.op)) {
         const p = n.params.p ?? 0.3; if (typeof p !== 'number' || p < 0 || p >= 1) throw new Error('Dropout p 需要在 [0,1) 范围内');
       } else if (['PReLU'].includes(n.op)) {

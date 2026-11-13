@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
+# Layers the Attention Inspector reads: Q/K/V, scores, probabilities and outputs per head.
+ATTENTION_OPS = ("Transformer", "MultiHeadAttention", "LatentAttention")
 MAX_INPUT_ELEMENTS = 4_000_000
 MAX_PARAMETERS = 5_000_000
 MAX_PARAMETER_BYTES = 20 * 1024 * 1024
@@ -167,10 +169,10 @@ def _validate_limits(info: dict[str, Any], label: str, selected: list[str] | Non
         shape = info["shapes"][key]
         if node["op"].startswith("InstanceNorm") and math.prod(shape[2:]) == 1:
             raise InferenceError(f"{key}: InstanceNorm requires more than one spatial element for single-sample eval")
-        if node["op"] not in ("Transformer", "MultiHeadAttention"):
+        if node["op"] not in ATTENTION_OPS:
             continue
         p = node["params"]
-        heads = int(p.get("num_heads", 1)); branches = int(p.get("branches", 1))
+        heads = int(p.get("num_heads", 4 if node["op"] == "LatentAttention" else 1)); branches = int(p.get("branches", 1))
         query = shape[1]
         score_keys = []
         for branch in range(branches):
@@ -474,17 +476,19 @@ def _validate_attention(attention: dict[str, AttentionSelection], info: dict[str
     extra_scratch = 0
     for node_id, selection in attention.items():
         node = by_id.get(node_id)
-        if node is None or node["op"] not in ("Transformer", "MultiHeadAttention"):
+        if node is None or node["op"] not in ATTENTION_OPS:
             raise InferenceError(f"{node_id}: attention selection requires an attention node")
         params = node["params"]
+        latent = node["op"] == "LatentAttention"
         branches = int(params.get("branches", 1))
-        heads = int(params.get("num_heads", 1))
+        heads = int(params.get("num_heads", 4 if latent else 1))
         if selection.branch >= branches:
             raise InferenceError(f"{node_id}: attention branch is outside [0,{branches - 1}]")
         if selection.head >= heads:
             raise InferenceError(f"{node_id}: attention head is outside [0,{heads - 1}]")
         query_length = int(info["shapes"][node_id][1])
-        key_shape = info["portShapes"][node_id].get(f"b{selection.branch}:k0")
+        # Latent attention has no projection ports: its keys are the query's own positions.
+        key_shape = info["portShapes"].get(node_id, {}).get(f"b{selection.branch}:k0")
         key_length = int(key_shape[1]) if key_shape is not None else query_length
         if selection.queryStart >= query_length:
             raise InferenceError(f"{node_id}: queryStart is outside the query length")
@@ -493,10 +497,15 @@ def _validate_attention(attention: dict[str, AttentionSelection], info: dict[str
         if query_length * key_length > 262144:
             raise InferenceError(f"{node_id}: selected attention score matrix exceeds the 262144 element limit")
         embed = int(params.get("embed_dim", 64))
-        head_dim = embed // heads
-        kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
-        # Captures retain all native projection/head stacks until the merged callback.
-        projection_elements = query_length * embed * 4 + key_length * head_dim * kv_heads * 2
+        if latent:
+            # Q and K heads are the position-free part plus the rotary part; V heads have their own width.
+            qk_dim = int(params.get("qk_nope_head_dim", 16)) + int(params.get("qk_rope_head_dim", 8))
+            projection_elements = query_length * (embed * 2 + heads * qk_dim) + key_length * heads * (qk_dim + int(params.get("v_head_dim", 16)) * 2)
+        else:
+            head_dim = embed // heads
+            kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
+            # Captures retain all native projection/head stacks until the merged callback.
+            projection_elements = query_length * embed * 4 + key_length * head_dim * kv_heads * 2
         extra_scratch += query_length * key_length * 64 + projection_elements * 32
     # 与张量检查同一口径：只按被检节点的祖先锥计账，否则深层模型里查看浅层注意力
     # 会被无关深层的激活拖到超限。
@@ -879,9 +888,11 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
         record = attention_records.setdefault(node_id, {})
         if stage == "merged":
             params = by_id[node_id]["params"]
-            heads = int(params.get("num_heads", 1))
-            kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
-            record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1)), "causal": bool(params.get("causal", 0))}
+            # Latent attention defaults to four causal heads, each with its own keys and values.
+            latent = by_id[node_id]["op"] == "LatentAttention"
+            heads = int(params.get("num_heads", 4 if latent else 1))
+            kv_heads = heads if latent else int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
+            record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1)), "causal": bool(params.get("causal", 1 if latent else 0))}
             record["repeats"] = heads // kv_heads
             record["merged"] = tensors["output"].detach()
             attention_results[node_id] = _capture_attention(node_id, selection, record, torch)

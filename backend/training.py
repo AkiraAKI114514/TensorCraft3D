@@ -60,7 +60,7 @@ def build_model(graph):
     # what the forward loop below iterates.
     graph = expand_subgraphs(graph)
     info = analyze_expanded_graph(graph)
-    from .attention import TensorLabAttention, TensorLabTransformer
+    from .attention import TensorLabAttention, TensorLabLatentAttention, TensorLabTransformer
     from .tensor_ops import TensorLabConstantAdd, TensorLabConstantMul
     class GraphModel(nn.Module):
         def __init__(self):
@@ -121,6 +121,8 @@ def build_model(graph):
                     elif op in ("MultiHeadAttention", "Transformer"):
                         args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1)), "causal": bool(p.get("causal", 0))}
                         return TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
+                    elif op == "LatentAttention":
+                        return TensorLabLatentAttention(int(p.get("embed_dim", 64)), num_heads=int(p.get("num_heads", 4)), q_lora_rank=int(p.get("q_lora_rank", 32)), kv_lora_rank=int(p.get("kv_lora_rank", 32)), qk_nope_head_dim=int(p.get("qk_nope_head_dim", 16)), qk_rope_head_dim=int(p.get("qk_rope_head_dim", 8)), v_head_dim=int(p.get("v_head_dim", 16)), rope_theta=float(p.get("rope_theta", 10000.0)), causal=bool(int(p.get("causal", 1))), eps=float(p.get("eps", 1e-6)))
                     else: return None
                 try:
                     module = build()
@@ -184,6 +186,17 @@ def build_model(graph):
                         value, ports[key] = instance.forward_with_ports(query, context, overrides, observer=attention_callback)
                         query = value
                     values[key] = query
+                elif op == "LatentAttention":
+                    # Its own operator with no ports, but it reports Q/K/V, scores and outputs through
+                    # the same attention observer, so the Attention Inspector reads it like any head.
+                    callback = None
+                    if attention_observer is not None:
+                        callback = lambda stage, branch, tensors, node_id=key: attention_observer(node_id, stage, branch, tensors)
+                    instances = self.layers[module_key]
+                    value = args[0]
+                    for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
+                        value = instance(value, observer=callback)
+                    values[key] = value
                 elif module_key in self.layers:
                     instances = self.layers[module_key]
                     # Folded nodes run their independent instances in series; shapes are preserved.
