@@ -69,6 +69,31 @@ CI runs frontend checks on Ubuntu and automatically discovers every `backend/tes
 
 A maintainer enables the site once, under **Settings → Pages → Source: GitHub Actions**. Until then the deployment job fails, and nothing else depends on it. To check a build under the same path locally, build with `npm exec --no -- vite build --base=/TensorCraft3D/ --outDir <folder>/TensorCraft3D` and serve `<folder>` with any static server.
 
+### README demo GIF
+
+`docs/images/workbench-demo.gif`, the README's first image, is recorded from a local build. Re-record it when the workbench's look changes:
+
+```powershell
+npm run build
+.\.venv\Scripts\python.exe run.py --no-browser
+# In another terminal; set $env:TENSORLAB_TEST_URL first if run.py chose another port
+node scripts/record-readme-demo.mjs
+```
+
+**Requirements:** PyTorch in the service, because the recording trains a model and measures every layer for real; Microsoft Edge, as for the browser tests; and `ffmpeg` on `PATH`.
+
+**What it records:**
+1. The Residual CNN template in the English UI.
+2. One convolution cut to 8 channels, which the residual add rejects, then Undo.
+3. A training run with the default settings.
+4. Every layer measured on one sample of concentric rings and painted onto the 3D blocks.
+
+**How it records:** Edge runs headless at 1280 × 800. DevTools screencast frames keep their timestamps, so the GIF plays at the speed the session ran. The cursor is drawn by the script, because headless screenshots have none.
+
+**Options:** `--out <file.gif>` writes somewhere else. `--keep-frames` keeps the PNG frames and prints their folder.
+
+**When it refuses to write:** a missing service or `ffmpeg`, or any page error, stops the script before it writes the GIF.
+
 ## The workbench
 
 - The **?** button in the header opens a getting-started checklist of five steps: pick a template, select a layer, run one sample, train, export. It ticks a step when you do it yourself, in any order, and remembers the progress in this browser (`tensorcraft-guide`). Each step's button only navigates — it switches the view or tab, or opens a dialog — and never starts inference or training.
