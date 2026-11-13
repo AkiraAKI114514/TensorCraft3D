@@ -17,13 +17,13 @@ export function semanticKind(snapshot: TensorSnapshot): SemanticKind | null {
   return rank === 4 ? 'feature-map' : rank === 5 ? 'volume' : rank === 3 ? 'sequence' : rank === 2 ? 'vector' : null;
 }
 
-function ChannelGrid({ page, limit, disabled, onSelect }: { page: ChannelPage; limit: number; disabled: boolean; onSelect: (channel: number) => void }) {
+function ChannelGrid({ page, limit, disabled, rerun, onSelect }: { page: ChannelPage; limit: number; disabled: boolean; rerun: boolean; onSelect: (channel: number) => void }) {
   const { t } = useI18n();
   const [active, setActive] = useState<number | null>(null);
   const describe = (index: number) => t('通道 {channel}：均值 {mean}，范围 {min} – {max}', { channel: page.start + index, mean: t(tensorNumber(page.stats[index].mean)), min: t(tensorNumber(page.stats[index].min)), max: t(tensorNumber(page.stats[index].max)) });
   return <figure className="attention-matrix channel-grid">
     <figcaption>{t('通道网格 · 通道 {start}–{end} / 共 {total}', { start: page.start, end: page.start + page.count - 1, total: page.total })}</figcaption>
-    <p className="attention-caption">{t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道会改动切片，需要重新运行。')}</p>
+    <p className="attention-caption">{rerun ? t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道会改动切片，需要重新运行。') : t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道直接查看它的窗口。')}</p>
     <div className="channel-grid-items" role="group" aria-label={t('通道网格')}>{page.maps.map((map, index) => {
       const channel = page.start + index, selected = channel === page.selected;
       // 选中的通道再点一次不应让快照失效，所以它只是一个只读的当前项。
@@ -45,7 +45,8 @@ function ChannelGrid({ page, limit, disabled, onSelect }: { page: ChannelPage; l
  * 它不请求任何额外数据——热力图就是已经返回的那个 16 × 16 窗口，通道网格是后端随快照
  * 一起返回的同一窗口在相邻通道上的取值。
  */
-export default function TensorSemanticView({ snapshot, disabled, onSelectChannel }: { snapshot: TensorSnapshot; disabled: boolean; onSelectChannel: (channel: number) => void }) {
+/** `rerun` is false when the channel grid only switches between maps already in hand (an offline snapshot). */
+export default function TensorSemanticView({ snapshot, disabled, rerun = true, onSelectChannel }: { snapshot: TensorSnapshot; disabled: boolean; rerun?: boolean; onSelectChannel: (channel: number) => void }) {
   const { t } = useI18n();
   const kind = semanticKind(snapshot);
   if (!kind) return null;
@@ -60,6 +61,6 @@ export default function TensorSemanticView({ snapshot, disabled, onSelectChannel
   return <div className="inspector-section tensor-semantic"><h3>{t('语义视图')}<span>{t('最多 16 × 16')}</span></h3>
     <p className="tensor-note">{note}</p>
     <AttentionMatrix matrix={matrix} title={title} rows={kind === 'sequence' ? '位置' : '行'} columns={spatial ? '列' : '特征'} />
-    {spatial && snapshot.channels && <ChannelGrid page={snapshot.channels} limit={limit} disabled={disabled} onSelect={onSelectChannel} />}
+    {spatial && snapshot.channels && <ChannelGrid page={snapshot.channels} limit={limit} disabled={disabled} rerun={rerun} onSelect={onSelectChannel} />}
   </div>;
 }

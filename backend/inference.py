@@ -167,11 +167,12 @@ def _prepare_graph(graph: dict[str, Any], selected: list[str] | None = None) -> 
     return copied, inference_info, _embedding_inputs(inference_info)
 
 
-def _input_tensors(request: TensorInferenceRequest, info: dict[str, Any], embedding: dict[str, int], torch: Any, generator: Any) -> tuple[dict[str, Any], str]:
+def _input_tensors(provided: dict[str, list[Any]] | None, info: dict[str, Any], embedding: dict[str, int], torch: Any, generator: Any) -> tuple[dict[str, Any], str]:
+    """One sample per Input node: the flattened values given, or a seeded synthetic sample."""
     input_ids = list(info["inputs"])
-    if request.inputs is not None and set(request.inputs) != set(input_ids):
+    if provided is not None and set(provided) != set(input_ids):
         raise InferenceError("Provided inputs must contain exactly every Input node ID")
-    if request.inputs is None:
+    if provided is None:
         source = "synthetic"
     else:
         source = "provided"
@@ -179,7 +180,7 @@ def _input_tensors(request: TensorInferenceRequest, info: dict[str, Any], embedd
     for key in input_ids:
         shape = info["shapes"][key]
         count = _shape_elements(shape[1:])
-        values = None if request.inputs is None else request.inputs[key]
+        values = None if provided is None else provided[key]
         if values is not None:
             if len(values) != count:
                 raise InferenceError(f"Input {key} requires exactly {count} values")
@@ -364,13 +365,13 @@ def _attention_matrix(name: str, value: Any, row_start: int, column_start: int, 
     return described
 
 
-def _validate_attention(request: TensorInferenceRequest, info: dict[str, Any], selected: list[str]) -> None:
+def _validate_attention(attention: dict[str, AttentionSelection], info: dict[str, Any], selected: list[str]) -> None:
     by_id = {node["id"]: node for node in info["nodes"]}
-    unknown = set(request.attention) - set(selected)
+    unknown = set(attention) - set(selected)
     if unknown:
         raise InferenceError("attention keys must refer to selected nodeIds")
     extra_scratch = 0
-    for node_id, selection in request.attention.items():
+    for node_id, selection in attention.items():
         node = by_id.get(node_id)
         if node is None or node["op"] not in ("Transformer", "MultiHeadAttention"):
             raise InferenceError(f"{node_id}: attention selection requires an attention node")
@@ -444,6 +445,75 @@ def _capture_attention(node_id: str, selection: AttentionSelection, record: dict
     }
 
 
+def _resolve_slices(requested: dict[str, list[int]], info: dict[str, Any], by_id: dict[str, Any]) -> dict[str, list[int]]:
+    """Leading indices for every node: the requested ones, checked, and zeros elsewhere."""
+    slices: dict[str, list[int]] = {}
+    for node_id, indices in requested.items():
+        if node_id not in by_id:
+            raise InferenceError(f"Unknown slice node {node_id}")
+        rank = len(info["shapes"][node_id])
+        prefix_rank = max(0, rank - 2)
+        if len(indices) > 3 or len(indices) != prefix_rank:
+            raise InferenceError(f"Slice {node_id} requires {prefix_rank} leading indices (maximum 3)")
+        for index, size in zip(indices, info["shapes"][node_id]):
+            if index < 0 or index >= size:
+                raise InferenceError(f"Slice {node_id} index is outside tensor shape")
+        slices[node_id] = list(indices)
+    for node_id, shape in info["shapes"].items():
+        prefix_rank = max(0, len(shape) - 2)
+        if prefix_rank > 3:
+            raise InferenceError(f"Slice {node_id} has more than 3 leading axes")
+        slices.setdefault(node_id, [0] * prefix_rank)
+    return slices
+
+
+def _device_name(requested: str, torch: Any) -> str:
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise InferenceError("CUDA is unavailable in this PyTorch installation")
+    return "cuda" if requested == "cuda" or (requested == "auto" and torch.cuda.is_available()) else "cpu"
+
+
+def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: dict[str, Any], device_name: str, selected: list[str], slices: dict[str, list[int]], attention: dict[str, AttentionSelection], torch: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run one eval forward pass and describe the selected nodes and attention windows.
+
+    The inspector endpoint and the offline snapshot writer both measure through this, so a
+    snapshot holds exactly the numbers the inspector would have shown for the same weights and
+    sample. The caller builds the model, loads its weights and seeds the generators.
+    """
+    model.to(device_name)
+    model.eval()
+    inputs = {key: value.to(device_name) for key, value in inputs.items()}
+    wanted = set(selected)
+    captured: dict[str, dict[str, Any]] = {}
+    attention_records: dict[str, dict[str, Any]] = {}
+    attention_results: dict[str, dict[str, Any]] = {}
+    def observe(node_id: str, value: Any) -> None:
+        if node_id in wanted:
+            captured[node_id] = _describe(node_id, value, slices[node_id], torch)
+    def observe_attention(node_id: str, stage: str, branch: int, tensors: dict[str, Any]) -> None:
+        selection = attention.get(node_id)
+        if selection is None or (stage != "merged" and branch != selection.branch):
+            return
+        record = attention_records.setdefault(node_id, {})
+        if stage == "merged":
+            params = by_id[node_id]["params"]
+            heads = int(params.get("num_heads", 1))
+            kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
+            record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1)), "causal": bool(params.get("causal", 0))}
+            record["repeats"] = heads // kv_heads
+            record["merged"] = tensors["output"].detach()
+            attention_results[node_id] = _capture_attention(node_id, selection, record, torch)
+            del attention_records[node_id]
+        else:
+            wanted_stage = {"q": "q", "k": "k", "v": "v", "weighted": "weighted", "output": "output"}[stage]
+            record[wanted_stage] = tensors[wanted_stage].detach()
+    with torch.inference_mode():
+        model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if attention else None)
+    if set(attention_results) != set(attention):
+        raise InferenceError("Attention observer did not capture the selected nodes")
+    return [captured[node_id] for node_id in selected], [attention_results[node_id] for node_id in attention]
+
+
 def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
     try:
         import torch
@@ -456,28 +526,9 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
     by_id = {node["id"]: node for node in copied["nodes"]}
     if any(node_id not in by_id for node_id in selected):
         raise InferenceError("nodeIds must refer to graph nodes")
-    _validate_attention(request, info, selected)
-    slices: dict[str, list[int]] = {}
-    for node_id, requested in request.slices.items():
-        if node_id not in by_id:
-            raise InferenceError(f"Unknown slice node {node_id}")
-        rank = len(info["shapes"][node_id])
-        prefix_rank = max(0, rank - 2)
-        if len(requested) > 3 or len(requested) != prefix_rank:
-            raise InferenceError(f"Slice {node_id} requires {prefix_rank} leading indices (maximum 3)")
-        for index, size in zip(requested, info["shapes"][node_id]):
-            if index < 0 or index >= size:
-                raise InferenceError(f"Slice {node_id} index is outside tensor shape")
-        slices[node_id] = list(requested)
-    for node_id, shape in info["shapes"].items():
-        prefix_rank = max(0, len(shape) - 2)
-        if prefix_rank > 3:
-            raise InferenceError(f"Slice {node_id} has more than 3 leading axes")
-        slices.setdefault(node_id, [0] * prefix_rank)
-    requested_device = request.device
-    if requested_device == "cuda" and not torch.cuda.is_available():
-        raise InferenceError("CUDA is unavailable in this PyTorch installation")
-    device_name = "cuda" if requested_device == "cuda" or (requested_device == "auto" and torch.cuda.is_available()) else "cpu"
+    _validate_attention(request.attention, info, selected)
+    slices = _resolve_slices(request.slices, info, by_id)
+    device_name = _device_name(request.device, torch)
     rng_devices = [torch.cuda.current_device()] if device_name == "cuda" else []
     with torch.random.fork_rng(devices=rng_devices):
         torch.random.default_generator.manual_seed(request.seed)
@@ -485,42 +536,13 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
             torch.cuda.manual_seed(request.seed)
         generator = torch.Generator(device="cpu").manual_seed(request.seed)
         # Validate and materialize the bounded sample before constructing parameters.
-        inputs, input_source = _input_tensors(request, info, embedding, torch, generator)
+        inputs, input_source = _input_tensors(request.inputs, info, embedding, torch, generator)
         from .training import build_model
         model, _ = build_model(copied)
         if snapshot is not None:
             model.load_state_dict(snapshot.state, strict=True)
             inputs = {key: (value - snapshot.preprocessing[key]["mean"]) / snapshot.preprocessing[key]["scale"] if key in snapshot.preprocessing else value for key, value in inputs.items()}
-        model.to(device_name)
-        model.eval()
-        inputs = {key: value.to(device_name) for key, value in inputs.items()}
-        captured: dict[str, dict[str, Any]] = {}
-        attention_records: dict[str, dict[str, Any]] = {}
-        attention_results: dict[str, dict[str, Any]] = {}
-        def observe(node_id: str, value: Any) -> None:
-            if node_id in selected:
-                captured[node_id] = _describe(node_id, value, slices[node_id], torch)
-        def observe_attention(node_id: str, stage: str, branch: int, tensors: dict[str, Any]) -> None:
-            selection = request.attention.get(node_id)
-            if selection is None or (stage != "merged" and branch != selection.branch):
-                return
-            record = attention_records.setdefault(node_id, {})
-            if stage == "merged":
-                params = by_id[node_id]["params"]
-                heads = int(params.get("num_heads", 1))
-                kv_heads = int(params.get("kv_heads", 1 if params.get("attention_type") == "multi_query" else heads))
-                record["params"] = {"heads": heads, "kv_heads": kv_heads, "branches": int(params.get("branches", 1)), "causal": bool(params.get("causal", 0))}
-                record["repeats"] = heads // kv_heads
-                record["merged"] = tensors["output"].detach()
-                attention_results[node_id] = _capture_attention(node_id, selection, record, torch)
-                del attention_records[node_id]
-            else:
-                wanted = {"q": "q", "k": "k", "v": "v", "weighted": "weighted", "output": "output"}[stage]
-                record[wanted] = tensors[wanted].detach()
-        with torch.inference_mode():
-            model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if request.attention else None)
-        if set(attention_results) != set(request.attention):
-            raise InferenceError("Attention observer did not capture the selected nodes")
+        tensors, attentions = _execute(model, info, by_id, inputs, device_name, selected, slices, request.attention, torch)
     return {
         "runId": str(uuid.uuid4()),
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -532,6 +554,6 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         "model": copy.deepcopy(snapshot.metadata) if snapshot is not None else None,
         "inputTransform": snapshot.metadata["preprocessing"] if snapshot is not None else "none",
         "mode": "eval",
-        "tensors": [captured[node_id] for node_id in selected],
-        "attentions": [attention_results[node_id] for node_id in request.attention],
+        "tensors": tensors,
+        "attentions": attentions,
     }

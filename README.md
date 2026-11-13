@@ -14,7 +14,7 @@ A local **3D neural network workbench**: build visually or import PyTorch code, 
 | **Explore in 3D** | Explore CNNs, MLPs, residual networks and Transformers in 3D and topology views, including Attention's Q/K/V, heads and shared projections. |
 | **Use your code** | Import supported PyTorch source, preview and edit its structure, then export a runnable `nn.Module`. |
 | **Train for real** | Train on synthetic data or a local CSV using CPU / CUDA. Track real loss, accuracy and risk warnings, plus the selected layer's own gradient-norm curve. |
-| **Inspect tensors** | Inspect tensor values, statistics and distributions with single-sample inference; read a slice as a feature map with a channel grid or as a position × feature heatmap, and view Q/K/V, scores and probabilities in Attention Inspector. |
+| **Inspect tensors** | Inspect tensor values, statistics and distributions with single-sample inference; read a slice as a feature map with a channel grid or as a position × feature heatmap, and view Q/K/V, scores and probabilities in Attention Inspector. Open a read-only snapshot measured by your own Python run, with the weights it trained. |
 | **Save and share** | Autosave, undo/redo, project JSON import/export, plus high-resolution PNG and editable SVG diagrams. |
 
 **Templates:** CNN · MLP · Residual CNN · Transformer Encoder · MQA · GQA · Cross-Attention. You can also start with a blank canvas.
@@ -64,6 +64,7 @@ For editing and 3D only, omit `-Training`. CUDA training needs a compatible NVID
 
 - [Workbench guide](docs/workbench-guide.md) — Training, CUDA, inspection, export, testing and packaging
 - [PyTorch import support](docs/pytorch-import-support.md) — Syntax, limitations and diagnostics
+- [Offline observation snapshots](docs/observation-snapshots.md) — Measure a sample in your own Python run and open it read-only
 - [5 reproducible examples](examples/import_models/README.md) — CNN, residual, MQA, GQA and Cross-Attention
 
 **Built with:** React · TypeScript · Three.js · React Flow · FastAPI · PyTorch

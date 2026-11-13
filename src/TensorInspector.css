@@ -3,3 +3,4 @@
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .tensor-histogram{--chart-surface:#1a1a19;--chart-ink:#fff;--chart-muted:#c3c2b7;--chart-grid:#2c2c2a;--chart-axis:#383835;--chart-series:#3987e5;--chart-texture:#cde2fb}}
 :root[data-theme="dark"] .tensor-histogram{--chart-surface:#1a1a19;--chart-ink:#fff;--chart-muted:#c3c2b7;--chart-grid:#2c2c2a;--chart-axis:#383835;--chart-series:#3987e5;--chart-texture:#cde2fb}
 @media print, (forced-colors:active){.tensor-histogram .hist-bar{fill:url(#tensor-bin-texture)}}
+.tensor-snapshot-actions{display:flex;flex-wrap:wrap;gap:8px}.tensor-stale p{margin:0}.tensor-stale .button{margin-top:8px}

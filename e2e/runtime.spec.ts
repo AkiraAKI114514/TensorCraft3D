@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { test, expect } from '@playwright/test';
-import type { Graph } from '../src/types';
+import type { Graph, Layer } from '../src/types';
 
 const source = `import math
 import torch
@@ -244,5 +245,59 @@ class TiedNet(nn.Module):
   await expect(total).toHaveText('90');
   await page.getByRole('button', { name: '导出代码', exact: true }).click();
   await expect(page.locator('.code-preview')).toContainText(`values["${id}"] = self.layers["${owner}"](`);
+  expect(errors).toEqual([]);
+});
+
+test('opens an observation snapshot written by an outside Python process, read-only and bound to its graph', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const inferences: string[] = []; page.on('request', request => { if (request.url().includes('/api/infer')) inferences.push(request.url()); });
+  const layer = (id: string, op: Layer['op'], params: Layer['params'], x: number): Layer => ({ id, name: id, op, params, position: { x, y: 160 } });
+  const nodes = [layer('image', 'Input', { shape: [2, 1, 6, 6] }, 0), layer('conv', 'Conv2d', { out_channels: 4, kernel_size: 3, stride: 1, padding: 1, bias: 1 }, 180), layer('relu', 'ReLU', {}, 360), layer('flat', 'Flatten', {}, 540), layer('head', 'Linear', { out_features: 2 }, 720), layer('out', 'Output', {}, 900)];
+  const graph: Graph = { version: 1, name: 'Observed CNN', nodes, edges: nodes.slice(1).map((node, index) => ({ id: `e${index}`, source: nodes[index].id, target: node.id })) };
+  // The outside process: weights it trained (here: seeded) and one real sample, written by the
+  // snapshot writer. The browser receives only the file.
+  const snapshot = execFileSync('.venv/Scripts/python.exe', ['-c', `import json, sys, torch
+from backend.observation_snapshot import capture_snapshot, snapshot_json
+from backend.training import build_model
+graph = json.load(sys.stdin)
+torch.manual_seed(5)
+model, _ = build_model(graph)
+print(snapshot_json(capture_snapshot(graph, model.state_dict(), torch.randn(1, 1, 6, 6), label="one sample from the outside run")))
+`], { input: JSON.stringify(graph), encoding: 'utf8', timeout: 60000 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const inspector = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  await inspector.getByLabel('观测来源', { exact: true }).selectOption('offline');
+  await inspector.getByLabel('观测快照文件', { exact: true }).setInputFiles({ name: 'sample.observation.json', mimeType: 'application/json', buffer: Buffer.from(snapshot) });
+  await expect(inspector.locator('.tensor-offline')).toContainText('离线快照 · CPU · eval');
+  await expect(inspector.locator('.tensor-offline')).toContainText('one sample from the outside run');
+  await expect(inspector.locator('.tensor-offline')).toContainText('外部进程加载的权重');
+  // The starting project is another graph, so nothing is shown until its own graph is opened.
+  const unbound = inspector.locator('.tensor-stale');
+  await expect(unbound).toContainText('快照测量的是另一张计算图');
+  await inspector.getByRole('button', { name: '打开快照中的模型', exact: true }).click();
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await expect(unbound).toHaveCount(0);
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="conv"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  await expect(inspector).toContainText('conv · 实测输出');
+  await expect(inspector.locator('.tensor-stats')).toContainText('[1, 4, 6, 6]');
+  // All four captured channels are in the grid; choosing one moves the window without a run.
+  const channels = inspector.locator('.channel-grid-items button');
+  await expect(channels).toHaveCount(4);
+  await expect(inspector.locator('.channel-grid')).toContainText('点选通道直接查看它的窗口');
+  await channels.nth(2).click();
+  await expect(inspector.locator('.tensor-semantic')).toContainText('特征图 · 通道 2');
+  await expect(inspector.getByRole('region', { name: '实测张量切片', exact: true }).locator('td').first()).toHaveAttribute('title', /^\[0, 2, 0, 0\] = /);
+  // Undo returns to the earlier project, which the snapshot does not describe; redo binds it again.
+  await page.keyboard.press('Control+z');
+  await expect(unbound).toContainText('快照测量的是另一张计算图');
+  await expect(inspector.locator('.tensor-stats')).toHaveCount(0);
+  await page.keyboard.press('Control+y');
+  await expect(unbound).toHaveCount(0);
+  await inspector.getByRole('button', { name: '关闭快照', exact: true }).click();
+  await expect(inspector.locator('.tensor-offline')).toHaveCount(0);
+  expect(inferences).toEqual([]);
   expect(errors).toEqual([]);
 });

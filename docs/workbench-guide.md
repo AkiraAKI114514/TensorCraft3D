@@ -151,6 +151,10 @@ The optional `/api/infer` field `attention` maps selected node IDs to `{branch, 
 
 Python generation is also on demand: opening the Python export preview generates code for the current graph; a closed export dialog or a JSON-only preview does not generate Python.
 
+### Offline observation snapshots
+
+A Python process outside the workbench can measure a sample with weights it trained itself and hand the result over as a file. `backend/observation_snapshot.py` runs one sample through the same runtime and inspection code as `/api/infer`, for every node at once, and writes the bounded observations together with the graph. In **张量观测**, set **观测来源** to **外部 Python 观测快照 · 只读** and open the file. The workbench validates it and shows it read-only. Like trained weights, it is bound to its graph's computation, and it is kept only in page memory. Nothing in the file is executed, no weights are loaded, and the Python service is not involved. [Offline observation snapshots](observation-snapshots.md) covers the API, command line, file format and limits.
+
 ## About the warnings
 
 Architecture-time: shape errors, cycles, unconnected layers, spatial downsampling truncation, hidden linear layers losing more than 90% of their information at once, eight consecutive parameterised layers without a residual, and a single layer holding more than 70% of the parameters. Training-time: non-finite loss or gradients, exploding/vanishing gradients, per-layer anomalies, ReLU zero activation above 90%, training loss persistently failing to improve, diverging loss, and a persistently widening train/validation gap.

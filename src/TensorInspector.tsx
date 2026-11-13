@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, LoaderCircle, TriangleAlert } from 'lucide-react';
+import { Activity, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
 import type { Graph } from './types';
 import { useI18n } from './i18n';
 import type { AttentionSelection, InferenceReport } from './inferenceTypes';
 import { tensorNumber } from './inferenceTypes';
+import { MAX_OBSERVATION_BYTES, ObservationSnapshotError, parseObservationSnapshot, snapshotMatches, withChannel, type ObservationSnapshot } from './observationSnapshot';
 import type { TrainedModelMetadata } from './trainedModel';
 import TensorHistogram from './TensorHistogram';
 import TensorSemanticView from './TensorSemanticView';
@@ -12,11 +13,19 @@ import { analyze } from './analysis';
 import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import './TensorInspector.css';
 
-type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void; onObserved?: () => void };
+type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void; onObserved?: () => void; onOpenGraph?: (graph: Graph) => void };
 type Result = { graph: Graph; settings: string; report: InferenceReport };
 
-export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy, onObserved }: Props) {
+export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy, onObserved, onOpenGraph }: Props) {
   const { t } = useI18n();
+  // 观测来源：在工作台里运行推理，或只读打开外部 Python 进程写出的快照。快照只在内存里，
+  // 不写入项目，也不经过后端；它的数值只在当前图与快照的计算图一致时显示。
+  const [source, setSource] = useState<'live' | 'offline'>('live');
+  const live = source === 'live';
+  const [offline, setOffline] = useState<ObservationSnapshot | null>(null), [offlineError, setOfflineError] = useState('');
+  const [offlineChannels, setOfflineChannels] = useState<Record<string, number>>({});
+  const snapshotFile = useRef<HTMLInputElement>(null);
+  const offlineBound = useMemo(() => !!offline && snapshotMatches(graph, offline), [graph, offline]);
   const [weightMode, setWeightMode] = useState<'random' | 'trained'>(trainedModel ? 'trained' : 'random');
   const modelId = weightMode === 'trained' ? trainedModel?.modelId : undefined;
   const weightsAvailable = weightMode === 'random' || (!!modelId && trainedReady);
@@ -42,8 +51,22 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
   const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
   const previousSnapshot = result?.graph === graph ? result.report.tensors.find(tensor => tensor.nodeId === selected) : undefined;
-  const snapshot = current ? previousSnapshot : undefined;
-  const attentionSnapshot = current ? result.report.attentions?.find(value => value.nodeId === selected) : undefined;
+  const offlineTensor = offlineBound && offline ? offline.tensors.find(tensor => tensor.nodeId === selected) : undefined;
+  const offlineChannel = offlineTensor ? offlineChannels[offlineTensor.nodeId] : undefined;
+  const snapshot = live ? (current ? previousSnapshot : undefined) : offlineTensor && (offlineChannel === undefined ? offlineTensor : withChannel(offlineTensor, offlineChannel));
+  const attentionSnapshot = live ? (current ? result.report.attentions?.find(value => value.nodeId === selected) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === selected) : undefined;
+  // What the views below show comes from one run or one file; a new one remounts them.
+  const viewKey = live ? result?.report.runId ?? '' : offline?.snapshotId ?? '';
+  const openSnapshot = async (file: File) => {
+    setOfflineError('');
+    try {
+      if (file.size > MAX_OBSERVATION_BYTES) throw new ObservationSnapshotError('观测快照不能超过 16 MB');
+      const parsed = parseObservationSnapshot(await file.text());
+      if (mounted.current) { setOffline(parsed); setOfflineChannels({}); }
+    } catch (reason) {
+      if (mounted.current) setOfflineError(reason instanceof ObservationSnapshotError ? reason.message : '无法读取观测快照');
+    }
+  };
   const run = async () => {
     if (requesting.current || blocked || !ready || !valid || !selected || !weightsAvailable || !attentionValid) return;
     requesting.current = true; setBusy(true); setError(''); onBusy(true);
@@ -85,6 +108,8 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
   // Keep the pending request mounted when another inspector tab is selected.
   return <section className="tensor-inspector" aria-label={t('Tensor Inspector')} hidden={!active} aria-busy={busy}>
     <div className="tensor-heading"><span className="eyebrow">OBSERVATION / SINGLE SAMPLE</span><h2>{t('真实张量观测')}</h2></div>
+    <label className="field-label">{t('观测来源')}<select aria-label={t('观测来源')} value={source} disabled={busy} onChange={e => setSource(e.target.value as 'live' | 'offline')}><option value="live">{t('在工作台运行单样本推理')}</option><option value="offline">{t('外部 Python 观测快照 · 只读')}</option></select></label>
+    {live && <>
     <p className="tensor-note">{t('单样本 eval 推理 · 已训练权重或固定种子随机初始化权重；不加载导入源码的原始权重。粒子动画仍是结构示意。')}</p>
     {!ready && <p className="tensor-note">{t('需要支持单样本推理的 Python / PyTorch 服务，请更新并重启后端。')}</p>}
     <label className="field-label">{t('模型权重')}<select aria-label={t('推理权重来源')} value={weightMode} disabled={busy} onChange={e => setWeightMode(e.target.value as 'random' | 'trained')}><option value="trained">{t('本地训练权重')}</option><option value="random">{t('随机初始化权重')}</option></select></label>
@@ -125,8 +150,29 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
       <time dateTime={result.report.createdAt}>{result.report.createdAt}</time>
       <code title={result.report.runId}>Run {result.report.runId}</code>
     </div>}
-    {attentionSnapshot && result && <AttentionInspector key={result.report.runId + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={node?.op === 'Transformer'} />}
-    {current && !snapshot && <p className="tensor-note">{t('当前层未包含在本次采样中，选择该层后重新运行。')}</p>}
+    </>}
+    {!live && <>
+      <p className="tensor-note">{t('外部 Python 进程用 backend/observation_snapshot.py 写出结构和采样张量；这里只读显示，不运行推理，也不读取权重文件。')}</p>
+      <input ref={snapshotFile} type="file" accept=".json,application/json" hidden aria-label={t('观测快照文件')} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void openSnapshot(file); }} />
+      <div className="tensor-snapshot-actions">
+        <button className="button subtle" onClick={() => snapshotFile.current?.click()}><Upload size={14} />{offline ? t('换一个观测快照') : t('打开观测快照')}</button>
+        {offline && <button className="button subtle" onClick={() => { setOffline(null); setOfflineChannels({}); setOfflineError(''); }}><X size={14} />{t('关闭快照')}</button>}
+      </div>
+      {offlineError && <div className="diagnostic-item error" role="alert"><TriangleAlert size={15} /><p>{t(offlineError)}</p></div>}
+      {offline && <div className="tensor-provenance tensor-offline">
+        <strong>{t('离线快照 · {device} · eval', { device: offline.device })}</strong>
+        {offline.label && <span>{offline.label}</span>}
+        <span>{t('来源：{source} · 样本 {sample} · 种子 {seed}', { source: offline.inputSource === 'synthetic' ? t('合成样本') : t('自定义样本'), sample: offline.sampleIndex, seed: offline.seed })}</span>
+        <span>{t('权重：{weights}', { weights: offline.weights === 'external' ? t('外部进程加载的权重') : t('随机初始化（不是已训练模型）') })}</span>
+        <time dateTime={offline.createdAt}>{offline.createdAt}</time>
+        <code title={offline.snapshotId}>Snapshot {offline.snapshotId}</code>
+      </div>}
+      {offline && !offlineBound && <div className="tensor-stale" role="status"><p>{t('快照测量的是另一张计算图，数值不能套用到当前模型。')}</p>{onOpenGraph && <button className="button subtle" disabled={blocked} onClick={() => onOpenGraph(offline.graph)}>{t('打开快照中的模型')}</button>}</div>}
+      {offlineBound && <p className="tensor-note">{node ? t('显示 {name} 的离线观测。切片和 Attention 窗口固定在采集时的位置；通道网格可以在已采集的通道之间切换。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}</p>}
+    </>}
+    {attentionSnapshot && <AttentionInspector key={viewKey + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={node?.op === 'Transformer'} />}
+    {live && current && !snapshot && <p className="tensor-note">{t('当前层未包含在本次采样中，选择该层后重新运行。')}</p>}
+    {!live && offlineBound && node && !snapshot && <p className="tensor-note">{t('快照里没有这一层的观测。')}</p>}
     {snapshot && <>
       <div className="inspector-section"><h3>{node?.name} · {t('实测输出')}</h3>
         <dl className="tensor-stats">
@@ -137,8 +183,8 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
         </dl>
         {snapshot.nonFiniteCount > 0 && <p className="tensor-stale">{t('存在 NaN/Inf；统计和分布只包含有限元素，切片中以“非有限值”标注。')}</p>}
       </div>
-      <TensorHistogram key={result!.report.runId + snapshot.nodeId} histogram={snapshot.histogram} />
-      <TensorSemanticView key={`${result!.report.runId}${snapshot.nodeId}semantic`} snapshot={snapshot} disabled={busy} onSelectChannel={channel => changeIndex(1, channel)} />
+      <TensorHistogram key={viewKey + snapshot.nodeId} histogram={snapshot.histogram} />
+      <TensorSemanticView key={`${viewKey}${snapshot.nodeId}semantic`} snapshot={snapshot} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeIndex(1, channel) : setOfflineChannels(previous => ({ ...previous, [snapshot.nodeId]: channel }))} />
       <div className="inspector-section"><h3>{t('张量切片')}<span>{t('最多 16 × 16')}</span></h3>
         <p className="tensor-note">{t('固定前置轴，显示末尾{count}维 {shape} 的左上区域。', { count: snapshot.slice.shape.length, shape: `[${snapshot.slice.shape.join(', ')}]` })}{snapshot.slice.truncated ? t('已截断，表格不是完整张量。') : t('该切片已完整显示。')}</p>
         <div className="tensor-table-scroll" tabIndex={0} role="region" aria-label={t('实测张量切片')}>
