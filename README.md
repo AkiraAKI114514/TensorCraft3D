@@ -6,7 +6,9 @@ A local **3D neural network workbench**: build visually or import PyTorch code, 
 
 **[▶ Try the online demo](https://akiraaki114514.github.io/TensorCraft3D/)** — building, shape checks, the 3D and topology views and code/diagram export run right in the browser. Training and tensor inspection need the local Python service ([quick start](#-quick-start-windows)).
 
-[![The TensorCraft3D workbench: a residual CNN in the 3D view, the loss curves of a finished training run, and the selected convolution's own gradient-norm curve in the properties panel](docs/images/workbench.png)](https://akiraaki114514.github.io/TensorCraft3D/)
+[![A session in the TensorCraft3D workbench: a convolution in a residual CNN is cut to 8 channels, the residual add rejects it and the layers after it turn red; undo, a 30-epoch training run, then every layer is measured on one ring-pattern sample and the values are painted onto the 3D blocks](docs/images/workbench-demo.gif)](https://akiraaki114514.github.io/TensorCraft3D/)
+
+<sub>Recorded on a local install at real speed: a shape error caught while editing, a training run, then every layer measured on one sample and painted onto the 3D blocks.</sub>
 
 ## ✨ What can you do?
 
