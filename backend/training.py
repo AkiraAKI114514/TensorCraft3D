@@ -62,7 +62,7 @@ def build_model(graph):
     info = analyze_expanded_graph(graph)
     from .attention import TensorLabAttention, TensorLabLatentAttention, TensorLabTransformer
     from .moe import TensorLabMoE
-    from .tensor_ops import TensorLabConstantAdd, TensorLabConstantMul
+    from .tensor_ops import TensorLabCausalMask, TensorLabConstantAdd, TensorLabConstantMul
     class GraphModel(nn.Module):
         def __init__(self):
             super().__init__()
@@ -111,6 +111,7 @@ def build_model(graph):
                         return nn.Unflatten(int(p.get("dim", -1)), tuple(int(v) for v in sizes))
                     elif op in ("Unsqueeze", "Squeeze", "Slice", "Select", "Reduce"): return None
                     elif op == "ConstantAdd": return TensorLabConstantAdd(p["shape"], p["values"], p.get("sequence_dim"))
+                    elif op == "CausalMask": return TensorLabCausalMask(int(p.get("query_dim", -2)), int(p.get("key_dim", -1)))
                     elif op == "ConstantMul": return TensorLabConstantMul(p["shape"], p["values"], p.get("sequence_dim"))
                     elif op in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): return getattr(nn, op)(float(p.get("p", 0.3)))
                     elif op == "Embedding": return nn.Embedding(int(p.get("num_embeddings", 100)), int(p.get("embedding_dim", 32)))

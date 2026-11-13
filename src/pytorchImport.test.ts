@@ -76,6 +76,24 @@ print("matched")
     expect(analyze(imported).parameters).toBe(analysis.parameters);
   }, 30000);
 
+  it('round-trips a causal mask on hand-written scores', () => {
+    // q·kᵀ -> CausalMask -> softmax: the export embeds TensorLabCausalMask, and re-importing it keeps
+    // the mask axes and computes the same probabilities.
+    const graph = PRESETS.blank();
+    graph.nodes[0].params.shape = [2, 6, 8];
+    graph.nodes.splice(1, 0,
+      { id: 'q', name: 'Query', op: 'Linear', params: { out_features: 8, bias: 0 }, position: { x: 100, y: 100 } },
+      { id: 'k', name: 'Key', op: 'Linear', params: { out_features: 8, bias: 0 }, position: { x: 100, y: 260 } },
+      { id: 'scores', name: 'Scores', op: 'Einsum', params: { equation: 'bsd,btd->bst' }, position: { x: 200, y: 100 } },
+      { id: 'mask', name: 'Causal', op: 'CausalMask', params: { query_dim: -2, key_dim: -1 }, position: { x: 300, y: 100 } },
+      { id: 'probs', name: 'Probabilities', op: 'Softmax', params: { dim: -1 }, position: { x: 400, y: 100 } });
+    graph.edges = [['layer_0', 'q'], ['layer_0', 'k'], ['q', 'scores'], ['k', 'scores'], ['scores', 'mask'], ['mask', 'probs'], ['probs', 'layer_1']].map(([source, target], i) => ({ id: `e${i}`, source, target }));
+    expect(analyze(graph).valid).toBe(true);
+    expect(generatePython(graph)).toContain('TensorLabCausalMask(query_dim=-2, key_dim=-1)');
+    const imported = roundtrip(graph);
+    expect(imported.nodes.filter(n => n.op === 'CausalMask').map(n => n.params)).toEqual([{ query_dim: -2, key_dim: -1 }]);
+  }, 30000);
+
   it('keeps the plain flatten export for older projects without bounds', () => {
     const graph = PRESETS.mlp();
     graph.nodes.splice(1, 0, { id: 'flat', name: 'Flatten', op: 'Flatten', params: {}, position: { x: 100, y: 100 } });

@@ -8,7 +8,7 @@ export const OPS = [
   'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d',
   'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d', 'AdaptiveMaxPool1d', 'AdaptiveMaxPool2d', 'AdaptiveMaxPool3d',
   'Flatten', 'Unflatten', 'Unsqueeze', 'Squeeze', 'Slice', 'Select', 'ConstantAdd', 'ConstantMul', 'Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout', 'Embedding', 'Upsample',
-  'MultiHeadAttention', 'Transformer', 'LatentAttention', 'MoE', 'Add', 'Multiply', 'Divide', 'Concat', 'Einsum', 'Scale', 'Reduce', 'GLU', 'Group'
+  'MultiHeadAttention', 'Transformer', 'LatentAttention', 'MoE', 'Add', 'Multiply', 'Divide', 'Concat', 'Einsum', 'Scale', 'CausalMask', 'Reduce', 'GLU', 'Group'
 ] as const;
 export type Op = typeof OPS[number];
 export type Params = Record<string, number | string | number[]>;
@@ -48,7 +48,7 @@ export const COLORS: Record<Op, string> = {
   ReLU: '#e8b84b', GELU: '#e8b84b', Sigmoid: '#e8b84b', Tanh: '#e8b84b', SiLU: '#e8b84b', LeakyReLU: '#e8b84b', ELU: '#e8b84b', SELU: '#e8b84b', Softplus: '#e8b84b', Softmax: '#e8b84b', LogSoftmax: '#e8b84b', PReLU: '#e8b84b', Hardsigmoid: '#e8b84b', Hardswish: '#e8b84b', Mish: '#e8b84b', Softsign: '#e8b84b', Identity: '#8e97a7',
   MaxPool1d: '#5299cf', MaxPool2d: '#5299cf', MaxPool3d: '#5299cf', AvgPool1d: '#5299cf', AvgPool2d: '#5299cf', AvgPool3d: '#5299cf', AdaptiveAvgPool1d: '#5299cf', AdaptiveAvgPool2d: '#5299cf', AdaptiveAvgPool3d: '#5299cf', AdaptiveMaxPool1d: '#5299cf', AdaptiveMaxPool2d: '#5299cf', AdaptiveMaxPool3d: '#5299cf',
   Flatten: '#8e97a7', Unflatten: '#8e97a7', Unsqueeze: '#8e97a7', Squeeze: '#8e97a7', Slice: '#8e97a7', Select: '#8e97a7', ConstantAdd: '#5299cf', ConstantMul: '#5299cf', Dropout: '#bc8cc8', Dropout1d: '#bc8cc8', Dropout2d: '#bc8cc8', Dropout3d: '#bc8cc8', AlphaDropout: '#bc8cc8', Embedding: '#d073a8', Upsample: '#5299cf',
-  MultiHeadAttention: '#3c9bb4', Transformer: '#477eae', LatentAttention: '#5470b4', MoE: '#c0743c', Add: RESIDUAL_COLOR, Multiply: '#c98b3f', Divide: '#c98b3f', Concat: '#d073a8', Einsum: '#7a6bb5', Scale: '#879a3f', Reduce: '#4f8f7a', GLU: '#c98b3f', Group: '#6b8cae'
+  MultiHeadAttention: '#3c9bb4', Transformer: '#477eae', LatentAttention: '#5470b4', MoE: '#c0743c', Add: RESIDUAL_COLOR, Multiply: '#c98b3f', Divide: '#c98b3f', Concat: '#d073a8', Einsum: '#7a6bb5', Scale: '#879a3f', CausalMask: '#b0607a', Reduce: '#4f8f7a', GLU: '#c98b3f', Group: '#6b8cae'
 };
 export const DEFAULTS: Record<Op, Params> = {
   Input: { shape: [1, 3, 32, 32] }, Output: {},
@@ -65,5 +65,5 @@ export const DEFAULTS: Record<Op, Params> = {
   // DeepSeek-style MLA: a query latent, a shared K/V latent and a rotary part per head, causal.
   LatentAttention: { embed_dim: 64, num_heads: 4, q_lora_rank: 32, kv_lora_rank: 32, qk_nope_head_dim: 16, qk_rope_head_dim: 8, v_head_dim: 16, rope_theta: 10000, causal: 1, eps: 1e-6 },
   // DeepSeek-style MoE: routed SwiGLU experts chosen top-k per token, plus shared experts.
-  MoE: { experts: 8, top_k: 2, shared_experts: 1, expert_dim: 64, score_func: 'sigmoid', route_scale: 1, groups: 1, topk_groups: 1, gate_bias: 1 }, Add: {}, Multiply: {}, Divide: {}, Concat: { dim: 1 }, Einsum: { equation: 'bshd,bthd->bsht' }, Scale: { factor: 0.25 }, Reduce: { op: 'mean', dim: -1, keepdim: 0 }, GLU: { dim: -1 }, Group: {}
+  MoE: { experts: 8, top_k: 2, shared_experts: 1, expert_dim: 64, score_func: 'sigmoid', route_scale: 1, groups: 1, topk_groups: 1, gate_bias: 1 }, Add: {}, Multiply: {}, Divide: {}, Concat: { dim: 1 }, Einsum: { equation: 'bshd,bthd->bsht' }, Scale: { factor: 0.25 }, CausalMask: { query_dim: -2, key_dim: -1 }, Reduce: { op: 'mean', dim: -1, keepdim: 0 }, GLU: { dim: -1 }, Group: {}
 };

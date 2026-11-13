@@ -377,6 +377,12 @@ function analyzeExpanded(graph: Graph): Analysis {
         const factor = n.params.factor;
         if (typeof factor !== 'number' || !Number.isFinite(factor)) throw new Error('Scale 需要有限的数值系数 factor');
         if (Math.abs(factor) > 3.4028234663852886e38) throw new Error('Scale 系数超出 float32 范围');
+      } else if (n.op === 'CausalMask') {
+        // Scores whose key comes after their query become -inf. query_dim/key_dim name the two
+        // position axes (the last two for `q @ k.transpose(-2, -1)`); they must be equally long.
+        const rank = output.length, query = (integer('query_dim', -2, -rank, rank - 1) + rank) % rank, key = (integer('key_dim', -1, -rank, rank - 1) + rank) % rank;
+        if (query === key || query === 0 || key === 0) throw new Error('CausalMask 需要两个不同的非 batch 位置轴');
+        if (output[query] !== output[key]) throw new Error(`CausalMask 的 query 与 key 位置轴必须等长（${output[query]} 与 ${output[key]}）`);
       } else if (n.op === 'Einsum') {
         if (input.length < 1) throw new Error('Einsum 至少需要一个输入');
         output = einsumShape(n.params.equation, input);

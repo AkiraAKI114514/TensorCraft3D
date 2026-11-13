@@ -1973,6 +1973,118 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "causal_mask_on_last_two_axes",
+      "graph": {
+        "version": 1, "name": "causal_mask_on_last_two_axes",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {"query_dim": -2, "key_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 4, 6, 6], "parameters": 0 }
+    },
+    {
+      "id": "causal_mask_on_split_axes",
+      "graph": {
+        "version": 1, "name": "causal_mask_on_split_axes",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 4, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {"query_dim": 1, "key_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 6, 4, 6], "parameters": 0 }
+    },
+    {
+      "id": "causal_mask_defaults_to_last_two_axes",
+      "graph": {
+        "version": 1, "name": "causal_mask_defaults_to_last_two_axes",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 5, 5]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 5, 5], "parameters": 0 }
+    },
+    {
+      "id": "causal_mask_rejects_unequal_lengths",
+      "graph": {
+        "version": 1, "name": "causal_mask_rejects_unequal_lengths",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6, 5]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {"query_dim": -2, "key_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "causal_mask_rejects_batch_axis",
+      "graph": {
+        "version": 1, "name": "causal_mask_rejects_batch_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {"query_dim": 0, "key_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "causal_mask_rejects_one_axis_twice",
+      "graph": {
+        "version": 1, "name": "causal_mask_rejects_one_axis_twice",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {"query_dim": -1, "key_dim": 2}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "causal_mask_rejects_rank_two_input",
+      "graph": {
+        "version": 1, "name": "causal_mask_rejects_rank_two_input",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "CausalMask", "op": "CausalMask", "params": {"query_dim": -2, "key_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

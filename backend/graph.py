@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unflatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "MoE", "Group"
+    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "CausalMask", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "MoE", "Group"
 }
 MOE_SCORE_FUNCTIONS = ("softmax", "sigmoid")
 
@@ -543,6 +543,14 @@ def analyze_expanded_graph(graph):
                 factor = p.get("factor")
                 if type(factor) is not float and type(factor) is not int: raise ValueError(f"{key}: Scale requires a numeric factor")
                 if not isfinite(factor) or abs(factor) > 3.4028234663852886e38: raise ValueError(f"{key}: Scale factor is out of float32 range")
+            elif op == "CausalMask":
+                # Scores whose key comes after their query become -inf; the two position axes must be
+                # distinct, non-batch and equally long. Must mirror src/analysis.ts.
+                rank = len(shape)
+                query = integer("query_dim", -2, -rank, rank - 1) % rank
+                key_axis = integer("key_dim", -1, -rank, rank - 1) % rank
+                if query == key_axis or 0 in (query, key_axis): raise ValueError(f"{key}: CausalMask needs two distinct non-batch position axes")
+                if shape[query] != shape[key_axis]: raise ValueError(f"{key}: CausalMask query and key axes must be equally long ({shape[query]} and {shape[key_axis]})")
             elif op == "Einsum":
                 equation = p.get("equation")
                 try:

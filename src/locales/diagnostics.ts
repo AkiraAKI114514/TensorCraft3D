@@ -40,6 +40,8 @@ export const diagnosticEnglish: Record<string, string> = {
   'Unflatten 不能拆分 batch 维度': 'Unflatten cannot split the batch dimension',
   'Unflatten sizes 需要 1–5 个正整数，最多一个 -1': 'Unflatten sizes needs 1–5 positive integers, with at most one -1',
   'Unflatten 输出不能超过 6 维': 'Unflatten output cannot have more than 6 dimensions',
+  'CausalMask 需要两个不同的非 batch 位置轴': 'CausalMask needs two different non-batch position axes',
+  'CausalMask 的 query 与 key 位置轴必须等长（{query} 与 {key}）': 'CausalMask query and key position axes must be equally long ({query} and {key})',
   'Unflatten sizes 的乘积必须等于第 {dim} 维的大小 {size}': 'The product of Unflatten sizes must equal the size of dimension {dim}, {size}',
   'Slice 输出为空': 'Slice output is empty',
   '常量 shape 无效': 'Constant shape is invalid',

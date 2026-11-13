@@ -7,7 +7,7 @@ import ast
 import copy
 import math
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from .graph import MAX_REPEAT, EXPAND_SEP, analyze_graph, einsum_shape
 from .static_tensors import DynamicStaticSlice, StaticTensor, StaticTensorError, f32, new_budget
 
@@ -19,6 +19,14 @@ def unparse(node):
 def _is_none(node):
     """True for an explicit `None` literal, i.e. an affinely-neutral normalization argument."""
     return isinstance(node, ast.Constant) and node.value is None
+
+
+def _static_power(base, exponent):
+    """`head_dim ** -0.5` for static numbers; a complex or overflowing result is not a parameter."""
+    if abs(exponent) > 64: raise OverflowError("exponent too large")
+    value = base ** exponent
+    if isinstance(value, complex): raise ValueError("complex power")
+    return value
 
 
 _LABELS = "abcdefghijklmnopqrstuvwxyz"
@@ -102,10 +110,27 @@ class _BatchSize:
 BATCH = _BatchSize()
 
 
+@dataclass(frozen=True)
+class CausalPattern:
+    """A causal mask recognised from how it is built, kept symbolic and never materialised.
+
+    Entries above the diagonal (a key after its query) hold `upper`, the others `lower`: 1/0 for a
+    `tril`/`triu` of ones (True/False when `boolean`), -inf/0 for `triu` of a -inf fill. `shape` is
+    the mask's own shape, with the query axis at `rows`, the key axis at `cols` and every other axis
+    of size 1; prefix slices may shorten the two. A 1024-position buffer therefore costs nothing.
+    """
+    upper: float
+    lower: float
+    boolean: bool
+    shape: tuple
+    rows: int
+    cols: int
+
+
 class Parser:
     def __init__(self, tree, input_shapes):
         self.tree = tree
-        self.aliases = {name: name for name in ("TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabMoE", "TensorLabConstantAdd", "TensorLabConstantMul")}
+        self.aliases = {name: name for name in ("TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabMoE", "TensorLabConstantAdd", "TensorLabConstantMul", "TensorLabCausalMask")}
         for statement in tree.body:
             if isinstance(statement, ast.Import):
                 for name in statement.names:
@@ -117,7 +142,7 @@ class Parser:
                         and any(self.path(b) in ("torch.nn.Module", "nn.Module") for b in n.bases)}
         self.functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         # The embedded runtime in TensorLab exports is provided by our backend.
-        for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabMoE", "TensorLabGate", "TensorLabExpert", "TensorLabConstantAdd", "TensorLabConstantMul"):
+        for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabMoE", "TensorLabGate", "TensorLabExpert", "TensorLabConstantAdd", "TensorLabConstantMul", "TensorLabCausalMask"):
             self.classes.pop(name, None)
         self.constants = {}
         for n in tree.body:
@@ -170,11 +195,11 @@ class Parser:
             value = self.literal(node.operand, env)
             if not isinstance(value, (int, float)): raise ImportIssue("需要数值常量", node)
             return -value if isinstance(node.op, ast.USub) else value
-        if isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Div):
+        if isinstance(node, ast.BinOp) and type(node.op) in (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Div, ast.Pow):
             a, b = self.literal(node.left, env), self.literal(node.right, env)
             if type(a) not in (int, float) or type(b) not in (int, float): raise ImportIssue("参数运算只支持数值常量", node)
-            try: value = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.FloorDiv: operator.floordiv, ast.Div: operator.truediv}[type(node.op)](a, b)
-            except (ZeroDivisionError, OverflowError) as error: raise ImportIssue("参数运算无效", node) from error
+            try: value = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.FloorDiv: operator.floordiv, ast.Div: operator.truediv, ast.Pow: _static_power}[type(node.op)](a, b)
+            except (ZeroDivisionError, OverflowError, ValueError) as error: raise ImportIssue("参数运算无效", node) from error
             if not math.isfinite(value) or abs(value) > 1e9: raise ImportIssue("参数运算超过范围", node)
             return value
         raise ImportIssue("参数必须是常量、默认参数或可静态计算的数值表达式", node, "DYNAMIC_PARAMETER")
@@ -359,6 +384,11 @@ class Parser:
                         if not isinstance(name, str) or not name or any(k.arg == "persistent" for k in call.keywords) and len(call.args) > 2:
                             raise ImportIssue("register_buffer 名称或 persistent 参数无效", statement)
                         value = self.expr(call.args[1], local, module.attrs)
+                        if isinstance(value, CausalPattern):
+                            # `register_buffer("bias", torch.tril(torch.ones(L, L)))`: kept symbolic.
+                            module.attrs[f"self.{name}"] = value
+                            local[f"self.{name}"] = value
+                            continue
                         if isinstance(value, DynamicStaticSlice): raise ImportIssue("register_buffer 不支持运行时切片", call.args[1])
                         if not isinstance(value, StaticTensor): raise ImportIssue("register_buffer 需要静态缓冲区", call.args[1])
                         module.attrs[f"self.{name}"] = value
@@ -399,6 +429,10 @@ class Parser:
             params = {"shape": args["shape"], "values": args["values"]}
             if args["sequence_dim"] is not None: params["sequence_dim"] = args["sequence_dim"]
             return Module(path.removeprefix("TensorLab"), params=params, node=expression)
+        if path == "TensorLabCausalMask":
+            args = self.arguments(expression, ["query_dim", "key_dim"], {"query_dim": -2, "key_dim": -1}, env)
+            if any(type(value) is not int for value in args.values()): raise ImportIssue("TensorLabCausalMask 的 query_dim/key_dim 需要整数常量", expression)
+            return Module("CausalMask", params=args, node=expression)
         if not path.startswith(("torch.nn.", "nn.")) and kind not in ("TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabMoE"):
             raise ImportIssue(f"不支持自定义层 {path or ast.unparse(expression.func)}", expression)
         if kind in ("Sequential", "ModuleList", "ModuleDict"):
@@ -748,11 +782,22 @@ class Parser:
                 if len(args) > len(names): raise ImportIssue("注意力参数过多", call)
                 opts = dict(zip(names, args)); opts.update(keywords)
                 if any(k not in names for k in opts): raise ImportIssue("未知注意力参数", call)
-                for key, default in (("key_padding_mask", None), ("attn_mask", None), ("is_causal", False)):
-                    if opts.get(key, default) != default: raise ImportIssue(f"目前不支持注意力 {key}", call)
+                if opts.get("key_padding_mask") is not None: raise ImportIssue("目前不支持注意力 key_padding_mask", call)
+                mask, hint = opts.get("attn_mask"), opts.get("is_causal", False)
+                if type(hint) is not bool: raise ImportIssue("is_causal 需要布尔常量", call)
+                if hint and mask is None: raise ImportIssue("is_causal 需要同时给出 attn_mask，PyTorch 也这样要求", call)
                 if not all(isinstance(opts.get(k), Tensor) for k in ("query", "key", "value")): raise ImportIssue("注意力需要 Q、K、V 三个张量", call)
                 q, k, v = (opts[n] for n in ("query", "key", "value"))
                 params["attention_type"] = "self" if q == k == v else "cross"
+                if mask is not None:
+                    # nn.MultiheadAttention reads a boolean mask as "may not attend" and adds a
+                    # floating one; either way only the causal mask maps onto the layer's flag.
+                    length = self.tensor_shape(q, call)[1]
+                    if not isinstance(mask, CausalPattern) or len(mask.shape) != 2 or (mask.upper, mask.lower) != ((1.0, 0.0) if mask.boolean else (-math.inf, 0.0)):
+                        raise ImportIssue("attn_mask 只支持因果掩码（布尔 triu 或 -inf 的 triu）", call)
+                    if params["attention_type"] != "self": raise ImportIssue("causal 掩码只适用于自注意力", call)
+                    if mask.shape != (length, length): raise ImportIssue(f"因果掩码的长度 {mask.shape[0]} 与序列长度 {length} 不一致", call)
+                    params["causal"] = 1
                 sources = [(q, "query" if params["attention_type"] == "cross" else None)]
                 if params["attention_type"] == "cross": sources.append((k, "context"))
                 if k != v:
@@ -827,6 +872,9 @@ class Parser:
         elif "dim" in arguments and not (type(dim) is int or isinstance(dim, list) and all(type(value) is int for value in dim)):
             raise ImportIssue("squeeze 的 dim 必须是整数或整数元组/列表", arguments["dim"])
         source = self.expr(call.func.value if method else arguments["input"], env, attrs)
+        if isinstance(source, CausalPattern):
+            if kind != "unsqueeze": raise ImportIssue("因果掩码不支持 squeeze", call)
+            return self.unsqueeze_pattern(source, dim, call)
         # Shape operations on compile-time buffers stay compile-time.
         if isinstance(source, StaticTensor):
             try: return source.unsqueeze(dim) if kind == "unsqueeze" else source.squeeze(dim)
@@ -931,6 +979,177 @@ class Parser:
         if len(split) > 1:
             result = self.add("Unflatten", {"dim": -1 if not suffix else first, "sizes": list(split)}, [(result, None)], "拆分维度", node)
         return result
+
+    def infinity(self, node):
+        """+1 or -1 for the spellings of ±inf a mask uses (`float("-inf")`, `-math.inf`), else 0."""
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            return -self.infinity(node.operand) if isinstance(node.op, ast.USub) else self.infinity(node.operand)
+        if isinstance(node, ast.Call) and self.path(node.func) == "float" and len(node.args) == 1 and not node.keywords and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            text = node.args[0].value.strip().lower()
+            return -1 if text in ("-inf", "-infinity") else 1 if text in ("inf", "+inf", "infinity", "+infinity") else 0
+        return 1 if self.path(node) in ("math.inf", "torch.inf", "numpy.inf", "np.inf") else 0
+
+    def mask_value(self, node, env):
+        """A number a mask is compared with or filled with: ±inf spellings, booleans and literals."""
+        sign = self.infinity(node)
+        if sign: return sign * math.inf
+        value = self.literal(node, env)
+        if type(value) not in (int, float, bool): raise ImportIssue("掩码运算需要数值常量", node)
+        return float(value)
+
+    def causal_constructor(self, node, upper_triangle, diagonal, env, attrs, source):
+        """`torch.ones(T, T)` or `torch.full((T, T), -inf)` under tril/triu, as a CausalPattern."""
+        path = self.path(node.func) if isinstance(node, ast.Call) else ""
+        if path not in ("torch.ones", "torch.full"): raise ImportIssue("tril/triu 只支持作用在 torch.ones 或 torch.full 新建的方阵上，用来构造因果掩码", source)
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        if None in keywords or set(keywords) - {"dtype", "device"}: raise ImportIssue("掩码构造只接受 dtype 与 device 参数", node)
+        # The device decides where the mask lives, not what it holds, so it is not even evaluated.
+        boolean = False
+        if "dtype" in keywords:
+            dtype = self.path(keywords["dtype"])
+            if dtype == "torch.bool": boolean = True
+            elif dtype not in ("torch.float32", "torch.float", "torch.float16", "torch.half", "torch.bfloat16", "torch.float64", "torch.double"): raise ImportIssue("掩码的 dtype 只支持 torch.bool 或浮点类型", keywords["dtype"])
+        if path == "torch.ones":
+            sizes, fill = (self.expr(node.args[0], env, attrs) if len(node.args) == 1 else [self.expr(argument, env, attrs) for argument in node.args]), 1.0
+        else:
+            if len(node.args) != 2: raise ImportIssue("torch.full 需要 size 与 fill_value 两个位置参数", node)
+            sizes, fill = self.expr(node.args[0], env, attrs), self.mask_value(node.args[1], env)
+            boolean = boolean or isinstance(node.args[1], ast.Constant) and type(node.args[1].value) is bool
+        sizes = list(sizes) if isinstance(sizes, (list, tuple)) else [sizes]
+        if len(sizes) < 2 or any(type(value) is not int or value < 1 for value in sizes): raise ImportIssue("掩码的形状需要至少两个正整数维度", node)
+        if sizes[-1] != sizes[-2] or any(value != 1 for value in sizes[:-2]): raise ImportIssue("因果掩码需要方阵，其余维度为 1", node)
+        if fill == 1 and not upper_triangle and diagonal == 0: upper, lower = 0.0, 1.0
+        elif fill == 1 and upper_triangle and diagonal == 1: upper, lower = 1.0, 0.0
+        elif fill == -math.inf and upper_triangle and diagonal == 1 and not boolean: upper, lower = -math.inf, 0.0
+        else: raise ImportIssue("只支持标准因果掩码：tril(ones)、triu(ones, diagonal=1) 或 triu(full(-inf), diagonal=1)", source)
+        return CausalPattern(upper, lower, boolean, tuple(sizes), len(sizes) - 2, len(sizes) - 1)
+
+    def reshape_pattern(self, pattern, target, node):
+        """`mask.view(1, 1, T, T)`: a mask may only gain or lose singleton axes."""
+        if any(value is BATCH or type(value) is not int for value in target): raise ImportIssue("因果掩码的 view/reshape 需要整数形状", node)
+        total = math.prod(pattern.shape)
+        if target.count(-1) > 1: raise ImportIssue("view/reshape 最多只能有一个 -1", node)
+        if -1 in target:
+            known = math.prod(value for value in target if value != -1)
+            target = [total // known if value == -1 else value for value in target]
+        size = pattern.shape[pattern.rows]
+        if math.prod(target) != total or len(target) < 2 or pattern.shape[pattern.cols] != size: raise ImportIssue("因果掩码的 view/reshape 只能增删大小为 1 的维度", node)
+        positions = [axis for axis, value in enumerate(target) if value != 1]
+        if size == 1: positions = [len(target) - 2, len(target) - 1]
+        if len(positions) != 2 or any(target[axis] != size for axis in positions): raise ImportIssue("因果掩码的 view/reshape 只能增删大小为 1 的维度", node)
+        return replace(pattern, shape=tuple(target), rows=positions[0], cols=positions[1])
+
+    def unsqueeze_pattern(self, pattern, dim, node):
+        rank = len(pattern.shape)
+        if type(dim) is not int or not -rank - 1 <= dim <= rank: raise ImportIssue("unsqueeze 维度越界", node)
+        dim %= rank + 1
+        shape = list(pattern.shape); shape.insert(dim, 1)
+        return replace(pattern, shape=tuple(shape), rows=pattern.rows + (pattern.rows >= dim), cols=pattern.cols + (pattern.cols >= dim))
+
+    def index_pattern(self, pattern, node, env, attrs, source):
+        """`self.bias[:, :, :T, :T]` / `mask[None, None]`: prefix slices and inserted axes."""
+        items = self.index_items(node, len(pattern.shape), source, allow_newaxis=True)
+        shape, rows, cols, axis = [], None, None, 0
+        for item in items:
+            if isinstance(item, ast.Constant) and item.value is None:
+                shape.append(1); continue
+            if isinstance(item, ast.Slice):
+                start, stop, step = (None if value is None else self.expr(value, env, attrs) for value in (item.lower, item.upper, item.step))
+                if start not in (None, 0) or step not in (None, 1) or stop is not None and (type(stop) is not int or stop < 1):
+                    raise ImportIssue("因果掩码只支持从 0 开始的前缀切片，例如 mask[:T, :T]", source)
+                if axis == pattern.rows: rows = len(shape)
+                elif axis == pattern.cols: cols = len(shape)
+                shape.append(pattern.shape[axis] if stop is None else min(stop, pattern.shape[axis]))
+            else:
+                index = self.literal(item, env)
+                if axis in (pattern.rows, pattern.cols): raise ImportIssue("因果掩码不能按位置取单行或单列", source)
+                if index not in (0, -1): raise ImportIssue("掩码索引越界", source)
+            axis += 1
+        return replace(pattern, shape=tuple(shape), rows=rows, cols=cols)
+
+    def convert_pattern(self, pattern, method, call, env):
+        """dtype conversions and negation of a mask: `.bool()`, `.to(torch.bool)`, `.logical_not()`."""
+        if method in ("logical_not", "~"):
+            if not pattern.boolean or call is not None and (call.args or call.keywords): raise ImportIssue("取反需要布尔掩码", call)
+            return replace(pattern, upper=1 - pattern.upper, lower=1 - pattern.lower)
+        if call.keywords and method != "to" or method in ("bool", "float", "half", "double") and call.args: raise ImportIssue(f"掩码的 {method} 不接受参数", call)
+        if method == "bool": return replace(pattern, upper=float(pattern.upper != 0), lower=float(pattern.lower != 0), boolean=True)
+        if method in ("float", "half", "double", "type_as"): return replace(pattern, boolean=False)
+        # `.to(...)`: a device move changes nothing, a dtype is bool or floating.
+        targets = list(call.args) + [keyword.value for keyword in call.keywords if keyword.arg == "dtype"]
+        if any(keyword.arg not in ("dtype", "device", "non_blocking", "copy") for keyword in call.keywords): raise ImportIssue("掩码的 to 只接受 dtype 或 device", call)
+        for target in targets:
+            name = self.path(target)
+            if name == "torch.bool": pattern = replace(pattern, upper=float(pattern.upper != 0), lower=float(pattern.lower != 0), boolean=True)
+            elif name.startswith("torch.float") or name in ("torch.half", "torch.double", "torch.bfloat16") or isinstance(target, ast.Attribute) and target.attr == "dtype": pattern = replace(pattern, boolean=False)
+            elif not (isinstance(target, ast.Attribute) and target.attr == "device" or isinstance(target, ast.Constant) and isinstance(target.value, str)):
+                raise ImportIssue("掩码的 to 只接受 dtype 或 device", call)
+        return pattern
+
+    def apply_causal(self, scores, pattern, node):
+        """Lower a recognised mask applied to `scores` onto one CausalMask node."""
+        if not isinstance(scores, Tensor): raise ImportIssue("因果掩码需要作用在运行时张量上", node)
+        shape = self.tensor_shape(scores, node)
+        offset = len(shape) - len(pattern.shape)
+        if offset < 0: raise ImportIssue(f"因果掩码 {list(pattern.shape)} 的维数多于分数 {shape}", node)
+        query, key = pattern.rows + offset, pattern.cols + offset
+        if 0 in (query, key): raise ImportIssue("因果掩码的位置轴不能落在批次维度上", node)
+        length = shape[query]
+        if shape[key] != length or pattern.shape[pattern.rows] != length or pattern.shape[pattern.cols] != length:
+            raise ImportIssue(f"因果掩码需要 query 与 key 等长且与掩码一致：分数 {shape}，掩码 {list(pattern.shape)}", node)
+        return self.add("CausalMask", {"query_dim": query - len(shape), "key_dim": key - len(shape)}, [(scores, None)], "因果掩码", node)
+
+    def scaled_dot_product_attention(self, call, env, attrs):
+        """`F.scaled_dot_product_attention` as the einsum, scale, mask, softmax, einsum it computes."""
+        names = ["query", "key", "value", "attn_mask", "dropout_p", "is_causal", "scale", "enable_gqa"]
+        if len(call.args) > len(names) or any(isinstance(argument, ast.Starred) for argument in call.args): raise ImportIssue("scaled_dot_product_attention 参数过多", call)
+        arguments = dict(zip(names, call.args))
+        for keyword in call.keywords:
+            if keyword.arg not in names or keyword.arg in arguments: raise ImportIssue("scaled_dot_product_attention 参数无效或重复", call)
+            arguments[keyword.arg] = keyword.value
+        if any(name not in arguments for name in ("query", "key", "value")): raise ImportIssue("scaled_dot_product_attention 需要 query、key、value", call)
+        q, k, v = (self.expr(arguments[name], env, attrs) for name in ("query", "key", "value"))
+        if not all(isinstance(tensor, Tensor) for tensor in (q, k, v)): raise ImportIssue("scaled_dot_product_attention 需要运行时张量", call)
+        shapes = [self.tensor_shape(tensor, call) for tensor in (q, k, v)]
+        rank = len(shapes[0])
+        if rank < 3 or any(len(shape) != rank for shape in shapes): raise ImportIssue("scaled_dot_product_attention 的 query/key/value 需要相同的维数（至少 [B,L,E]）", call)
+        causal = self.literal(arguments["is_causal"], env) if "is_causal" in arguments else False
+        if type(causal) is not bool: raise ImportIssue("is_causal 需要布尔常量", call)
+        mask = None if "attn_mask" not in arguments or _is_none(arguments["attn_mask"]) else self.expr(arguments["attn_mask"], env, attrs)
+        if mask is not None:
+            if causal: raise ImportIssue("attn_mask 与 is_causal 不能同时给出", call)
+            # SDPA reads a boolean mask as "may attend" and adds a floating one to the scores.
+            if not isinstance(mask, CausalPattern) or (mask.upper, mask.lower) != ((0.0, 1.0) if mask.boolean else (-math.inf, 0.0)):
+                raise ImportIssue("attn_mask 只支持因果掩码（布尔 tril 或 -inf 的 triu）", call)
+        if "enable_gqa" in arguments and self.literal(arguments["enable_gqa"], env) is not False: raise ImportIssue("暂不支持 enable_gqa", call)
+        dropout = arguments.get("dropout_p")
+        probability = 0.0
+        if dropout is not None:
+            if isinstance(dropout, ast.IfExp) and self.path(dropout.test) == "self.training" and self.literal(dropout.orelse, env) == 0:
+                probability = self.literal(dropout.body, env)
+            else:
+                probability = self.literal(dropout, env)
+                if probability != 0: raise ImportIssue("SDPA 的 dropout_p 在推理时也生效；请写成 p if self.training else 0.0", call)
+            if type(probability) not in (int, float) or not 0 <= probability < 1: raise ImportIssue("dropout_p 需要在 [0,1) 范围内", call)
+        scale = None if "scale" not in arguments or _is_none(arguments["scale"]) else self.literal(arguments["scale"], env)
+        if scale is None: scale = 1 / math.sqrt(shapes[0][-1])
+        if type(scale) not in (int, float): raise ImportIssue("scale 需要数值常量", call)
+        lead = _LABELS[:rank - 2]
+        length, source, feature, value = _LABELS[rank - 2:rank + 2]
+        equation = f"{lead}{length}{feature},{lead}{source}{feature}->{lead}{length}{source}"
+        try: einsum_shape(equation, shapes[:2])
+        except ValueError as error: raise ImportIssue(f"query 与 key 的形状不匹配：{error}", call) from error
+        scores = self.scale(self.add("Einsum", {"equation": equation}, [(q, None), (k, None)], "注意力分数", call), scale, call)
+        if causal:
+            if shapes[0][-2] != shapes[1][-2]: raise ImportIssue("is_causal 需要 query 与 key 等长", call)
+            scores = self.add("CausalMask", {"query_dim": -2, "key_dim": -1}, [(scores, None)], "因果掩码", call)
+        elif mask is not None: scores = self.apply_causal(scores, mask, call)
+        probabilities = self.add("Softmax", {"dim": -1}, [(scores, None)], "注意力概率", call)
+        if probability: probabilities = self.add("Dropout", {"p": probability}, [(probabilities, None)], "注意力 Dropout", call)
+        equation = f"{lead}{length}{source},{lead}{source}{value}->{lead}{length}{value}"
+        try: einsum_shape(equation, [self.tensor_shape(probabilities, call), shapes[2]])
+        except ValueError as error: raise ImportIssue(f"value 的形状不匹配：{error}", call) from error
+        return self.add("Einsum", {"equation": equation}, [(probabilities, None), (v, None)], "加权求和", call)
 
     def dynamic_static_slice(self, parent, node, env, attrs, source):
         items = self.index_items(node, len(parent.shape), source)
@@ -1050,6 +1269,7 @@ class Parser:
                 except StaticTensorError as error: raise ImportIssue(str(error), expression) from error
             if isinstance(parent, Tensor):
                 return self.dynamic_index(parent, expression.slice, env, attrs, expression)
+            if isinstance(parent, CausalPattern): return self.index_pattern(parent, expression.slice, env, attrs, expression)
             if isinstance(parent, tuple) and isinstance(expression.slice, ast.Slice):
                 # `x.shape[:2]` / `x.size()[1:]`: a static slice of a shape tuple.
                 bounds = [None if value is None else self.literal(value, env) for value in (expression.slice.lower, expression.slice.upper, expression.slice.step)]
@@ -1060,6 +1280,18 @@ class Parser:
             except (TypeError, KeyError, IndexError) as error: raise ImportIssue("未知索引或不支持此切片", expression) from error
             if value == "attention_weights_unsupported": raise ImportIssue("注意力权重输出暂不支持", expression)
             return value
+        if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.Invert):
+            value = self.expr(expression.operand, env, attrs)
+            if isinstance(value, CausalPattern): return self.convert_pattern(value, "~", None, env)
+            raise ImportIssue("取反运算只支持布尔因果掩码", expression)
+        if isinstance(expression, ast.Compare):
+            # `mask == 0` turns a tril of ones into the boolean "blocked" mask masked_fill takes.
+            left = self.expr(expression.left, env, attrs)
+            if not isinstance(left, CausalPattern) or len(expression.ops) != 1 or not isinstance(expression.ops[0], (ast.Eq, ast.NotEq)): raise ImportIssue("比较运算只支持因果掩码，例如 mask == 0", expression)
+            value = self.mask_value(expression.comparators[0], env)
+            upper, lower = float(left.upper == value), float(left.lower == value)
+            if isinstance(expression.ops[0], ast.NotEq): upper, lower = 1 - upper, 1 - lower
+            return replace(left, upper=upper, lower=lower, boolean=True)
         if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, (ast.USub, ast.UAdd)):
             value = self.expr(expression.operand, env, attrs)
             if isinstance(value, StaticTensor):
@@ -1072,6 +1304,12 @@ class Parser:
         if isinstance(expression, ast.BinOp):
             left, right = self.expr(expression.left, env, attrs), self.expr(expression.right, env, attrs)
             if left is BATCH or right is BATCH: raise ImportIssue("批次大小不能参与运算，只能原样作为 view/reshape 的第一维", expression)
+            if isinstance(left, CausalPattern) or isinstance(right, CausalPattern):
+                # `scores + mask` with a -inf/0 mask (`triu` of a -inf fill) is the additive form.
+                mask, scores = (left, right) if isinstance(left, CausalPattern) else (right, left)
+                if not isinstance(expression.op, ast.Add) or not isinstance(scores, Tensor) or mask.boolean or (mask.upper, mask.lower) != (-math.inf, 0.0):
+                    raise ImportIssue("因果掩码只能以 -inf/0 的形式加到分数上，或交给 masked_fill / torch.where / attn_mask", expression)
+                return self.apply_causal(scores, mask, expression)
             if isinstance(expression.op, (ast.Add, ast.Mult)) and ((isinstance(left, (StaticTensor, DynamicStaticSlice)) and isinstance(right, Tensor)) or (isinstance(right, (StaticTensor, DynamicStaticSlice)) and isinstance(left, Tensor))):
                 constant = left if isinstance(left, (StaticTensor, DynamicStaticSlice)) else right
                 tensor = right if constant is left else left
@@ -1098,7 +1336,7 @@ class Parser:
                     raise ImportIssue(f"静态张量运算无效：{error}", expression) from error
             if type(left) in (int, float) and type(right) in (int, float):
                 try:
-                    value = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.FloorDiv: operator.floordiv, ast.Div: operator.truediv}[type(expression.op)](left, right)
+                    value = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.FloorDiv: operator.floordiv, ast.Div: operator.truediv, ast.Pow: _static_power}[type(expression.op)](left, right)
                     if not math.isfinite(value) or abs(value) > 1e9: raise ValueError
                     return value
                 except (KeyError, ZeroDivisionError, OverflowError, ValueError) as error:
@@ -1180,8 +1418,73 @@ class Parser:
                     if len(args) != 1 or not isinstance(args[0], StaticTensor): raise ImportIssue("静态逐元素函数需要静态张量", expression)
                     return args[0].unary({"torch.exp": math.exp, "torch.sin": math.sin, "torch.cos": math.cos, "torch.sqrt": math.sqrt, "torch.abs": abs}[path])
                 except (StaticTensorError, ValueError, OverflowError) as error: raise ImportIssue(str(error), expression) from error
+            if path in ("torch.tril", "torch.triu") or isinstance(function, ast.Attribute) and function.attr in ("tril", "triu", "tril_", "triu_") and not path.startswith("torch."):
+                # Only as the construction of a causal mask, which stays symbolic: see CausalPattern.
+                method = not path.startswith("torch.")
+                name = function.attr if method else path.split(".")[-1]
+                names = ["diagonal"] if method else ["input", "diagonal"]
+                if len(expression.args) > len(names): raise ImportIssue(f"{name} 参数过多", expression)
+                arguments = dict(zip(names, expression.args))
+                for keyword in expression.keywords:
+                    if keyword.arg not in names or keyword.arg in arguments: raise ImportIssue(f"{name} 参数无效或重复", expression)
+                    arguments[keyword.arg] = keyword.value
+                receiver = function.value if method else arguments.get("input")
+                if receiver is None: raise ImportIssue(f"{name} 缺少输入张量", expression)
+                if name.endswith("_") and not isinstance(receiver, ast.Call): raise ImportIssue(f"{name} 会原地修改张量，只支持作用在新建的掩码上", expression)
+                diagonal = self.literal(arguments["diagonal"], env) if "diagonal" in arguments else 0
+                if type(diagonal) is not int: raise ImportIssue("diagonal 需要整数常量", expression)
+                return self.causal_constructor(receiver, name.startswith("triu"), diagonal, env, attrs, expression)
+            if path == "torch.nn.Transformer.generate_square_subsequent_mask":
+                # PyTorch builds it as triu(full((sz, sz), -inf), diagonal=1): the additive form.
+                arguments = dict(zip(["sz"], expression.args))
+                for keyword in expression.keywords:
+                    if keyword.arg not in ("sz", "device", "dtype") or keyword.arg in arguments: raise ImportIssue("generate_square_subsequent_mask 参数无效或重复", expression)
+                    if keyword.arg == "sz": arguments["sz"] = keyword.value
+                    elif keyword.arg == "dtype" and not self.path(keyword.value).startswith(("torch.float", "torch.half", "torch.double", "torch.bfloat16")): raise ImportIssue("掩码的 dtype 需要是浮点类型", expression)
+                if len(expression.args) > 1 or "sz" not in arguments: raise ImportIssue("generate_square_subsequent_mask 需要 sz", expression)
+                size = self.expr(arguments["sz"], env, attrs)
+                if type(size) is not int or size < 1: raise ImportIssue("sz 需要正整数", expression)
+                return CausalPattern(-math.inf, 0.0, False, (size, size), 0, 1)
+            if path == "torch.nn.functional.scaled_dot_product_attention":
+                return self.scaled_dot_product_attention(expression, env, attrs)
+            if path == "torch.masked_fill" or isinstance(function, ast.Attribute) and function.attr == "masked_fill" and not path.startswith("torch."):
+                method = not path.startswith("torch.")
+                names = ["mask", "value"] if method else ["input", "mask", "value"]
+                if len(expression.args) > len(names): raise ImportIssue("masked_fill 参数过多", expression)
+                arguments = dict(zip(names, expression.args))
+                for keyword in expression.keywords:
+                    if keyword.arg not in names or keyword.arg in arguments: raise ImportIssue("masked_fill 参数无效或重复", expression)
+                    arguments[keyword.arg] = keyword.value
+                if set(arguments) != set(names): raise ImportIssue("masked_fill 需要 mask 与 value", expression)
+                scores = self.expr(function.value if method else arguments["input"], env, attrs)
+                mask = self.expr(arguments["mask"], env, attrs)
+                if not isinstance(mask, CausalPattern): raise ImportIssue("masked_fill 只支持因果掩码（tril/triu 构造的方阵）", expression)
+                if self.infinity(arguments["value"]) != -1: raise ImportIssue("因果掩码只支持用 -inf 填充，例如 float('-inf')；有限的大负数会让被遮住的分数与原代码不同", expression)
+                if not mask.boolean: raise ImportIssue("masked_fill 需要布尔掩码，例如 mask == 0 或 mask.bool()", expression)
+                if (mask.upper, mask.lower) != (1.0, 0.0): raise ImportIssue("这个掩码遮住的不是之后的位置；只支持因果掩码", expression)
+                return self.apply_causal(scores, mask, expression)
+            if path == "torch.where":
+                # `torch.where(keep, scores, -inf)` / `torch.where(blocked, -inf, scores)`.
+                if expression.keywords or len(expression.args) != 3: raise ImportIssue("torch.where 需要 condition、input、other 三个位置参数", expression)
+                condition = self.expr(expression.args[0], env, attrs)
+                if not isinstance(condition, CausalPattern) or not condition.boolean: raise ImportIssue("torch.where 只支持布尔因果掩码作为条件", expression)
+                if self.infinity(expression.args[2]) == -1: expected, scores = (0.0, 1.0), expression.args[1]
+                elif self.infinity(expression.args[1]) == -1: expected, scores = (1.0, 0.0), expression.args[2]
+                else: raise ImportIssue("torch.where 只支持用 -inf 遮住之后的位置", expression)
+                if (condition.upper, condition.lower) != expected: raise ImportIssue("这个掩码遮住的不是之后的位置；只支持因果掩码", expression)
+                return self.apply_causal(self.expr(scores, env, attrs), condition, expression)
+            if path == "torch.logical_not":
+                if len(expression.args) != 1 or expression.keywords: raise ImportIssue("torch.logical_not 需要一个张量", expression)
+                mask = self.expr(expression.args[0], env, attrs)
+                if not isinstance(mask, CausalPattern): raise ImportIssue("logical_not 只支持布尔因果掩码", expression)
+                return self.convert_pattern(mask, "logical_not", None, env)
+            if isinstance(function, ast.Attribute) and function.attr in ("bool", "float", "half", "double", "to", "type_as", "logical_not") and not path.startswith("torch."):
+                receiver = self.expr(function.value, env, attrs)
+                if isinstance(receiver, CausalPattern): return self.convert_pattern(receiver, function.attr, expression, env)
+                raise ImportIssue(f"不支持操作 {function.attr}：类型转换只用于因果掩码", expression, "UNSUPPORTED_OPERATION")
             if isinstance(function, ast.Attribute) and function.attr in ("size", "contiguous") and not path.startswith("torch."):
                 receiver = self.expr(function.value, env, attrs)
+                if isinstance(receiver, CausalPattern) and function.attr == "contiguous" and not expression.args and not expression.keywords: return receiver
                 if isinstance(receiver, (Tensor, StaticTensor)):
                     if function.attr == "contiguous":
                         # Memory layout only: the graph has none, so the value passes through.
@@ -1377,6 +1680,7 @@ class Parser:
                     if expression.keywords: raise ImportIssue(f"{function.attr} 不支持关键字参数", expression)
                     receiver, dimensions = function.value, list(expression.args)
                 source = self.expr(receiver, env, attrs)
+                if isinstance(source, CausalPattern): return self.reshape_pattern(source, self.view_dimensions(dimensions, env, attrs, expression), expression)
                 if not isinstance(source, Tensor): raise ImportIssue("view/reshape 需要运行时张量", expression)
                 return self.reshape(source, self.view_dimensions(dimensions, env, attrs, expression), expression)
             if path == "torch.unflatten" or isinstance(function, ast.Attribute) and function.attr == "unflatten" and not path.startswith("torch."):

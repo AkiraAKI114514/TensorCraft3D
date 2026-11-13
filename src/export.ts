@@ -221,6 +221,7 @@ export function generatePython(graph: Graph) {
         // `torch.einsum` is native, so unlike ConstantAdd this needs no embedded runtime helper.
         case 'Einsum': forward.push(`        values[${key}] = torch.einsum(${JSON.stringify(p.equation)}, ${inputs.join(', ')})`); continue;
         case 'Scale': forward.push(`        values[${key}] = ${inputs[0]} * ${JSON.stringify(p.factor ?? 1)}`); continue;
+        case 'CausalMask': expr = `TensorLabCausalMask(query_dim=${p.query_dim ?? -2}, key_dim=${p.key_dim ?? -1})`; break;
         // `mean`/`sum`/`amax`/`amin` are tensor methods, so this needs no embedded helper. A
         // multi-axis cut exports as a tuple to match `keepdim`'s expectation of a sequence.
         case 'Reduce': {
@@ -286,7 +287,7 @@ export function generatePython(graph: Graph) {
   let emitted = emitScope(graph, '', 'moduleDict', null, null, []);
   if (!emitted) { definitions.length = 0; classMemo.clear(); attentionClassMemo.clear(); emitted = emitScope(expanded, '', 'moduleDict', null, null, []); }
   if (!emitted) throw new Error('请先修复形状或连线错误后导出代码');
-  const helper = (expanded.nodes.some(n => inspectsAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'MoE') ? `\n${moeRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul') ? `\n${tensorRuntime}\n` : '');
+  const helper = (expanded.nodes.some(n => inspectsAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'MoE') ? `\n${moeRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul' || n.op === 'CausalMask') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
   for (const node of expanded.nodes.filter(n => n.op === 'Embedding')) {
     const edge = expanded.edges.find(e => e.target === node.id && !e.targetPort);
