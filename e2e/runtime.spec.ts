@@ -434,11 +434,30 @@ test('trains a mixture-of-experts layer, balancing its gate only when asked, and
   expect(sent?.moeBalancing).toBe(true);
   await page.getByRole('button', { name: '张量观测', exact: true }).click();
   const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
-  const response = page.waitForResponse('**/api/infer');
+  let response = page.waitForResponse('**/api/infer');
   await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
   const report = await (await response).json() as InferenceReport;
   expect(report.weights).toBe('trained');
   expect(report.tensors.find(tensor => tensor.nodeId === 'layer_1')!.shape).toEqual([1, 6, 16]);
+  // The routing of the trained layer: every position keeps two of the four experts.
+  const routing = report.routings!.find(entry => entry.nodeId === 'layer_1')!;
+  expect([routing.positions, routing.experts, routing.topK, routing.sharedExperts]).toEqual([6, 4, 2, 1]);
+  expect(routing.load.reduce((sum, count) => sum + count, 0)).toBe(12);
+  const view = panel.getByRole('region', { name: 'MoE 路由', exact: true });
+  await expect(view.locator('.moe-load-bar')).toHaveCount(4);
+  await expect(view).toContainText('窗口内每个位置选中的专家');
+  // Moving the window is part of the run, so it needs a new one.
+  await panel.getByLabel('路由位置起点').fill('2');
+  await expect(panel.locator('.tensor-stale')).toContainText('旧快照已失效');
+  response = page.waitForResponse('**/api/infer');
+  await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
+  const moved = (await (await response).json() as InferenceReport).routings![0];
+  expect([moved.positionStart, moved.weights.rowStart, moved.chosen.length]).toEqual([2, 2, 4]);
+  // Every layer at once carries the routing too, which shades the expert bars in the 3D view.
+  response = page.waitForResponse('**/api/infer');
+  await panel.getByRole('button', { name: '观测全部层，画到三维视图', exact: true }).click();
+  expect((await (await response).json() as InferenceReport).routings!.map(entry => entry.nodeId)).toEqual(['layer_1']);
+  await expect(page.locator('.scene-observation')).toContainText('实测值 · 单样本');
   await page.getByRole('button', { name: '导出代码', exact: true }).click();
   await expect(page.locator('.code-preview, pre').first()).toContainText('TensorLabMoE(dim=16');
   expect(errors).toEqual([]);

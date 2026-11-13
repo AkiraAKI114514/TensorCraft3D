@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Box, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
 import { isGroup, type Graph } from './types';
 import { useI18n } from './i18n';
-import { tensorNumber, type AttentionSelection, type InferenceReport, type ParameterSnapshot } from './inferenceTypes';
+import { tensorNumber, type AttentionSelection, type InferenceReport, type ParameterSnapshot, type RoutingSelection } from './inferenceTypes';
+import MoERouting from './MoERouting';
 import TensorReadout from './TensorReadout';
 import { MAX_OBSERVATION_BYTES, ObservationSnapshotError, parseObservationSnapshot, snapshotMatches, withChannel, type ObservationSnapshot } from './observationSnapshot';
 import type { TrainedModelMetadata } from './trainedModel';
@@ -63,6 +64,14 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const keyLength = kvInput && runtime ? edgeOutputShape(runtime, kvInput, layers)?.[1] ?? 1 : 1;
   const attentionValid = !attentionNode || Object.values(attentionSelection).every(value => Number.isInteger(value) && value >= 0) && attentionSelection.branch < attentionConfigValue!.branches && attentionSelection.head < attentionConfigValue!.heads && attentionSelection.queryStart < queryLength && attentionSelection.keyStart < keyLength;
   const updateAttention = (key: keyof AttentionSelection, value: number) => { if (observedId) setAttentionSelections(previous => ({ ...previous, [observedId]: { ...attentionSelection, [key]: value } })); };
+  // An observed MoE layer reports its routing; the position × expert window is part of the run.
+  const [routingSelections, setRoutingSelections] = useState<Record<string, RoutingSelection>>({});
+  const moeNode = observed?.op === 'MoE' ? observed : undefined;
+  const routingSelection = observedId ? routingSelections[observedId] ?? { positionStart: 0, expertStart: 0 } : { positionStart: 0, expertStart: 0 };
+  const routedPositions = moeNode ? (layers[moeNode.id]?.output ?? []).slice(1, -1).reduce((product, size) => product * size, 1) : 1;
+  const routedExperts = moeNode ? Number(moeNode.params.experts ?? 8) : 1;
+  const routingValid = !moeNode || Number.isInteger(routingSelection.positionStart) && routingSelection.positionStart >= 0 && routingSelection.positionStart < routedPositions && Number.isInteger(routingSelection.expertStart) && routingSelection.expertStart >= 0 && routingSelection.expertStart < routedExperts;
+  const updateRouting = (key: keyof RoutingSelection, value: number) => { if (observedId) setRoutingSelections(previous => ({ ...previous, [observedId]: { ...routingSelection, [key]: value } })); };
   // One output element of a Linear, convolution or pooling layer to split into its terms; it is
   // part of the run, so changing it needs a rerun like any other selection.
   const [explainIndices, setExplainIndices] = useState<Record<string, number[]>>({});
@@ -85,14 +94,15 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const requesting = useRef(false), controller = useRef<AbortController | null>(null), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
-  useEffect(() => { setIndices({}); setAttentionSelections({}); setParameterIndices({}); setExplainIndices({}); setGradientTarget(0); setError(''); }, [graph]);
-  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, parameterIndices, explainIndices, gradient: gradientRequested ? gradientTarget : null });
+  useEffect(() => { setIndices({}); setAttentionSelections({}); setRoutingSelections({}); setParameterIndices({}); setExplainIndices({}); setGradientTarget(0); setError(''); }, [graph]);
+  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, routingSelections, parameterIndices, explainIndices, gradient: gradientRequested ? gradientTarget : null });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
   const previousSnapshot = result?.graph === graph && observedId ? result.report.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineTensor = offlineBound && offline && observedId ? offline.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineChannel = offlineTensor ? offlineChannels[offlineTensor.nodeId] : undefined;
   const snapshot = live ? (current ? previousSnapshot : undefined) : offlineTensor && (offlineChannel === undefined ? offlineTensor : withChannel(offlineTensor, offlineChannel));
   const attentionSnapshot = !observedId ? undefined : live ? (current ? result.report.attentions?.find(value => value.nodeId === observedId) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === observedId) : undefined;
+  const routingSnapshot = !observedId ? undefined : live ? (current ? result.report.routings?.find(value => value.nodeId === observedId) : undefined) : offlineBound && offline ? offline.routings.find(value => value.nodeId === observedId) : undefined;
   const explanation = live && current && observedId && result.report.explanation?.nodeId === observedId ? result.report.explanation : undefined;
   const gradientReport = live && current ? result.report.gradient ?? undefined : undefined;
   const gradientSnapshot = gradientReport && observedId ? gradientReport.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
@@ -128,7 +138,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   // `everyLayer` observes every executed layer at once and hands the result to the 3D view; it
   // needs no selected layer and takes no attention window.
   const run = async (everyLayer = false) => {
-    if (requesting.current || blocked || !ready || !valid || !weightsAvailable || (!everyLayer && (!observedId || !attentionValid || !explainValid || !gradientValid))) return;
+    if (requesting.current || blocked || !ready || !valid || !weightsAvailable || (!everyLayer && (!observedId || !attentionValid || !routingValid || !explainValid || !gradientValid))) return;
     requesting.current = true; setBusy(true); setError(''); onBusy(true);
     controller.current = new AbortController();
     try {
@@ -154,7 +164,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.current.signal,
         body: JSON.stringify(everyLayer
           ? { graph, allNodes: true, seed, device, modelId, inputs, slices: Object.fromEntries(sliced), ...weights }
-          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced), ...weights, explain: explainShape ? { nodeId: observedId, index: explainIndex } : undefined, gradient: gradientRequested ? { target: gradientTarget } : undefined })
+          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, routing: moeNode ? { [moeNode.id]: routingSelection } : undefined, slices: Object.fromEntries(sliced), ...weights, explain: explainShape ? { nodeId: observedId, index: explainIndex } : undefined, gradient: gradientRequested ? { target: gradientTarget } : undefined })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `单样本推理失败 (${response.status})`);
@@ -212,6 +222,12 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
         <label className="field-label">{t('Key 起点')}<input aria-label={t('Attention Key 起点')} type="number" min={0} max={keyLength - 1} value={attentionSelection.keyStart} disabled={busy || !attentionReady} onChange={event => updateAttention('keyStart', Number(event.target.value))} /></label>
       </div><p className="tensor-note">{t('只采样所选分支与 Head，每个矩阵最多 16 × 16；修改窗口后重新运行，完整矩阵统计不变。')}{!attentionReady && t('后端暂不支持 Attention 内部观测；当前仅采集层输出。')}</p>
     </div>}
+    {moeNode && <div className="attention-observation"><h3>{t('MoE 路由窗口')}</h3>
+      <div className="attention-filters">
+        <label className="field-label">{t('位置起点')}<input aria-label={t('路由位置起点')} type="number" min={0} max={routedPositions - 1} value={routingSelection.positionStart} disabled={busy} onChange={event => updateRouting('positionStart', Number(event.target.value))} /></label>
+        <label className="field-label">{t('专家起点')}<input aria-label={t('路由专家起点')} type="number" min={0} max={routedExperts - 1} value={routingSelection.expertStart} disabled={busy} onChange={event => updateRouting('expertStart', Number(event.target.value))} /></label>
+      </div><p className="tensor-note">{t('每个矩阵最多 16 个位置 × 16 个专家；负载始终覆盖全部专家。修改窗口后重新运行。')}</p>
+    </div>}
     {observed && explainShape && <div className="value-explain-controls"><h3>{t('解释一个输出值')}</h3>
       <div className="tensor-prefix-controls">{explainAxes(observed.op, explainShape.length).map((name, axis) => {
         const label = name ? t(name) : t('输出轴 {axis}', { axis: axis + 1 });
@@ -224,7 +240,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
       {gradientOn && <label className="field-label">{t('目标类别')}<select aria-label={t('梯度目标类别')} value={gradientTarget} disabled={busy} onChange={e => setGradientTarget(Number(e.target.value))}>{Array.from({ length: classes }, (_, index) => <option key={index} value={index}>{index}</option>)}</select></label>}
       <p className="tensor-note">{t('对输出 logits 与所选类别的交叉熵做一次反向传播，显示这一层输出与权重的梯度。eval 模式：dropout 关闭，BatchNorm 用运行统计；不更新权重，也不保留计算图。序列的梯度按位置显示，不是 token 梯度。')}</p>
     </div>}
-    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !explainValid || !gradientValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
+    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !routingValid || !explainValid || !gradientValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
     {onSceneObservation && <button className="button subtle wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run(true)}><Box size={14} />{t('观测全部层，画到三维视图')}</button>}
     <p className="tensor-note">{node ? t('采样 {name} 与模型输出；修改切片后需重新运行。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}{t('训练或环境检查期间不可运行。')}</p>
     {error && <div className="diagnostic-item error" role="alert"><TriangleAlert size={15} /><p>{t(error)}</p></div>}
@@ -261,6 +277,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
       {offlineBound && <p className="tensor-note">{node ? t('显示 {name} 的离线观测。切片和 Attention 窗口固定在采集时的位置；通道网格可以在已采集的通道之间切换。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}</p>}
     </>}
     {attentionSnapshot && <AttentionInspector key={viewKey + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={observed?.op === 'Transformer'} onSelectHead={live && !busy && attentionReady ? head => updateAttention('head', head) : undefined} />}
+    {routingSnapshot && <MoERouting key={viewKey + routingSnapshot.nodeId} routing={routingSnapshot} />}
     {live && current && !snapshot && <p className="tensor-note">{t('当前层未包含在本次采样中，选择该层后重新运行。')}</p>}
     {!live && offlineBound && node && !snapshot && <p className="tensor-note">{t('快照里没有这一层的观测。')}</p>}
     {snapshot && <div className="tensor-activation"><TensorReadout title={`${node?.name} · ${t('实测输出')}`} snapshot={snapshot} viewKey={viewKey + snapshot.nodeId} tableLabel={t('实测张量切片')} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeIndex(1, channel) : setOfflineChannels(previous => ({ ...previous, [snapshot.nodeId]: channel }))} /></div>}

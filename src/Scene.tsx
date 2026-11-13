@@ -162,21 +162,26 @@ const tintOf = (color: string, amount: number) => `#${new THREE.Color(color).ler
 const shadeOf = (color: string, amount: number) => `#${new THREE.Color(color).multiplyScalar(amount).getHexString()}`;
 const drawParts = (parts: BlockPart[], glow: number, outline: string) => <>{parts.map((part, index) => <group key={index} position={[part.x, part.y ?? 0, 0]}><TensorBlock dims={part.dims} color={part.color} glow={glow} cells={part.cells} paint={part.paint} /><NodeOutline dims={part.dims} color={outline} /></group>)}</>;
 
-/** At most this many routed experts are drawn as bars; a larger layer draws this many. */
+/** At most this many bars stand for the routed experts; a larger layer gives each bar a run of them. */
 const MAX_DRAWN_EXPERTS = 16;
 /**
  * A mixture-of-experts layer as its parts, inside its own footprint: the gate (its grid is tokens by
- * experts), one bar per routed expert, the shared experts when there are any, and the output tensor,
- * which measured values paint.
+ * experts), one bar per routed expert (or per run of experts past 16), the shared experts when there
+ * are any, and the output tensor, which measured values paint. A measured routing shades each bar by
+ * the tokens its experts received, from pale (none) to the full colour (the busiest bar).
  */
-function MoEBlock({ dims, color, glow, output, experts, shared, paint, outline }: { dims: [number, number, number]; color: string; glow: number; output?: number[]; experts: number; shared: number; paint: BlockPaint | null; outline: string }) {
+function MoEBlock({ dims, color, glow, output, experts, shared, paint, outline, load }: { dims: [number, number, number]; color: string; glow: number; output?: number[]; experts: number; shared: number; paint: BlockPaint | null; outline: string; load?: number[] }) {
   const [width, height, depth] = dims, gap = 0.05, gate = 0.16, column = 0.42, sharedWidth = shared ? 0.12 : 0;
   const rest = width - gate - column - sharedWidth - gap * (shared ? 3 : 2);
-  const drawn = Math.max(1, Math.min(MAX_DRAWN_EXPERTS, experts)), spacing = Math.min(0.04, height * 0.15 / drawn), bar = (height - spacing * (drawn - 1)) / drawn;
+  const per = Math.ceil(Math.max(1, experts) / MAX_DRAWN_EXPERTS), drawn = Math.ceil(Math.max(1, experts) / per);
+  const spacing = Math.min(0.04, height * 0.15 / drawn), bar = (height - spacing * (drawn - 1)) / drawn;
+  const barLoads = load ? Array.from({ length: drawn }, (_, index) => load.slice(index * per, (index + 1) * per).reduce((sum, count) => sum + count, 0)) : null;
+  const busiest = barLoads ? Math.max(1, ...barLoads) : 1;
+  const barColor = (index: number) => barLoads ? `#${new THREE.Color(tintOf(color, 0.82)).lerp(new THREE.Color(shadeOf(color, 0.82)), barLoads[index] / busiest).getHexString()}` : color;
   const columnX = -width / 2 + gate + gap + column / 2;
   const parts: BlockPart[] = [
     { x: -width / 2 + gate / 2, dims: [gate, height, depth], color: tintOf(color, 0.32), cells: tensorCells(output ? [output[0], product(output.slice(1, -1)), experts] : undefined), paint: null },
-    ...Array.from({ length: drawn }, (_, index): BlockPart => ({ x: columnX, y: height / 2 - bar / 2 - index * (bar + spacing), dims: [column, bar, depth * 0.85], color, cells: [1, 1, 1], paint: null })),
+    ...Array.from({ length: drawn }, (_, index): BlockPart => ({ x: columnX, y: height / 2 - bar / 2 - index * (bar + spacing), dims: [column, bar, depth * 0.85], color: barColor(index), cells: [1, 1, 1], paint: null })),
     ...(shared ? [{ x: columnX + column / 2 + gap + sharedWidth / 2, dims: [sharedWidth, height * 0.9, depth] as [number, number, number], color: shadeOf(color, 0.78), cells: [1, 1, 1] as [number, number, number], paint: null }] : []),
     { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
   ];
@@ -471,7 +476,7 @@ function World(props: Props) {
             muddied both colours wherever neighbours overlapped. A merge node's small cube stands
             for the operation, not for a tensor, so it has no grid. */}
         {n.op === 'LatentAttention' ? <LatentAttentionBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} latent={Number(n.params.kv_lora_rank ?? 32)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> :
-        n.op === 'MoE' ? <MoEBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} output={props.analysis.layers[n.id]?.output} experts={Number(n.params.experts ?? 8)} shared={Number(n.params.shared_experts ?? 1)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> : <>
+        n.op === 'MoE' ? <MoEBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} output={props.analysis.layers[n.id]?.output} experts={Number(n.params.experts ?? 8)} shared={Number(n.params.shared_experts ?? 1)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} load={props.observation?.loads[n.id]} /> : <>
         <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} paint={paints[n.id] ?? null} />
         <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} /></>}{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}

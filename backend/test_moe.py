@@ -7,6 +7,7 @@ import threading
 import unittest
 
 from .graph import analyze_graph, moe_parameters
+from .inference import InferenceError, TensorInferenceRequest, run_inference
 from .pytorch_import import import_pytorch
 from .training import build_model, train
 
@@ -15,6 +16,7 @@ try:
     from torch.nn import functional as F
 
     from .moe import BALANCE_RATE, TensorLabMoE
+    from .observation_snapshot import capture_snapshot
 except ImportError:  # pragma: no cover - deployment without training extra
     torch = None
 
@@ -142,6 +144,42 @@ class MixtureOfExpertsTests(unittest.TestCase):
                 train(moe_graph(), {**config, "moeBalancing": balancing}, lambda message: None, threading.Event(), retain)
                 bias = kept["model"].layers["moe"].gate.bias
                 self.assertEqual(bool(bias.abs().sum() > 0), balancing)
+
+    def test_the_inspector_reports_each_tokens_experts_and_the_load(self):
+        report = run_inference(TensorInferenceRequest(graph=moe_graph(), nodeIds=["moe"]))
+        routing = report["routings"][0]
+        self.assertEqual((routing["positions"], routing["experts"], routing["topK"], routing["sharedExperts"]), (4, 4, 2, 1))
+        self.assertEqual(len(routing["load"]), 4)
+        self.assertEqual(sum(routing["load"]), 4 * 2)
+        weights = routing["weights"]["slice"]["values"]
+        for row, chosen in zip(weights, routing["chosen"]):
+            # A token's weight is non-zero exactly at the experts it chose, and sums to route_scale.
+            self.assertEqual({index for index, value in enumerate(row) if value}, set(chosen))
+            self.assertAlmostEqual(sum(row), 1.0, places=5)
+        scores = routing["scores"]["slice"]["values"]
+        self.assertTrue(all(0 <= value <= 1 for row in scores for value in row))
+        load = [0] * 4
+        for chosen in routing["chosen"]:
+            for expert in chosen: load[expert] += 1
+        self.assertEqual(load, routing["load"])
+
+    def test_routing_windows_and_bounds(self):
+        report = run_inference(TensorInferenceRequest(graph=moe_graph({"experts": 8}), nodeIds=["moe"], routing={"moe": {"positionStart": 2, "expertStart": 3}}))
+        routing = report["routings"][0]
+        self.assertEqual((routing["weights"]["rowStart"], routing["weights"]["columnStart"]), (2, 3))
+        self.assertEqual(len(routing["chosen"]), 2)
+        for bad, message in (({"moe": {"expertStart": 8}}, "expertStart"), ({"moe": {"positionStart": 4}}, "positionStart"), ({"logits": {}}, "routing")):
+            with self.subTest(bad=bad):
+                nodes = ["moe", "logits"] if "logits" in bad else ["moe"]
+                with self.assertRaisesRegex(InferenceError, message):
+                    run_inference(TensorInferenceRequest(graph=moe_graph({"experts": 8}), nodeIds=nodes, routing=bad))
+
+    def test_every_layer_runs_and_snapshots_carry_every_routing(self):
+        all_layers = run_inference(TensorInferenceRequest(graph=moe_graph(), allNodes=True))
+        self.assertEqual([entry["nodeId"] for entry in all_layers["routings"]], ["moe"])
+        snapshot = capture_snapshot(moe_graph())
+        self.assertEqual([entry["nodeId"] for entry in snapshot["routings"]], ["moe"])
+        self.assertEqual(sum(snapshot["routings"][0]["load"]), 8)
 
     def test_imports_the_helper_descriptor(self):
         source = """

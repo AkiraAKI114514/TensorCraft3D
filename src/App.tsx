@@ -92,7 +92,8 @@ export default function App() {
   const levelObservation = useMemo(() => {
     if (!sceneObservation || !observationBound) return null;
     const tensors = Object.fromEntries(level.nodes.flatMap(node => { const id = expandedLayerAt(graph, drillPath, node.id)?.id, tensor = id ? sceneObservation.tensors[id] : undefined; return tensor ? [[node.id, tensor]] : []; }));
-    return { ...sceneObservation, tensors };
+    const loads = Object.fromEntries(level.nodes.flatMap(node => { const id = expandedLayerAt(graph, drillPath, node.id)?.id, load = id ? sceneObservation.loads[id] : undefined; return load ? [[node.id, load]] : []; }));
+    return { ...sceneObservation, tensors, loads };
   }, [sceneObservation, observationBound, level, graph, drillPath]);
   const commitLevel = useCallback((next: Graph) => {
     if (!drillPath.length) return commit(next);

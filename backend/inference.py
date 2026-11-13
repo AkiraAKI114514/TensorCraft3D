@@ -15,6 +15,8 @@ MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 # Layers the Attention Inspector reads: Q/K/V, scores, probabilities and outputs per head.
 ATTENTION_OPS = ("Transformer", "MultiHeadAttention", "LatentAttention")
 MAX_INPUT_ELEMENTS = 4_000_000
+# An MoE layer's routing keeps its tokens-by-experts gate scores until the call returns.
+MAX_ROUTING_ELEMENTS = 1_048_576
 MAX_PARAMETERS = 5_000_000
 MAX_PARAMETER_BYTES = 20 * 1024 * 1024
 MAX_SLICE_SIDE = 16
@@ -49,6 +51,16 @@ class AttentionSelection(BaseModel):
     keyStart: StrictInt = Field(0, ge=0, le=65535)
 
 
+class RoutingSelection(BaseModel):
+    """The position x expert window of an MoE layer's routing to show; the load covers every expert.
+    A position is one row the layer routes (the token of a language model; without tokenizer
+    metadata the workbench calls it a position)."""
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    positionStart: StrictInt = Field(0, ge=0, le=4_000_000)
+    expertStart: StrictInt = Field(0, ge=0, le=63)
+
+
 class ValueSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -79,6 +91,9 @@ class TensorInferenceRequest(BaseModel):
     inputs: dict[str, list[StrictFloat | StrictInt]] | None = Field(default=None, max_length=8)
     slices: dict[str, list[StrictInt]] = Field(default_factory=dict, max_length=8)
     attention: dict[StrictStr, AttentionSelection] = Field(default_factory=dict, max_length=8)
+    # Routing windows of selected MoE layers; every selected MoE layer reports its routing, at the
+    # top-left window unless one is chosen here.
+    routing: dict[StrictStr, RoutingSelection] = Field(default_factory=dict, max_length=8)
     # One output element of a selected Linear, convolution or pooling layer, split into its terms.
     explain: ValueSelection | None = None
     # One backward pass of the output's cross-entropy against this class.
@@ -102,8 +117,8 @@ class TensorInferenceRequest(BaseModel):
     def one_kind_of_selection(self) -> "TensorInferenceRequest":
         # Either named layers (with optional attention windows), or every layer and nothing else.
         if self.allNodes:
-            if self.nodeIds or self.attention or self.explain or self.gradient:
-                raise ValueError("allNodes observes every layer; leave nodeIds, attention, explain and gradient empty")
+            if self.nodeIds or self.attention or self.routing or self.explain or self.gradient:
+                raise ValueError("allNodes observes every layer; leave nodeIds, attention, routing, explain and gradient empty")
         elif not self.nodeIds:
             raise ValueError("nodeIds must name at least one node")
         return self
@@ -468,6 +483,51 @@ def _validate_gradient(gradient: GradientSelection | None, info: dict[str, Any])
         raise InferenceError("Gradient inspection exceeds 64 MB: the backward pass keeps every activation and its gradient")
 
 
+def _resolve_routing(requested: dict[str, RoutingSelection], info: dict[str, Any], selected: list[str]) -> dict[str, RoutingSelection]:
+    """Every selected MoE layer with the window it reports: the requested one, or the top-left."""
+    by_id = {node["id"]: node for node in info["nodes"]}
+    if set(requested) - set(selected):
+        raise InferenceError("routing keys must refer to selected nodeIds")
+    resolved = {}
+    for node_id in selected:
+        node = by_id[node_id]
+        if node["op"] != "MoE":
+            if node_id in requested:
+                raise InferenceError(f"{node_id}: routing selection requires an MoE node")
+            continue
+        selection = requested.get(node_id, RoutingSelection())
+        tokens = math.prod(info["shapes"][node_id][1:-1])
+        experts = int(node["params"].get("experts", 8))
+        if selection.positionStart >= tokens:
+            raise InferenceError(f"{node_id}: positionStart is outside the {tokens} positions")
+        if selection.expertStart >= experts:
+            raise InferenceError(f"{node_id}: expertStart is outside the {experts} experts")
+        if tokens * experts > MAX_ROUTING_ELEMENTS:
+            raise InferenceError(f"{node_id}: routing capture exceeds {MAX_ROUTING_ELEMENTS} position-expert scores")
+        resolved[node_id] = selection
+    return resolved
+
+
+def _capture_routing(node_id: str, selection: RoutingSelection, record: dict[str, Any], params: dict[str, Any], torch: Any) -> dict[str, Any]:
+    """One MoE call's routing for a single sample: the gate's unbiased scores and the weight each
+    token gives each expert (zero where it chose another), both at the selected window; the experts
+    each windowed token chose; and every expert's load, the tokens it received."""
+    scores = record["scores"].detach().float()
+    indices = record["indices"].detach()
+    weights = torch.zeros_like(scores).scatter_(1, indices, record["weights"].detach().float())
+    tokens, experts = (int(size) for size in scores.shape)
+    rows = range(selection.positionStart, min(tokens, selection.positionStart + MAX_SLICE_SIDE))
+    return {
+        "nodeId": node_id, "positions": tokens, "experts": experts, "topK": int(indices.shape[1]),
+        "sharedExperts": int(params.get("shared_experts", 1)), "scoreFunc": str(params.get("score_func", "sigmoid")),
+        "routeScale": float(params.get("route_scale", 1.0)), "positionStart": selection.positionStart, "expertStart": selection.expertStart,
+        "scores": _attention_matrix("scores", scores, selection.positionStart, selection.expertStart, torch),
+        "weights": _attention_matrix("weights", weights, selection.positionStart, selection.expertStart, torch),
+        "chosen": [[int(expert) for expert in indices[row].tolist()] for row in rows],
+        "load": [int(count) for count in torch.bincount(indices.flatten(), minlength=experts).tolist()],
+    }
+
+
 def _validate_attention(attention: dict[str, AttentionSelection], info: dict[str, Any], selected: list[str], other_scratch: int = 0) -> None:
     by_id = {node["id"]: node for node in info["nodes"]}
     unknown = set(attention) - set(selected)
@@ -830,7 +890,7 @@ def _backward(output: Any, gradient: GradientSelection, selected: list[str], ret
         }
 
 
-def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: dict[str, Any], device_name: str, selected: list[str], slices: dict[str, list[int]], attention: dict[str, AttentionSelection], torch: Any, explain: ValueSelection | None = None, gradient: GradientSelection | None = None) -> dict[str, Any]:
+def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: dict[str, Any], device_name: str, selected: list[str], slices: dict[str, list[int]], attention: dict[str, AttentionSelection], torch: Any, explain: ValueSelection | None = None, gradient: GradientSelection | None = None, routing: dict[str, RoutingSelection] | None = None) -> dict[str, Any]:
     """Run one eval forward pass and describe the selected nodes and attention windows.
 
     The inspector endpoint and the offline snapshot writer both measure through this, so a
@@ -900,12 +960,17 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
         else:
             wanted_stage = {"q": "q", "k": "k", "v": "v", "weighted": "weighted", "output": "output"}[stage]
             record[wanted_stage] = tensors[wanted_stage].detach()
+    routing = routing or {}
+    routing_results: dict[str, dict[str, Any]] = {}
+    def observe_routing(node_id: str, record: dict[str, Any]) -> None:
+        if node_id in routing:
+            routing_results[node_id] = _capture_routing(node_id, routing[node_id], record, by_id[node_id]["params"], torch)
     explanation = backward = None
     try:
         with torch.enable_grad() if gradient is not None else torch.inference_mode():
             if gradient is not None:
                 inputs = {key: value.requires_grad_(True) if value.is_floating_point() else value for key, value in inputs.items()}
-            output = model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if attention else None)
+            output = model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if attention else None, routing_observer=observe_routing if routing else None)
             if gradient is not None:
                 backward = _backward(output, gradient, selected, retained, slices, model, torch)
             del output
@@ -928,7 +993,9 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
         retained.clear()
     if set(attention_results) != set(attention):
         raise InferenceError("Attention observer did not capture the selected nodes")
-    return {"tensors": [captured[node_id] for node_id in selected], "attentions": [attention_results[node_id] for node_id in attention], "explanation": explanation, "gradient": backward}
+    if set(routing_results) != set(routing):
+        raise InferenceError("Routing observer did not capture the selected MoE layers")
+    return {"tensors": [captured[node_id] for node_id in selected], "attentions": [attention_results[node_id] for node_id in attention], "routings": [routing_results[node_id] for node_id in routing], "explanation": explanation, "gradient": backward}
 
 
 def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
@@ -950,6 +1017,7 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         raise InferenceError("nodeIds must refer to graph nodes")
     _validate_attention(request.attention, info, selected, _explain_scratch(request.explain, info, selected))
     _validate_gradient(request.gradient, info)
+    routing = _resolve_routing(request.routing, info, selected)
     slices = _resolve_slices(request.slices, info, by_id)
     device_name = _device_name(request.device, torch)
     rng_devices = [torch.cuda.current_device()] if device_name == "cuda" else []
@@ -965,7 +1033,7 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         if snapshot is not None:
             model.load_state_dict(snapshot.state, strict=True)
             inputs = {key: (value - snapshot.preprocessing[key]["mean"]) / snapshot.preprocessing[key]["scale"] if key in snapshot.preprocessing else value for key, value in inputs.items()}
-        measured = _execute(model, info, by_id, inputs, device_name, selected, slices, request.attention, torch, request.explain, request.gradient)
+        measured = _execute(model, info, by_id, inputs, device_name, selected, slices, request.attention, torch, request.explain, request.gradient, routing)
         if request.parameters is not None and request.parameters not in by_id:
             raise InferenceError("parameters must name a graph node")
         parameters = describe_parameters(model, request.parameters, request.parameterSlices, torch) if request.parameters is not None else []
@@ -987,6 +1055,7 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         "mode": "eval",
         "tensors": measured["tensors"],
         "attentions": measured["attentions"],
+        "routings": measured["routings"],
         "parameters": parameters,
         "explanation": measured["explanation"],
         "gradient": gradient,

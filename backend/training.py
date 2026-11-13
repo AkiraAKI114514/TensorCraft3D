@@ -135,7 +135,7 @@ def build_model(graph):
                     self.layers[key] = nn.ModuleList([module, *(build() for _ in range(repeat - 1))]) if repeat > 1 else module
                 except Exception as exc:
                     raise ValueError(f"{key}: cannot build {op} with repeat={repeat}: {exc}") from exc
-        def forward(self, x, observer=None, attention_observer=None):
+        def forward(self, x, observer=None, attention_observer=None, routing_observer=None):
             if isinstance(x, dict):
                 if set(x) != set(info["inputs"]): raise ValueError("Input dictionary must contain exactly the model's Input node IDs")
             elif len(info["inputs"]) != 1:
@@ -199,6 +199,16 @@ def build_model(graph):
                     value = args[0]
                     for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
                         value = instance(value, observer=callback)
+                    values[key] = value
+                elif op == "MoE":
+                    # Each call reports its routing; a folded layer's last instance is the one kept.
+                    report = None
+                    if routing_observer is not None:
+                        report = lambda record, node_id=key: routing_observer(node_id, record)
+                    instances = self.layers[module_key]
+                    value = args[0]
+                    for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
+                        value = instance(value, observer=report)
                     values[key] = value
                 elif module_key in self.layers:
                     instances = self.layers[module_key]

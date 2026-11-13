@@ -141,7 +141,16 @@ In the 3D view the layer is a waist: the input, the K/V latent (its height is `k
 - **Gate bias:** `gate_bias` gives the gate a per-expert bias that changes which experts are chosen, never their weights. It is a buffer, not a trained parameter, and starts at zero. Turning on **MoE balancing** in the training settings applies DeepSeek-V3's auxiliary-loss-free balancing: after every step each bias moves by 0.001 against its expert's load, up when the expert received fewer tokens than the average and down when it received more. The switch is off by default and only appears when a layer has a gate bias.
 - **Parameters:** the parameter count is the gate matrix plus three matrices per expert and for the shared experts.
 
-The 3D view draws the gate (its grid is tokens by experts), one bar per routed expert (up to 16), the shared experts and the output, inside the layer's footprint. The Python export embeds the `TensorLabMoE` runtime, and source import recognises that helper.
+The 3D view draws the gate (its grid is positions by experts), one bar per routed expert (past 16, each bar stands for a run of experts), the shared experts and the output, inside the layer's footprint. The Python export embeds the `TensorLabMoE` runtime, and source import recognises that helper.
+
+**Observing the routing.** When the Tensor Inspector observes an MoE layer, the single-sample run also reports how the layer routed that sample. A position here is one row the layer routes; without tokenizer metadata the workbench does not call it a token.
+
+- **Expert load:** how many positions each routed expert received, as one bar per expert with the average dashed. It always covers every expert and adds up to positions × `top_k`.
+- **Routing weights:** the weight each position gave each expert, 0 where it chose another.
+- **Gate scores:** the gate's scores before the bias was added.
+- **Chosen experts:** the experts each windowed position kept.
+
+The two matrices show a window of at most 16 positions × 16 experts, chosen with **Position start** and **Expert start**; moving the window needs a rerun. Observing every layer for the 3D view carries the routing too, and the expert bars are then shaded by load, from pale (no positions) to the full colour (the busiest bar). Offline snapshots record every MoE layer's routing at the top-left window.
 
 Clicking a 3D Q/K/V cube centres it and opens that object's connection configuration, and it can also be selected from the "Q/K/V objects" selector in the properties panel. Each vertex inherits the model layer's inputs by default (for Cross-Attention, Q inherits Query and K/V inherit Context); specifying an upstream object overrides the corresponding projection source, and deleting the override connection restores the default source. A vertex outputs a real projected tensor `[B,S,E/num_heads]` and can connect to other model layers or to the input ports of other Q/K/V objects. All vertex inputs require `[B,S,E]`; a query's sequence length must match the layer's Query, and within a branch all K/V must share a sequence length. The Transformer's Q and self-attention overrides also pass through LN. Each projection port takes at most one specified input, while outputs can fan out to multiple objects. A complete model still needs a base input, and the Transformer's residual comes from the base Query.
 

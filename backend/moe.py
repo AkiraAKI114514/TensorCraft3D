@@ -53,6 +53,11 @@ class TensorLabGate(nn.Module):
             self.bias = None
 
     def forward(self, x):
+        weights, indices, _ = self.route(x)
+        return weights, indices
+
+    def route(self, x):
+        """The routing weights and expert indices, plus the unbiased scores they were chosen from."""
         scores = F.linear(x, self.weight)
         scores = scores.softmax(dim=-1, dtype=torch.float32) if self.score_func == "softmax" else scores.sigmoid()
         original = scores
@@ -68,7 +73,7 @@ class TensorLabGate(nn.Module):
         weights = original.gather(1, indices)
         if self.score_func == "sigmoid":
             weights = weights / weights.sum(dim=-1, keepdim=True)
-        return (weights * self.route_scale).type_as(x), indices
+        return (weights * self.route_scale).type_as(x), indices, original
 
 
 class TensorLabMoE(nn.Module):
@@ -101,10 +106,14 @@ class TensorLabMoE(nn.Module):
         # Tokens each expert received in the last training batch; the balancing step reads it.
         self.last_load = None
 
-    def forward(self, x):
+    def forward(self, x, observer=None):
+        """`observer`, when given, receives this call's routing: the unbiased gate scores [tokens,
+        experts], and each token's chosen experts and their weights [tokens, top_k]."""
         shape = x.shape
         flat = x.reshape(-1, self.dim)
-        weights, indices = self.gate(flat)
+        weights, indices, scores = self.gate.route(flat)
+        if observer is not None:
+            observer({"scores": scores, "indices": indices, "weights": weights})
         if self.training:
             self.last_load = torch.bincount(indices.flatten(), minlength=self.experts_count).detach()
         routed = torch.zeros_like(flat)
