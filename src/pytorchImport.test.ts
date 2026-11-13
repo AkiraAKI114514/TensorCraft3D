@@ -6,12 +6,12 @@ import { PRESETS } from './presets';
 import { DEFAULTS, type Graph, type Params } from './types';
 
 function roundtrip(graph: Graph) {
-  const script = `import json,sys,ast,torch\nfrom backend.pytorch_import import import_pytorch\nfrom backend.training import build_model\np=json.load(sys.stdin)\nr=import_pytorch(p["code"])\nassert r["graph"] is not None,r["diagnostics"]\na,ia=build_model(p["graph"]);b,ib=build_model(r["graph"])\nfor n in r["graph"]["nodes"]:\n if n["id"] in b.layers:\n  original_id=ast.literal_eval(n["name"].split("self.layers",1)[1][1:-1])\n  b.layers[n["id"]].load_state_dict(a.layers[original_id].state_dict())\na.eval();b.eval()\nx={k:torch.randn(*ia["shapes"][k]) for k in ia["inputs"]}\ny={i["id"]:x[i["name"]] for i in r["inputs"]}\nassert ia["totalParameters"]==ib["totalParameters"]\nassert torch.equal(a(x),b(y)),"Roundtrip changed computation"\nprint(json.dumps(r["graph"]))\n`;
+  const script = `import json,sys,ast,torch\nfrom backend.pytorch_import import import_pytorch\nfrom backend.training import build_model\nfrom backend.inference import _embedding_inputs\np=json.load(sys.stdin)\nr=import_pytorch(p["code"])\nassert r["graph"] is not None,r["diagnostics"]\na,ia=build_model(p["graph"]);b,ib=build_model(r["graph"])\nfor n in r["graph"]["nodes"]:\n if n["id"] in b.layers:\n  original_id=ast.literal_eval(n["name"].split("self.layers",1)[1][1:-1])\n  b.layers[n["id"]].load_state_dict(a.layers[original_id].state_dict())\na.eval();b.eval()\ne=_embedding_inputs(ia)\nx={k:torch.randint(e[k],tuple(ia["shapes"][k])) if k in e else torch.randn(*ia["shapes"][k]) for k in ia["inputs"]}\ny={i["id"]:x[i["name"]] for i in r["inputs"]}\nassert ia["totalParameters"]==ib["totalParameters"]\nassert torch.equal(a(x),b(y)),"Roundtrip changed computation"\nprint(json.dumps(r["graph"]))\n`;
   return JSON.parse(execFileSync('.venv/Scripts/python.exe', ['-c', script], { input: JSON.stringify({ graph, code: generatePython(graph) }), encoding: 'utf8', timeout: 30000 })) as Graph;
 }
 
 describe('PyTorch code imports', () => {
-  it.each(['cnn', 'mlp', 'residual', 'transformer', 'mqa', 'gqa', 'cross_attention', 'decoder'])('reimports exported %s with identical computation', preset => {
+  it.each(['cnn', 'mlp', 'residual', 'transformer', 'mqa', 'gqa', 'cross_attention', 'decoder', 'deepseek'])('reimports exported %s with identical computation', preset => {
     const original = PRESETS[preset](), imported = roundtrip(original);
     expect(validateGraph(imported)).toEqual(imported);
     expect(analyze(imported).valid).toBe(true);

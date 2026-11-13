@@ -31,8 +31,7 @@ export const PRESETS: Record<string, () => Graph> = {
     return graph;
   },
   // 命名刻意不写 DeepSeek：这个块是 GQA + 前置 RMSNorm + SwiGLU 前馈，属于 Llama/Qwen
-  // 一族的解码器块。DeepSeek-V3 真正标志性的 MLA 低秩注意力与细粒度 MoE 路由都需要
-  // einsum / topk / 动态控制流，目前不在算子词表内——挂上它的名字会是假标签。
+  // 一族的解码器块。DeepSeek 的名字只给同时具备 MLA 与 top-k MoE 的结构，见下面的 deepseek。
   decoder: () => wired('Gated Decoder Block', [
     ['input', 'Input', { shape: [1, 8, 32] }, 'Token 输入', 0, 100],
     ['norm', 'RMSNorm', { normalized_shape: 32 }, '前置归一化', 210, 100],
@@ -51,5 +50,34 @@ export const PRESETS: Record<string, () => Graph> = {
     ['gate', 'silu'], ['silu', 'gated'], ['value', 'gated'],
     ['gated', 'down'], ['down', 'flatten'], ['flatten', 'classifier'], ['classifier', 'output']
   ]),
+  // 缩小版 DeepSeek-V3：每个块都是多头潜在注意力（MLA），第一块用稠密 SwiGLU 前馈，其余块用
+  // DeepSeekMoE（sigmoid 门控、top-k 路由专家加一个共享专家），与 V3 前几层保持稠密一致；投影无偏置，
+  // RMSNorm 的 eps 为 1e-6。不含 MTP、FP8、专家并行、KV cache 与 YaRN；训练仍是取最后位置做分类。
+  deepseek: () => {
+    const norm = { normalized_shape: 128, eps: 1e-6, elementwise_affine: 1 };
+    const mla = { embed_dim: 128, num_heads: 4, q_lora_rank: 64, kv_lora_rank: 32, qk_nope_head_dim: 32, qk_rope_head_dim: 16, v_head_dim: 32, rope_theta: 10000, causal: 1, eps: 1e-6 };
+    const moe = { experts: 8, top_k: 2, shared_experts: 1, expert_dim: 64, score_func: 'sigmoid', route_scale: 1, groups: 1, topk_groups: 1, gate_bias: 1 };
+    // The main path runs left to right; `below` places a parallel branch under the last main layer.
+    type Spec = [string, Op, Params, string, number, number];
+    let x = 0;
+    const at = (id: string, op: Op, params: Params, label: string): Spec => { x += 210; return [id, op, params, label, x - 210, 100]; };
+    const below = (id: string, op: Op, params: Params, label: string): Spec => [id, op, params, label, x - 210, 260];
+    const specs: Spec[] = [
+      at('tokens', 'Input', { shape: [1, 16] }, 'Token 输入'), at('embed', 'Embedding', { num_embeddings: 128, embedding_dim: 128 }, '词嵌入'),
+      at('attn_norm_1', 'RMSNorm', norm, '注意力归一化 1'), at('mla_1', 'LatentAttention', mla, 'MLA 1'), at('residual_1a', 'Add', {}, '残差 1a'),
+      at('ffn_norm_1', 'RMSNorm', norm, '前馈归一化 1'), at('gate_1', 'Linear', { out_features: 256, bias: 0 }, '门控投影 1'), below('up_1', 'Linear', { out_features: 256, bias: 0 }, '上投影 1'),
+      at('silu_1', 'SiLU', {}, '门控激活 1'), at('swiglu_1', 'Multiply', {}, 'SwiGLU 1'), at('down_1', 'Linear', { out_features: 128, bias: 0 }, '下投影 1'), at('residual_1b', 'Add', {}, '残差 1b'),
+      ...[2, 3].flatMap(block => [at(`attn_norm_${block}`, 'RMSNorm', norm, `注意力归一化 ${block}`), at(`mla_${block}`, 'LatentAttention', mla, `MLA ${block}`), at(`residual_${block}a`, 'Add', {}, `残差 ${block}a`), at(`ffn_norm_${block}`, 'RMSNorm', norm, `前馈归一化 ${block}`), at(`moe_${block}`, 'MoE', moe, `MoE ${block}`), at(`residual_${block}b`, 'Add', {}, `残差 ${block}b`)]),
+      at('final_norm', 'RMSNorm', norm, '最终归一化'), at('last', 'Select', { dim: 1, index: -1 }, '取最后位置'), at('head', 'Linear', { out_features: 128, bias: 0 }, '输出头'), at('logits', 'Output', {}, 'Logits 输出')
+    ];
+    const block = (n: number, previous: string, ffn: [string, string][]): [string, string][] => [[previous, `attn_norm_${n}`], [`attn_norm_${n}`, `mla_${n}`], [`mla_${n}`, `residual_${n}a`], [previous, `residual_${n}a`], [`residual_${n}a`, `ffn_norm_${n}`], ...ffn, [`residual_${n}a`, `residual_${n}b`]];
+    return wired('DeepSeek-V3-style Decoder', specs, [
+      ['tokens', 'embed'],
+      ...block(1, 'embed', [['ffn_norm_1', 'gate_1'], ['ffn_norm_1', 'up_1'], ['gate_1', 'silu_1'], ['silu_1', 'swiglu_1'], ['up_1', 'swiglu_1'], ['swiglu_1', 'down_1'], ['down_1', 'residual_1b']]),
+      ...block(2, 'residual_1b', [['ffn_norm_2', 'moe_2'], ['moe_2', 'residual_2b']]),
+      ...block(3, 'residual_2b', [['ffn_norm_3', 'moe_3'], ['moe_3', 'residual_3b']]),
+      ['residual_3b', 'final_norm'], ['final_norm', 'last'], ['last', 'head'], ['head', 'logits']
+    ]);
+  },
   blank: () => sequential('Untitled model', [['Input', {}, '输入'], ['Output', {}, '输出']])
 };
