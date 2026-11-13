@@ -157,3 +157,33 @@ test('Input/output objects and free connections report and recover from structur
   await page.screenshot({ path: screenshot });
   expect(readFileSync(screenshot).length).toBeGreaterThan(10000);
 });
+
+test('breadcrumb leads back out of a folded block with the mouse in both views', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.stack || e.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  const layer = (id: string, op: string, x: number, params: Record<string, unknown> = {}) => ({ id, name: id, op, params, position: { x, y: 100 } });
+  const project = {
+    version: 1, name: 'Folded MLP',
+    nodes: [layer('input', 'Input', 0, { shape: [1, 16] }), { ...layer('block', 'Group', 210), subgraph: 'mlp_block', repeat: 2 }, layer('output', 'Output', 420)],
+    edges: [{ id: 'e0', source: 'input', target: 'block' }, { id: 'e1', source: 'block', target: 'output' }],
+    subgraphs: { mlp_block: { id: 'mlp_block', name: 'Linear block', origin: 'manual', nodes: [layer('linear', 'Linear', 0, { out_features: 16 }), layer('relu', 'ReLU', 210)], edges: [{ id: 'e0', source: 'linear', target: 'relu' }] } }
+  };
+  await page.locator('input[type="file"][accept=".json"]').setInputFiles({ name: 'folded.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(project)) });
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  const heading = page.locator('.scene-heading h1'), trail = page.getByRole('navigation', { name: '层级路径' });
+  for (const view of ['拓扑图', '三维视图']) {
+    // The block is selected on the topology canvas, then entered from the inspector in the view under test.
+    await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+    await page.locator('.react-flow__node[data-id="block"]').click();
+    await page.getByRole('button', { name: view, exact: true }).click();
+    await page.getByRole('button', { name: '进入结构块', exact: true }).click();
+    await expect(heading).toHaveText('Linear block');
+    // The rest of the heading lets clicks through to the scene; the breadcrumb itself must
+    // take a real pointer click rather than the canvas or the React Flow pane behind it.
+    await trail.getByRole('button', { name: 'Folded MLP', exact: true }).click();
+    await expect(trail).toHaveCount(0);
+    await expect(heading).toHaveText('Folded MLP');
+  }
+  expect(errors).toEqual([]);
+});
