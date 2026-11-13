@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
-import type { Graph } from './types';
+import { isGroup, type Graph } from './types';
 import { useI18n } from './i18n';
 import type { AttentionSelection, InferenceReport } from './inferenceTypes';
 import { tensorNumber } from './inferenceTypes';
@@ -11,13 +11,27 @@ import TensorSemanticView from './TensorSemanticView';
 import AttentionInspector from './AttentionInspector';
 import { analyze } from './analysis';
 import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
+import { expandGraph, expandedLayerAt, graphAt } from './subgraph';
 import './TensorInspector.css';
 
-type Props = { graph: Graph; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void; onObserved?: () => void; onOpenGraph?: (graph: Graph) => void };
+type Props = { graph: Graph; drillPath?: string[]; trainedModel?: TrainedModelMetadata | null; trainedReady?: boolean; attentionReady?: boolean; selected: string | null; active: boolean; ready: boolean; cuda: boolean; valid: boolean; blocked: boolean; onBusy: (busy: boolean) => void; onObserved?: () => void; onOpenGraph?: (graph: Graph) => void };
 type Result = { graph: Graph; settings: string; report: InferenceReport };
+const ROOT: string[] = [];
+const NO_ATTENTION: AttentionSelection = { branch: 0, head: 0, queryStart: 0, keyStart: 0 };
 
-export default function TensorInspector({ graph, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy, onObserved, onOpenGraph }: Props) {
+export default function TensorInspector({ graph, drillPath = ROOT, trainedModel = null, trainedReady = false, attentionReady = false, selected, active, ready, cuda, valid, blocked, onBusy, onObserved, onOpenGraph }: Props) {
   const { t } = useI18n();
+  // `selected` is a layer of the level the views show. Inference, snapshots and the analysis below
+  // all use the expanded graph, where a layer inside a folded block exists once per instance; the
+  // inspector observes the instance chosen for each block on the drill path (0 by default), and a
+  // block node itself as the exit layer of its last instance.
+  const [instances, setInstances] = useState<Record<string, number>>({});
+  const level = useMemo(() => { try { return graphAt(graph, drillPath); } catch { return graph; } }, [graph, drillPath]);
+  const node = level.nodes.find(layer => layer.id === selected);
+  const target = useMemo(() => selected ? expandedLayerAt(graph, drillPath, selected, instances) : null, [graph, drillPath, selected, instances]);
+  const observedId = target?.id ?? null;
+  const runtime = useMemo(() => { try { return expandGraph(graph); } catch { return null; } }, [graph]);
+  const observed = observedId ? runtime?.nodes.find(layer => layer.id === observedId) : undefined;
   // 观测来源：在工作台里运行推理，或只读打开外部 Python 进程写出的快照。快照只在内存里，
   // 不写入项目，也不经过后端；它的数值只在当前图与快照的计算图一致时显示。
   const [source, setSource] = useState<'live' | 'offline'>('live');
@@ -34,27 +48,28 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
   const [inputMode, setInputMode] = useState<'synthetic' | 'provided'>('synthetic'), [inputText, setInputText] = useState('');
   const [indices, setIndices] = useState<Record<string, number[]>>({});
   const [attentionSelections, setAttentionSelections] = useState<Record<string, AttentionSelection>>({});
-  const layers = useMemo(() => analyze(graph).layers, [graph]);
-  const node = graph.nodes.find(layer => layer.id === selected);
-  const attentionNode = node && isAttention(node.op) ? node : undefined;
+  // Shapes of what actually runs, keyed by the expanded IDs that inference and snapshots use.
+  const layers = useMemo(() => runtime ? analyze(runtime).layers : {}, [runtime]);
+  const attentionNode = observed && isAttention(observed.op) ? observed : undefined;
   const attentionConfigValue = attentionNode ? attentionConfig(attentionNode.params) : null;
-  const attentionSelection = selected ? attentionSelections[selected] ?? { branch: 0, head: 0, queryStart: 0, keyStart: 0 } : { branch: 0, head: 0, queryStart: 0, keyStart: 0 };
+  const attentionSelection = observedId ? attentionSelections[observedId] ?? NO_ATTENTION : NO_ATTENTION;
   const queryLength = attentionNode ? layers[attentionNode.id]?.output[1] ?? 1 : 1;
-  const kvInput = attentionNode ? graph.edges.find(edge => edge.target === attentionNode.id && edge.targetPort === `b${attentionSelection.branch}:k0`) ?? incomingEdges(graph, attentionNode).filter(edge => !isProjectionPort(edge.targetPort))[attentionNode.params.attention_type === 'cross' ? 1 : 0] : undefined;
-  const keyLength = kvInput ? edgeOutputShape(graph, kvInput, layers)?.[1] ?? 1 : 1;
+  const kvInput = attentionNode && runtime ? runtime.edges.find(edge => edge.target === attentionNode.id && edge.targetPort === `b${attentionSelection.branch}:k0`) ?? incomingEdges(runtime, attentionNode).filter(edge => !isProjectionPort(edge.targetPort))[attentionNode.params.attention_type === 'cross' ? 1 : 0] : undefined;
+  const keyLength = kvInput && runtime ? edgeOutputShape(runtime, kvInput, layers)?.[1] ?? 1 : 1;
   const attentionValid = !attentionNode || Object.values(attentionSelection).every(value => Number.isInteger(value) && value >= 0) && attentionSelection.branch < attentionConfigValue!.branches && attentionSelection.head < attentionConfigValue!.heads && attentionSelection.queryStart < queryLength && attentionSelection.keyStart < keyLength;
-  const updateAttention = (key: keyof AttentionSelection, value: number) => { if (selected) setAttentionSelections(previous => ({ ...previous, [selected]: { ...attentionSelection, [key]: value } })); };
+  const updateAttention = (key: keyof AttentionSelection, value: number) => { if (observedId) setAttentionSelections(previous => ({ ...previous, [observedId]: { ...attentionSelection, [key]: value } })); };
+  const chooseInstance = (key: string, index: number) => setInstances(previous => ({ ...previous, [key]: index }));
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const requesting = useRef(false), controller = useRef<AbortController | null>(null), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
   useEffect(() => { setIndices({}); setAttentionSelections({}); setError(''); }, [graph]);
   const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
-  const previousSnapshot = result?.graph === graph ? result.report.tensors.find(tensor => tensor.nodeId === selected) : undefined;
-  const offlineTensor = offlineBound && offline ? offline.tensors.find(tensor => tensor.nodeId === selected) : undefined;
+  const previousSnapshot = result?.graph === graph && observedId ? result.report.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
+  const offlineTensor = offlineBound && offline && observedId ? offline.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineChannel = offlineTensor ? offlineChannels[offlineTensor.nodeId] : undefined;
   const snapshot = live ? (current ? previousSnapshot : undefined) : offlineTensor && (offlineChannel === undefined ? offlineTensor : withChannel(offlineTensor, offlineChannel));
-  const attentionSnapshot = live ? (current ? result.report.attentions?.find(value => value.nodeId === selected) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === selected) : undefined;
+  const attentionSnapshot = !observedId ? undefined : live ? (current ? result.report.attentions?.find(value => value.nodeId === observedId) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === observedId) : undefined;
   // What the views below show comes from one run or one file; a new one remounts them.
   const viewKey = live ? result?.report.runId ?? '' : offline?.snapshotId ?? '';
   const openSnapshot = async (file: File) => {
@@ -68,7 +83,7 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
     }
   };
   const run = async () => {
-    if (requesting.current || blocked || !ready || !valid || !selected || !weightsAvailable || !attentionValid) return;
+    if (requesting.current || blocked || !ready || !valid || !observedId || !weightsAvailable || !attentionValid) return;
     requesting.current = true; setBusy(true); setError(''); onBusy(true);
     controller.current = new AbortController();
     try {
@@ -84,7 +99,8 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
         }
       }
       const output = graph.nodes.find(layer => layer.op === 'Output')!.id;
-      const nodeIds = Array.from(new Set([selected, output]));
+      // The runtime expands folded blocks, so the request names the expanded layer.
+      const nodeIds = Array.from(new Set([observedId, output]));
       const response = await fetch('/api/infer', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.current.signal,
         body: JSON.stringify({ graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(nodeIds.filter(id => indices[id]).map(id => [id, indices[id]])) })
@@ -101,14 +117,20 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
     }
   };
   const changeIndex = (axis: number, value: number) => {
-    if (!previousSnapshot || !selected) return;
-    const next = [...(indices[selected] ?? previousSnapshot.slice.indices)]; next[axis] = value;
-    setIndices(previous => ({ ...previous, [selected]: next }));
+    if (!previousSnapshot || !observedId) return;
+    const next = [...(indices[observedId] ?? previousSnapshot.slice.indices)]; next[axis] = value;
+    setIndices(previous => ({ ...previous, [observedId]: next }));
   };
   // Keep the pending request mounted when another inspector tab is selected.
   return <section className="tensor-inspector" aria-label={t('Tensor Inspector')} hidden={!active} aria-busy={busy}>
     <div className="tensor-heading"><span className="eyebrow">OBSERVATION / SINGLE SAMPLE</span><h2>{t('真实张量观测')}</h2></div>
     <label className="field-label">{t('观测来源')}<select aria-label={t('观测来源')} value={source} disabled={busy} onChange={e => setSource(e.target.value as 'live' | 'offline')}><option value="live">{t('在工作台运行单样本推理')}</option><option value="offline">{t('外部 Python 观测快照 · 只读')}</option></select></label>
+    {node && (drillPath.length > 0 || isGroup(node)) && <div className="tensor-block-scope">
+      {target ? <>
+        {target.scopes.filter(scope => scope.count > 1).map(scope => <label className="field-label" key={scope.key}>{t('结构块实例 · {block}', { block: scope.label })}<input aria-label={t('观测实例 · {block}', { block: scope.label })} type="number" min={0} max={scope.count - 1} step={1} value={scope.index} disabled={busy} onChange={e => chooseInstance(scope.key, Number(e.target.value))} /><span>{t('共 {count} 个实例，编号从 0 开始', { count: scope.count })}</span></label>)}
+        <p className="tensor-note">{isGroup(node) ? t('结构块的输出来自最后一个实例的出口层 {id}。', { id: target.id }) : t('观测展开后的层 {id}。', { id: target.id })}</p>
+      </> : <p className="tensor-note">{t('无法确定这一层在展开后的模型中的位置。')}</p>}
+    </div>}
     {live && <>
     <p className="tensor-note">{t('单样本 eval 推理 · 已训练权重或固定种子随机初始化权重；不加载导入源码的原始权重。粒子动画仍是结构示意。')}</p>
     {!ready && <p className="tensor-note">{t('需要支持单样本推理的 Python / PyTorch 服务，请更新并重启后端。')}</p>}
@@ -136,7 +158,7 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
         <label className="field-label">{t('Key 起点')}<input aria-label={t('Attention Key 起点')} type="number" min={0} max={keyLength - 1} value={attentionSelection.keyStart} disabled={busy || !attentionReady} onChange={event => updateAttention('keyStart', Number(event.target.value))} /></label>
       </div><p className="tensor-note">{t('只采样所选分支与 Head，每个矩阵最多 16 × 16；修改窗口后重新运行，完整矩阵统计不变。')}{!attentionReady && t('后端暂不支持 Attention 内部观测；当前仅采集层输出。')}</p>
     </div>}
-    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !node || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
+    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
     <p className="tensor-note">{node ? t('采样 {name} 与模型输出；修改切片后需重新运行。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}{t('训练或环境检查期间不可运行。')}</p>
     {error && <div className="diagnostic-item error" role="alert"><TriangleAlert size={15} /><p>{t(error)}</p></div>}
     {result && !current && <p className="tensor-stale" role="status">{t('模型或采样配置已变化，旧快照已失效，请重新运行。')}</p>}
@@ -170,7 +192,7 @@ export default function TensorInspector({ graph, trainedModel = null, trainedRea
       {offline && !offlineBound && <div className="tensor-stale" role="status"><p>{t('快照测量的是另一张计算图，数值不能套用到当前模型。')}</p>{onOpenGraph && <button className="button subtle" disabled={blocked} onClick={() => onOpenGraph(offline.graph)}>{t('打开快照中的模型')}</button>}</div>}
       {offlineBound && <p className="tensor-note">{node ? t('显示 {name} 的离线观测。切片和 Attention 窗口固定在采集时的位置；通道网格可以在已采集的通道之间切换。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}</p>}
     </>}
-    {attentionSnapshot && <AttentionInspector key={viewKey + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={node?.op === 'Transformer'} />}
+    {attentionSnapshot && <AttentionInspector key={viewKey + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={observed?.op === 'Transformer'} />}
     {live && current && !snapshot && <p className="tensor-note">{t('当前层未包含在本次采样中，选择该层后重新运行。')}</p>}
     {!live && offlineBound && node && !snapshot && <p className="tensor-note">{t('快照里没有这一层的观测。')}</p>}
     {snapshot && <>

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import TensorHistogram from './TensorHistogram';
 import TensorInspector from './TensorInspector';
+import { I18nProvider } from './i18n';
 import { tensorNumber } from './inferenceTypes';
 import { PRESETS } from './presets';
 import type { TrainedModelMetadata } from './trainedModel';
+import type { Graph, Layer } from './types';
 
 const trainedModel: TrainedModelMetadata = {
   modelId: 'model-fixture', trainingRunId: 'training-fixture', graphFingerprint: 'fingerprint', createdAt: '2026-10-08T00:00:00Z',
@@ -53,5 +55,32 @@ describe('tensor observation presentation', () => {
     const markup = renderToStaticMarkup(<TensorInspector graph={PRESETS.mlp()} trainedModel={trainedModel} selected="layer_1" active ready cuda={false} valid blocked={false} onBusy={() => {}} />);
     expect(markup).toContain('后端暂不支持训练权重推理');
     expect(markup).toContain('class="button primary wide" disabled=""');
+  });
+
+  it('observes a layer inside a folded block at a chosen instance, and a block at its last instance\'s exit', () => {
+    const layer = (id: string, op: Layer['op'], params: Layer['params'] = {}, extra: Partial<Layer> = {}): Layer => ({ id, name: id, op, params, position: { x: 0, y: 0 }, ...extra });
+    const nodes = [layer('in', 'Input', { shape: [2, 8] }), layer('stack', 'Group', {}, { subgraph: 'cell', repeat: 3 }), layer('head', 'Linear', { out_features: 2 }), layer('out', 'Output')];
+    const graph: Graph = {
+      version: 1, name: 'Blocks', nodes, edges: nodes.slice(1).map((node, index) => ({ id: `e${index}`, source: nodes[index].id, target: node.id })),
+      subgraphs: { cell: { id: 'cell', name: 'Cell', origin: 'manual', nodes: [layer('fc', 'Linear', { out_features: 8 }), layer('act', 'Tanh')], edges: [{ id: 'c0', source: 'fc', target: 'act' }] } },
+    };
+    const render = (drillPath: string[], selected: string, language: 'zh' | 'en' = 'zh') => renderToStaticMarkup(<I18nProvider initialLanguage={language}><TensorInspector graph={graph} drillPath={drillPath} selected={selected} active ready cuda={false} valid blocked={false} onBusy={() => {}} /></I18nProvider>);
+    const inner = render(['cell'], 'fc');
+    expect(inner).toContain('结构块实例 · Cell');
+    expect(inner).toContain('aria-label="观测实例 · Cell" type="number" min="0" max="2" step="1" value="0"');
+    expect(inner).toContain('观测展开后的层 stack/0/fc。');
+    expect(inner).not.toContain('class="button primary wide" disabled=""');
+    const block = render([], 'stack');
+    expect(block).toContain('结构块的输出来自最后一个实例的出口层 stack/2/act。');
+    expect(block).not.toContain('观测实例');
+    expect(block).not.toContain('class="button primary wide" disabled=""');
+    // A top-level layer needs no mapping, and a layer the level does not have cannot run.
+    expect(render([], 'head')).not.toContain('tensor-block-scope');
+    expect(render(['cell'], 'head')).toContain('class="button primary wide" disabled=""');
+    const english = render(['cell'], 'fc', 'en');
+    expect(english).toContain('Block instance · Cell');
+    expect(english).toContain('aria-label="Observed instance · Cell"');
+    expect(english).toContain('3 instances, numbered from 0');
+    expect(english).toContain('Observing the expanded layer stack/0/fc.');
   });
 });

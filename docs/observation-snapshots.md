@@ -74,12 +74,13 @@ An `attentions` entry holds Q/K/V, scores, probabilities and outputs for one bra
 
 In **张量观测**, set **观测来源** to **外部 Python 观测快照 · 只读** and open the file. The panel shows where the numbers came from: device, sample source and seed, which weights were used, the label, the creation time and the snapshot ID.
 
-The numbers are bound to the computation the snapshot measured, the same way trained weights are. Names, layout and the project title do not matter. Operators, parameters, input shapes, wiring and weight sharing do. If the current project computes something else, the panel says so and offers to open the snapshot's own graph. Opening it replaces the project the way importing one does, and undo brings the previous project back. A later edit hides the numbers again until the graph matches.
+The numbers are bound to the computation the snapshot measured, the same way trained weights are. Names, layout and the project title do not matter. Operators, parameters, input shapes, wiring, weight sharing, repeat counts and the contents of folded blocks do. If the current project computes something else, the panel says so and offers to open the snapshot's own graph. Opening it replaces the project the way importing one does, and undo brings the previous project back. A later edit hides the numbers again until the graph matches.
 
 Read-only means:
 
 - No inference runs, and nothing is sent to the Python service, which may be offline.
 - The slice and attention windows stay where they were captured. The channel grid switches between the captured channels without a rerun.
+- Folded blocks are looked up the way live inference names them: a selected block shows its last instance's exit layer, and inside an entered block the instance selector switches between the captured instances without a rerun.
 - The snapshot stays in this page's memory. It is not written to the project, browser storage or disk, and reloading the page drops it.
 
 The file is checked before anything is shown:

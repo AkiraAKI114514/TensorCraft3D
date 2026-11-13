@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { generatePython } from './export';
 import { ObservationSnapshotError, parseObservationSnapshot, snapshotMatches, withChannel } from './observationSnapshot';
+import { expandedLayerAt } from './subgraph';
 import type { Graph, Layer } from './types';
 
 const layer = (id: string, op: Layer['op'], params: Layer['params'] = {}, extra: Partial<Layer> = {}): Layer => ({ id, name: id, op, params, position: { x: 0, y: 0 }, ...extra });
@@ -17,9 +18,10 @@ const attention = () => chain([layer('in', 'Input', { shape: [1, 5, 8] }), layer
 /**
  * What a user does outside the workbench: run the exported code, take the model as trained
  * (here: initialised from another seed), and snapshot one sample through the writer. The model's
- * own forward pass is the reference the snapshot has to reproduce.
+ * own forward pass is the reference the snapshot has to reproduce; `probes` names submodules of
+ * the exported model whose outputs are recorded as references too.
  */
-function observe(graphs: { graph: Graph; sample: number[] }[]) {
+function observe(graphs: { graph: Graph; sample: number[]; probes?: string[] }[]) {
   const script = `import json, sys, torch
 from backend.observation_snapshot import capture_snapshot, snapshot_json
 results = []
@@ -29,17 +31,20 @@ for case in json.load(sys.stdin):
     torch.manual_seed(7)
     model = namespace["VisualModel"]().eval()
     sample = torch.randn(*case["sample"])
+    probes = {}
+    for path in case["probes"]:
+        model.get_submodule(path).register_forward_hook(lambda module, inputs, output, path=path: probes.__setitem__(path, output.reshape(-1).tolist()))
     with torch.no_grad():
         expected = model(sample)
-    results.append({"snapshot": snapshot_json(capture_snapshot(case["graph"], model, sample, label="exported model")), "expected": expected.reshape(-1).tolist()})
+    results.append({"snapshot": snapshot_json(capture_snapshot(case["graph"], model, sample, label="exported model")), "expected": expected.reshape(-1).tolist(), "probes": probes})
 print(json.dumps(results))
 `;
-  const input = JSON.stringify(graphs.map(({ graph, sample }) => ({ graph, sample, code: generatePython(graph) })));
-  return JSON.parse(execFileSync('.venv/Scripts/python.exe', ['-c', script], { input, encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 })) as { snapshot: string; expected: number[] }[];
+  const input = JSON.stringify(graphs.map(({ graph, sample, probes = [] }) => ({ graph, sample, probes, code: generatePython(graph) })));
+  return JSON.parse(execFileSync('.venv/Scripts/python.exe', ['-c', script], { input, encoding: 'utf8', timeout: 60000, maxBuffer: 64 * 1024 * 1024 })) as { snapshot: string; expected: number[]; probes: Record<string, number[]> }[];
 }
 
 describe('offline observation snapshots', () => {
-  const [plain, block, attended] = observe([{ graph: cnn(), sample: [1, 1, 6, 6] }, { graph: folded(), sample: [1, 8] }, { graph: attention(), sample: [1, 5, 8] }]);
+  const [plain, block, attended] = observe([{ graph: cnn(), sample: [1, 1, 6, 6] }, { graph: folded(), sample: [1, 8], probes: ['layers.stack.0.fc', 'layers.stack.1.fc', 'layers.stack.1.act'] }, { graph: attention(), sample: [1, 5, 8] }]);
 
   it('reproduces the exported model\'s own output, folded blocks included', () => {
     for (const [result, graph] of [[plain, cnn()], [block, folded()]] as const) {
@@ -52,6 +57,36 @@ describe('offline observation snapshots', () => {
     }
     // The runtime expands the block, so its layers are observed under their expanded IDs.
     expect(parseObservationSnapshot(block.snapshot).tensors.map(tensor => tensor.nodeId)).toEqual(['in', 'stack/0/fc', 'stack/0/act', 'stack/1/fc', 'stack/1/act', 'head', 'out']);
+  });
+
+  it('finds a layer of a folded block at the chosen instance, and the block itself at its exit', () => {
+    const snapshot = parseObservationSnapshot(block.snapshot), graph = folded();
+    // What the inspector shows offline: the drilled-in selection, mapped to its expanded ID.
+    const observed = (drillPath: string[], selected: string, instances?: Record<string, number>) => {
+      const target = expandedLayerAt(graph, drillPath, selected, instances);
+      return target ? snapshot.tensors.find(tensor => tensor.nodeId === target.id) : undefined;
+    };
+    // Each instance owns its weights, so the two applications of `fc` really differ.
+    expect(block.probes['layers.stack.0.fc']).not.toEqual(block.probes['layers.stack.1.fc']);
+    for (const [tensor, nodeId, reference] of [
+      [observed(['cell'], 'fc'), 'stack/0/fc', 'layers.stack.0.fc'],
+      [observed(['cell'], 'fc', { cell: 1 }), 'stack/1/fc', 'layers.stack.1.fc'],
+      [observed([], 'stack'), 'stack/1/act', 'layers.stack.1.act'],
+    ] as const) {
+      expect(tensor?.nodeId).toBe(nodeId);
+      expect(tensor!.slice.truncated).toBe(false);
+      tensor!.slice.values.flat().forEach((value, index) => expect(value).toBeCloseTo(block.probes[reference][index], 5));
+    }
+  });
+
+  it('binds a folded block only to a graph that runs the same block the same number of times', () => {
+    const snapshot = parseObservationSnapshot(block.snapshot);
+    const repeated = folded(); repeated.nodes[1].repeat = 3;
+    const changed = folded(); changed.subgraphs!.cell.nodes[1].op = 'ReLU';
+    expect(snapshotMatches(repeated, snapshot)).toBe(false);
+    expect(snapshotMatches(changed, snapshot)).toBe(false);
+    const renamed = folded(); renamed.subgraphs!.cell.name = 'Renamed cell';
+    expect(snapshotMatches(renamed, snapshot)).toBe(true);
   });
 
   it('carries the attention window and binds to the computation, not the layout', () => {

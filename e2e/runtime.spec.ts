@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '@playwright/test';
+import type { InferenceReport, TensorSnapshot } from '../src/inferenceTypes';
 import type { Graph, Layer } from '../src/types';
 
 const source = `import math
@@ -299,5 +300,81 @@ print(snapshot_json(capture_snapshot(graph, model.state_dict(), torch.randn(1, 1
   await inspector.getByRole('button', { name: '关闭快照', exact: true }).click();
   await expect(inspector.locator('.tensor-offline')).toHaveCount(0);
   expect(inferences).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('observes a layer inside a repeated block live and from a snapshot, at the same chosen instance', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const inferences: string[][] = []; page.on('request', request => { if (request.url().endsWith('/api/infer')) inferences.push(request.postDataJSON().nodeIds); });
+  const layer = (id: string, op: Layer['op'], params: Layer['params'], x: number, extra: Partial<Layer> = {}): Layer => ({ id, name: id, op, params, position: { x, y: 160 }, ...extra });
+  const nodes = [layer('features', 'Input', { shape: [2, 8] }, 0), layer('stack', 'Group', {}, 220, { name: 'Cell ×3', subgraph: 'cell', repeat: 3 }), layer('head', 'Linear', { out_features: 2 }, 440), layer('out', 'Output', {}, 660)];
+  const graph: Graph = {
+    version: 1, name: 'Folded cells', nodes, edges: nodes.slice(1).map((node, index) => ({ id: `e${index}`, source: nodes[index].id, target: node.id })),
+    subgraphs: { cell: { id: 'cell', name: 'Cell', origin: 'manual', nodes: [layer('fc', 'Linear', { out_features: 8 }, 0), layer('act', 'Tanh', {}, 220)], edges: [{ id: 'c0', source: 'fc', target: 'act' }] } },
+  };
+  // The outside writer with the inspector's own defaults (seed 42, seeded weights, synthetic
+  // sample), so the snapshot holds the numbers a live run measures.
+  const file = execFileSync('.venv/Scripts/python.exe', ['-c', `import json, sys
+from backend.observation_snapshot import capture_snapshot, snapshot_json
+print(snapshot_json(capture_snapshot(json.load(sys.stdin), seed=42)))
+`], { input: JSON.stringify(graph), encoding: 'utf8', timeout: 60000 });
+  const written = JSON.parse(file) as { tensors: TensorSnapshot[] };
+  const offlineTensor = (nodeId: string) => written.tensors.find(tensor => tensor.nodeId === nodeId)!;
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), graph);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="stack"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  const run = panel.getByRole('button', { name: '运行单样本推理', exact: true });
+  // The block itself is what leaves it: its last instance's exit layer.
+  await expect(panel).toContainText('结构块的输出来自最后一个实例的出口层 stack/2/act。');
+  const blockRun = page.waitForResponse('**/api/infer');
+  await run.click();
+  const blockReport = await (await blockRun).json() as InferenceReport;
+  expect(blockReport.tensors.find(tensor => tensor.nodeId === 'stack/2/act')).toEqual(offlineTensor('stack/2/act'));
+  await expect(panel).toContainText('Cell ×3 · 实测输出');
+  const liveBlock = await panel.locator('.tensor-stats').innerText();
+  // The snapshot is looked up through the same mapping, so it shows the same layer.
+  const source = panel.getByLabel('观测来源', { exact: true });
+  await source.selectOption('offline');
+  await panel.getByLabel('观测快照文件', { exact: true }).setInputFiles({ name: 'cells.observation.json', mimeType: 'application/json', buffer: Buffer.from(file) });
+  await expect(panel.locator('.tensor-offline')).toContainText('离线快照 · CPU · eval');
+  await expect(panel.locator('.tensor-stale')).toHaveCount(0);
+  await expect(panel.locator('.tensor-stats')).toHaveText(liveBlock, { useInnerText: true });
+  await source.selectOption('live');
+
+  // Inside the block a layer runs once per instance; instance 0 is observed until another is chosen.
+  await page.getByRole('button', { name: '层属性', exact: true }).click();
+  await page.getByRole('button', { name: '进入结构块', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="fc"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const instance = panel.getByLabel('观测实例 · Cell', { exact: true });
+  await expect(instance).toHaveValue('0');
+  await expect(instance).toHaveAttribute('max', '2');
+  await expect(panel).toContainText('观测展开后的层 stack/0/fc。');
+  await expect(panel).toContainText('当前层未包含在本次采样中');
+  await instance.fill('1');
+  await expect(panel).toContainText('观测展开后的层 stack/1/fc。');
+  const layerRun = page.waitForResponse('**/api/infer');
+  await run.click();
+  const layerReport = await (await layerRun).json() as InferenceReport;
+  expect(layerReport.tensors.find(tensor => tensor.nodeId === 'stack/1/fc')).toEqual(offlineTensor('stack/1/fc'));
+  await expect(panel).toContainText('fc · 实测输出');
+  await expect(panel.locator('.tensor-stats')).toContainText('[1, 8]');
+  const liveLayer = await panel.locator('.tensor-stats').innerText();
+  expect(inferences).toEqual([['stack/2/act', 'out'], ['stack/1/fc', 'out']]);
+
+  // The snapshot, still open, shows the same chosen instance.
+  await source.selectOption('offline');
+  await expect(instance).toHaveValue('1');
+  await expect(panel.locator('.tensor-stats')).toHaveText(liveLayer, { useInnerText: true });
+  // Another instance needs no run offline: the snapshot holds every expanded layer.
+  await instance.fill('2');
+  await expect(panel).toContainText('观测展开后的层 stack/2/fc。');
+  const cell = panel.getByRole('region', { name: '实测张量切片', exact: true }).locator('td').first();
+  await expect(cell).toHaveAttribute('title', `[0, 0] = ${offlineTensor('stack/2/fc').slice.values[0][0]}`);
+  expect(inferences).toHaveLength(2);
   expect(errors).toEqual([]);
 });

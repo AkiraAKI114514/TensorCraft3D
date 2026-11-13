@@ -9,13 +9,38 @@ from datetime import datetime, timezone
 MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 
+def _computation_node(node):
+    # `shares` changes which weights a layer uses, and `repeat` and a block's definition change
+    # which operators run, so they are part of the computation. Each is added only when present,
+    # which keeps the fingerprint of every graph without them unchanged.
+    return {
+        "id": node["id"], "op": node["op"], "params": node["params"],
+        **({"repeat": node["repeat"]} if node.get("repeat") not in (None, 1) else {}),
+        **({"subgraph": node["subgraph"]} if node.get("subgraph") is not None else {}),
+        **({"shares": node["shares"]} if node.get("shares") is not None else {}),
+    }
+
+
+def _computation_edges(edges):
+    return [{key: edge[key] for key in ("source", "target", "sourcePort", "targetPort") if key in edge} for edge in edges]
+
+
 def graph_fingerprint(graph):
     computation = {
-        # `shares` changes which weights a layer uses, so it is part of the computation; it is
-        # added only when present, which keeps every existing fingerprint unchanged.
-        "nodes": [{"id": node["id"], "op": node["op"], "params": node["params"], **({"shares": node["shares"]} if node.get("shares") is not None else {})} for node in graph["nodes"]],
-        "edges": [{key: edge[key] for key in ("source", "target", "sourcePort", "targetPort") if key in edge} for edge in graph["edges"]],
+        "nodes": [_computation_node(node) for node in graph["nodes"]],
+        "edges": _computation_edges(graph["edges"]),
     }
+    # Only the block definitions the graph actually runs count, nested ones included.
+    definitions = graph.get("subgraphs") or {}
+    used, pending = set(), [node.get("subgraph") for node in graph["nodes"] if node.get("op") == "Group"]
+    while pending:
+        name = pending.pop()
+        if name in used or name not in definitions:
+            continue
+        used.add(name)
+        pending.extend(inner.get("subgraph") for inner in definitions[name]["nodes"] if inner.get("op") == "Group")
+    if used:
+        computation["subgraphs"] = {name: {"nodes": [_computation_node(node) for node in definitions[name]["nodes"]], "edges": _computation_edges(definitions[name]["edges"])} for name in sorted(used)}
     return hashlib.sha256(json.dumps(computation, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 

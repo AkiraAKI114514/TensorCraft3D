@@ -82,6 +82,61 @@ export function expandGraph(graph: Graph): Graph {
 /** 子图实例在图里没有自己的算子语义，参数面板和导出都要按哨兵跳过。 */
 export const isGroupNode = (layer: Layer) => isGroup(layer);
 
+/** 下钻路径上的一层结构块：当前层级代表它的第几次出现。 */
+export interface BlockInstance {
+  /** 从根到这一层的下钻路径，作为这一层实例选择的键。 */
+  key: string;
+  /** 结构块定义的显示名称。 */
+  label: string;
+  /** 这一层级上该结构块出现的次数：所有引用它的实例节点的 repeat 之和。 */
+  count: number;
+  /** 观测的那一次出现，已限制在 `[0, count)` 内。 */
+  index: number;
+}
+
+/**
+ * 当前层级里的一层在展开图中对应哪个算子 id。
+ *
+ * 结构块的每个实例都会把内部的层再运行一次，所以下钻后看到的一层在运行时是多个节点，观测
+ * 只能取其中一个：下钻路径的每一层用 `instances[key]` 选第几次出现（缺省为 0，超出范围就
+ * 收回到边界）。选中的结构块节点代表从它流出的张量，也就是最后一个实例的出口层；出口本身
+ * 是结构块时继续往里取。路径或节点找不到时返回 null，例如编辑删掉了视图所在的结构块。
+ */
+export function expandedLayerAt(graph: Graph, drillPath: string[], nodeId: string, instances: Readonly<Record<string, number>> = {}): { id: string; scopes: BlockInstance[] } | null {
+  if (drillPath.length > MAX_SUBGRAPH_DEPTH) return null;
+  const definitions: Record<string, SubgraphDef> = graph.subgraphs ?? {};
+  const definitionOf = (name: string | undefined) => name !== undefined && Object.hasOwn(definitions, name) ? definitions[name] : undefined;
+  const scopes: BlockInstance[] = [];
+  let nodes = graph.nodes, prefix = '';
+  const expanded = (id: string) => prefix ? `${prefix}${EXPAND_SEP}${id}` : id;
+  for (const [depth, name] of drillPath.entries()) {
+    const definition = definitionOf(name);
+    // 和 layerMetricKeys 一样，这一层级里所有引用该子图的实例节点按顺序排开，各自贡献 repeat 次出现。
+    const owners = nodes.filter(node => isGroup(node) && node.subgraph === name);
+    const count = owners.reduce((sum, node) => sum + repeatOf(node), 0);
+    if (!definition || count < 1) return null;
+    const key = drillPath.slice(0, depth + 1).join('/'), requested = Math.trunc(Object.hasOwn(instances, key) ? instances[key] : 0);
+    const index = Math.min(count - 1, Math.max(0, Number.isFinite(requested) ? requested : 0));
+    let owner = owners[0], instance = index;
+    for (const node of owners) { owner = node; if (instance < repeatOf(node)) break; instance -= repeatOf(node); }
+    scopes.push({ key, label: definition.name, count, index });
+    prefix = `${expanded(owner.id)}${EXPAND_SEP}${instance}`;
+    nodes = definition.nodes;
+  }
+  let node = nodes.find(layer => layer.id === nodeId);
+  if (!node) return null;
+  let id = expanded(node.id);
+  for (let depth = drillPath.length; isGroup(node); depth++) {
+    const definition = definitionOf(node.subgraph);
+    if (!definition || depth >= MAX_SUBGRAPH_DEPTH) return null;
+    let exit: Layer;
+    try { exit = endpoints(definition, String(node.subgraph)).exit; } catch { return null; }
+    id = `${id}${EXPAND_SEP}${repeatOf(node) - 1}${EXPAND_SEP}${exit.id}`;
+    node = exit;
+  }
+  return { id, scopes };
+}
+
 /**
  * 沿下钻路径取出当前层级的图。
  *

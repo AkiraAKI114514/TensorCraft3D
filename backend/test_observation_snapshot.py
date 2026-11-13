@@ -74,6 +74,23 @@ class ObservationSnapshotTests(unittest.TestCase):
         for tensor in report["tensors"]:
             self.assertEqual(offline[tensor["nodeId"]], tensor)
 
+    def test_a_layer_inside_a_folded_block_is_observed_live_and_offline_by_its_expanded_id(self):
+        block = {"id": "block", "name": "Block", "origin": "manual", "nodes": [{"id": "fc", "name": "fc", "op": "Linear", "params": {"out_features": 8}}, {"id": "act", "name": "act", "op": "Tanh", "params": {}}], "edges": [{"id": "s0", "source": "fc", "target": "act"}]}
+        graph = chain([8], ("Group", {}), ("Linear", {"out_features": 2}))
+        graph["nodes"][1].update(subgraph="block", repeat=3); graph["subgraphs"] = {"block": block}
+        snapshot = capture_snapshot(graph, seed=11)
+        offline = {tensor["nodeId"]: tensor for tensor in snapshot["tensors"]}
+        # The inspector names one instance of an inner layer, or a block by its last instance's exit.
+        report = run_inference(TensorInferenceRequest(graph=graph, nodeIds=["n1/1/fc", "n1/2/act", "n3"], seed=11, slices={"n1/1/fc": []}))
+        self.assertEqual([tensor["nodeId"] for tensor in report["tensors"]], ["n1/1/fc", "n1/2/act", "n3"])
+        for tensor in report["tensors"]:
+            self.assertEqual(offline[tensor["nodeId"]], tensor)
+        self.assertNotEqual(offline["n1/0/fc"]["slice"], offline["n1/1/fc"]["slice"])
+        # Neither the block node nor an inner layer's own ID runs as such.
+        for node_id in ("n1", "fc"):
+            with self.assertRaisesRegex(InferenceError, "nodeIds must refer to graph nodes"):
+                run_inference(TensorInferenceRequest(graph=graph, nodeIds=[node_id], seed=11))
+
     def test_a_sample_keeps_or_drops_its_batch_axis_or_is_flat_but_is_never_reshaped(self):
         graph = cnn(); weights = trained(graph).state_dict(); sample = torch.randn(1, 1, 6, 6)
         reference = capture_snapshot(graph, weights, {"n0": sample})["tensors"][-1]
