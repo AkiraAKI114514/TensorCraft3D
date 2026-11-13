@@ -188,16 +188,20 @@ test('paints every layer\'s measured values on the 3D blocks and pauses them aft
   expect(errors).toEqual([]);
 });
 
-test('shows the weights and biases the observed layer ran with, one filter at a time', async ({ page }) => {
-  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
-  const nodes = [
+const convolution: Graph = {
+  version: 1, name: 'Kernel fixture',
+  nodes: [
     { id: 'layer_0', name: 'Input image', op: 'Input', params: { shape: [2, 2, 6, 6] }, position: { x: 0, y: 100 } },
     { id: 'layer_1', name: 'Conv', op: 'Conv2d', params: { out_channels: 3, kernel_size: 3, stride: 1, padding: 1, bias: 1 }, position: { x: 210, y: 100 } },
     { id: 'layer_2', name: 'Flatten', op: 'Flatten', params: {}, position: { x: 420, y: 100 } },
     { id: 'layer_3', name: 'Head', op: 'Linear', params: { out_features: 2 }, position: { x: 630, y: 100 } },
     { id: 'layer_4', name: 'Output', op: 'Output', params: {}, position: { x: 840, y: 100 } },
-  ] as Graph['nodes'];
-  const convolution: Graph = { version: 1, name: 'Kernel fixture', nodes, edges: [0, 1, 2, 3].map(i => ({ id: `e${i}`, source: `layer_${i}`, target: `layer_${i + 1}` })) };
+  ],
+  edges: [0, 1, 2, 3].map(i => ({ id: `e${i}`, source: `layer_${i}`, target: `layer_${i + 1}` })),
+};
+
+test('shows the weights and biases the observed layer ran with, one filter at a time', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), convolution);
   await page.goto('/');
   await expect(page.locator('.statusbar')).toContainText('PyTorch');
@@ -217,5 +221,49 @@ test('shows the weights and biases the observed layer ran with, one filter at a 
   await expect(weights).toContainText('卷积核 · 滤波器 2 · 输入通道 0');
   await tensors.selectOption({ label: 'bias · [3]' });
   await expect(panel.getByRole('region', { name: '参数切片', exact: true }).locator('td')).toHaveCount(3);
+  expect(errors).toEqual([]);
+});
+
+test('explains one output value as the measured inputs times weights plus the bias', async ({ page }, testInfo) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), convolution);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="layer_1"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true }), run = panel.getByRole('button', { name: '运行单样本推理', exact: true });
+  const position = (axis: string) => panel.getByLabel(`要解释的值 · ${axis}`, { exact: true });
+  // It starts at the first channel, in the middle of the 6 x 6 map.
+  await expect(position('输出通道')).toHaveValue('0');
+  await expect(position('输出行')).toHaveValue('2');
+  await expect(position('输出列')).toHaveValue('2');
+  let response = page.waitForResponse('**/api/infer'); await run.click();
+  let report = await (await response).json() as InferenceReport;
+  let explanation = report.explanation!;
+  expect(explanation).toMatchObject({ nodeId: 'layer_1', index: [0, 2, 2], rule: 'weighted-sum', count: 18, padded: 0, inputNode: 'layer_0' });
+  // The value is the activation the slice shows there, and its terms rebuild it.
+  expect(report.tensors.find(tensor => tensor.nodeId === 'layer_1')!.slice.values[2][2]).toBe(explanation.value);
+  expect(explanation.recomputed!).toBeCloseTo(explanation.value!, 5);
+  const view = panel.getByRole('region', { name: '数值解释', exact: true });
+  await expect(view).toContainText('y[0, 2, 2] = Σ 18 项 x·w + b');
+  await expect(view.getByRole('table', { name: '贡献最大的项', exact: true }).locator('tbody tr')).toHaveCount(16);
+  await expect(view).toContainText('其余 2 项');
+  // At the top edge the window reads the zero padding; a new position needs a rerun.
+  await position('输出行').fill('0');
+  await expect(view).toHaveCount(0);
+  await expect(panel.locator('.tensor-stale')).toContainText('旧快照已失效');
+  response = page.waitForResponse('**/api/infer'); await run.click();
+  report = await (await response).json() as InferenceReport;
+  explanation = report.explanation!;
+  expect(explanation).toMatchObject({ index: [0, 0, 2], padded: 6 });
+  expect(explanation.recomputed!).toBeCloseTo(explanation.value!, 5);
+  await expect(view).toContainText('其中 6 项落在补零区域');
+  await expect(view.getByText('补零', { exact: true }).first()).toBeVisible();
+  await view.screenshot({ path: testInfo.outputPath('value-explanation.png') });
+  // A layer that is not a weighted sum or a pooling window offers nothing to explain.
+  await page.locator('.react-flow__node[data-id="layer_2"]').click();
+  await expect(position('输出通道')).toHaveCount(0);
+  await expect(view).toHaveCount(0);
   expect(errors).toEqual([]);
 });

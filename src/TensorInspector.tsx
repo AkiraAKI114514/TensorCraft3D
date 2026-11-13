@@ -8,6 +8,7 @@ import { MAX_OBSERVATION_BYTES, ObservationSnapshotError, parseObservationSnapsh
 import type { TrainedModelMetadata } from './trainedModel';
 import { observationFromReport, observationFromSnapshot, type SceneObservation } from './sceneObservation';
 import AttentionInspector from './AttentionInspector';
+import ValueExplanationView, { EXPLAINED_OPS, defaultExplainIndex, explainAxes } from './ValueExplanation';
 import { analyze } from './analysis';
 import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
 import { expandGraph, expandedLayerAt, graphAt } from './subgraph';
@@ -62,18 +63,30 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const keyLength = kvInput && runtime ? edgeOutputShape(runtime, kvInput, layers)?.[1] ?? 1 : 1;
   const attentionValid = !attentionNode || Object.values(attentionSelection).every(value => Number.isInteger(value) && value >= 0) && attentionSelection.branch < attentionConfigValue!.branches && attentionSelection.head < attentionConfigValue!.heads && attentionSelection.queryStart < queryLength && attentionSelection.keyStart < keyLength;
   const updateAttention = (key: keyof AttentionSelection, value: number) => { if (observedId) setAttentionSelections(previous => ({ ...previous, [observedId]: { ...attentionSelection, [key]: value } })); };
+  // One output element of a Linear, convolution or pooling layer to split into its terms; it is
+  // part of the run, so changing it needs a rerun like any other selection.
+  const [explainIndices, setExplainIndices] = useState<Record<string, number[]>>({});
+  const explainShape = observed && EXPLAINED_OPS.has(observed.op) ? layers[observed.id]?.output : undefined;
+  const explainIndex = observed && explainShape ? explainIndices[observed.id] ?? defaultExplainIndex(observed.op, explainShape) : [];
+  const explainValid = !explainShape || explainIndex.length === explainShape.length - 1 && explainIndex.every((value, axis) => Number.isInteger(value) && value >= 0 && value < explainShape[axis + 1]);
+  const changeExplainIndex = (axis: number, value: number) => {
+    if (!observedId) return;
+    const next = [...explainIndex]; next[axis] = value;
+    setExplainIndices(previous => ({ ...previous, [observedId]: next }));
+  };
   const chooseInstance = (key: string, index: number) => setInstances(previous => ({ ...previous, [key]: index }));
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const requesting = useRef(false), controller = useRef<AbortController | null>(null), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
-  useEffect(() => { setIndices({}); setAttentionSelections({}); setParameterIndices({}); setError(''); }, [graph]);
-  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, parameterIndices });
+  useEffect(() => { setIndices({}); setAttentionSelections({}); setParameterIndices({}); setExplainIndices({}); setError(''); }, [graph]);
+  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, parameterIndices, explainIndices });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
   const previousSnapshot = result?.graph === graph && observedId ? result.report.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineTensor = offlineBound && offline && observedId ? offline.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineChannel = offlineTensor ? offlineChannels[offlineTensor.nodeId] : undefined;
   const snapshot = live ? (current ? previousSnapshot : undefined) : offlineTensor && (offlineChannel === undefined ? offlineTensor : withChannel(offlineTensor, offlineChannel));
   const attentionSnapshot = !observedId ? undefined : live ? (current ? result.report.attentions?.find(value => value.nodeId === observedId) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === observedId) : undefined;
+  const explanation = live && current && observedId && result.report.explanation?.nodeId === observedId ? result.report.explanation : undefined;
   // What the views below show comes from one run or one file; a new one remounts them.
   const viewKey = live ? result?.report.runId ?? '' : offline?.snapshotId ?? '';
   // The observed layer's weights and biases: shown from a current run or a bound snapshot; the
@@ -105,7 +118,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   // `everyLayer` observes every executed layer at once and hands the result to the 3D view; it
   // needs no selected layer and takes no attention window.
   const run = async (everyLayer = false) => {
-    if (requesting.current || blocked || !ready || !valid || !weightsAvailable || (!everyLayer && (!observedId || !attentionValid))) return;
+    if (requesting.current || blocked || !ready || !valid || !weightsAvailable || (!everyLayer && (!observedId || !attentionValid || !explainValid))) return;
     requesting.current = true; setBusy(true); setError(''); onBusy(true);
     controller.current = new AbortController();
     try {
@@ -131,7 +144,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.current.signal,
         body: JSON.stringify(everyLayer
           ? { graph, allNodes: true, seed, device, modelId, inputs, slices: Object.fromEntries(sliced), ...weights }
-          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced), ...weights })
+          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced), ...weights, explain: explainShape ? { nodeId: observedId, index: explainIndex } : undefined })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `单样本推理失败 (${response.status})`);
@@ -189,7 +202,14 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
         <label className="field-label">{t('Key 起点')}<input aria-label={t('Attention Key 起点')} type="number" min={0} max={keyLength - 1} value={attentionSelection.keyStart} disabled={busy || !attentionReady} onChange={event => updateAttention('keyStart', Number(event.target.value))} /></label>
       </div><p className="tensor-note">{t('只采样所选分支与 Head，每个矩阵最多 16 × 16；修改窗口后重新运行，完整矩阵统计不变。')}{!attentionReady && t('后端暂不支持 Attention 内部观测；当前仅采集层输出。')}</p>
     </div>}
-    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
+    {observed && explainShape && <div className="value-explain-controls"><h3>{t('解释一个输出值')}</h3>
+      <div className="tensor-prefix-controls">{explainAxes(observed.op, explainShape.length).map((name, axis) => {
+        const label = name ? t(name) : t('输出轴 {axis}', { axis: axis + 1 });
+        return <label className="field-label" key={axis}>{label}<input aria-label={t('要解释的值 · {axis}', { axis: label })} type="number" min={0} max={explainShape[axis + 1] - 1} step={1} value={explainIndex[axis]} disabled={busy} onChange={e => changeExplainIndex(axis, Number(e.target.value))} /></label>;
+      })}</div>
+      <p className="tensor-note">{t('运行时把这个输出元素拆成实测的各项：Linear 与卷积是输入 × 权重再加偏置，池化是窗口内的平均或最大值。修改位置后需重新运行。')}</p>
+    </div>}
+    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !explainValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
     {onSceneObservation && <button className="button subtle wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run(true)}><Box size={14} />{t('观测全部层，画到三维视图')}</button>}
     <p className="tensor-note">{node ? t('采样 {name} 与模型输出；修改切片后需重新运行。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}{t('训练或环境检查期间不可运行。')}</p>
     {error && <div className="diagnostic-item error" role="alert"><TriangleAlert size={15} /><p>{t(error)}</p></div>}
@@ -229,6 +249,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
     {live && current && !snapshot && <p className="tensor-note">{t('当前层未包含在本次采样中，选择该层后重新运行。')}</p>}
     {!live && offlineBound && node && !snapshot && <p className="tensor-note">{t('快照里没有这一层的观测。')}</p>}
     {snapshot && <div className="tensor-activation"><TensorReadout title={`${node?.name} · ${t('实测输出')}`} snapshot={snapshot} viewKey={viewKey + snapshot.nodeId} tableLabel={t('实测张量切片')} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeIndex(1, channel) : setOfflineChannels(previous => ({ ...previous, [snapshot.nodeId]: channel }))} /></div>}
+    {explanation && <ValueExplanationView key={viewKey + explanation.nodeId} explanation={explanation} layer={node?.name ?? explanation.nodeId} input={runtime?.nodes.find(layer => layer.id === explanation.inputNode)?.name ?? explanation.inputNode} />}
     {parameterOptions.length > 0 && <div className="tensor-parameters">
       <div className="inspector-section"><h3>{t('权重与偏置')}<span>{live ? (result?.report.weights === 'trained' ? t('本地训练') : t('随机初始化（不是已训练模型）')) : offline?.weights === 'external' ? t('外部进程加载的权重') : t('随机初始化（不是已训练模型）')}</span></h3>
         <label className="field-label">{t('参数张量')}<select aria-label={t('查看的参数张量')} value={parameterName} disabled={busy} onChange={e => { if (observedId) setParameterChoice(previous => ({ ...previous, [observedId]: e.target.value })); }}>{parameterOptions.map(entry => <option key={entry.name} value={entry.name}>{`${entry.name} · [${entry.shape.join(', ')}]`}</option>)}</select></label>

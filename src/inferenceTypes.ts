@@ -91,6 +91,50 @@ export interface AttentionSnapshot extends AttentionSelection {
   overview?: HeadSummary[];
 }
 
+/**
+ * One term of an explained value. `input` is where the layer's input was read (batch axis left
+ * out), null where the window lies in the zero padding; `parameter` is the weight it was
+ * multiplied by. Pooling has no weights: its term is x ÷ divisor (average) or x itself (max).
+ */
+export interface ValueTerm {
+  input: number[] | null;
+  x: number | null;
+  parameter: number[] | null;
+  w: number | null;
+  term: number | null;
+}
+
+/**
+ * One output element of a Linear, convolution or pooling layer, split into the measured terms
+ * it is made of. `value` is the float32 output the layer produced; `recomputed` rebuilds it in
+ * float64 from the same input and weights. The largest terms are listed and the rest summed.
+ */
+export interface ValueExplanation {
+  nodeId: string;
+  op: string;
+  /** The output element, batch axis left out. */
+  index: number[];
+  rule: 'weighted-sum' | 'mean' | 'max';
+  value: number | null;
+  recomputed: number | null;
+  bias: number | null;
+  divisor: number | null;
+  /** Terms counted, and window positions that fall in the padding. */
+  count: number;
+  padded: number;
+  terms: ValueTerm[];
+  rest: { count: number; sum: number | null };
+  /** Convolutions only: Σ x·w per input channel, the largest first. */
+  channels: { channel: number; sum: number | null }[];
+  channelRest: { count: number; sum: number | null } | null;
+  inputNode: string;
+  inputShape: number[];
+  /** A folded layer explains its last instance; a layer that shares weights names its owner. */
+  instance: number;
+  instances: number;
+  owner?: string;
+}
+
 export interface InferenceReport {
   runId: string;
   createdAt: string;
@@ -106,6 +150,8 @@ export interface InferenceReport {
   attentions: AttentionSnapshot[];
   /** The requested layer's weights and biases; an older backend sends none. */
   parameters?: ParameterSnapshot[];
+  /** The requested output value, split into its terms; null when none was requested. */
+  explanation?: ValueExplanation | null;
 }
 
 export function tensorNumber(value: number | null) {

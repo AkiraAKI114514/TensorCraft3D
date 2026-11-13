@@ -4,3 +4,15 @@
 :root[data-theme="dark"] .tensor-histogram{--chart-surface:#1a1a19;--chart-ink:#fff;--chart-muted:#c3c2b7;--chart-grid:#2c2c2a;--chart-axis:#383835;--chart-series:#3987e5;--chart-texture:#cde2fb}
 @media print, (forced-colors:active){.tensor-histogram .hist-bar{fill:url(#tensor-bin-texture)}}
 .tensor-snapshot-actions{display:flex;flex-wrap:wrap;gap:8px}.tensor-stale p{margin:0}.tensor-stale .button{margin-top:8px}
+.value-explain-controls,.value-explanation{margin:14px 0;min-width:0}
+.value-explain-controls h3,.value-explanation h3{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px;overflow-wrap:anywhere}
+.value-explanation h3 span{flex-shrink:0;font-size:10px;font-weight:500;color:#607580}
+.value-formula{margin:6px 0 10px;font-size:11px;overflow-wrap:anywhere}
+.value-explanation .tensor-table-scroll{margin:8px 0}
+.value-terms th,.value-terms td{padding:5px 6px}
+.value-terms .value-term{min-width:64px}
+.value-bar{display:block;height:3px;min-width:1px;margin:3px 0 0 auto;border-radius:1px}
+.value-bar[data-sign="positive"]{background:#3987e5}
+.value-bar[data-sign="negative"]{background:#e34948}
+.value-terms tr.value-winner>*,.value-terms tfoot th,.value-terms tfoot td{font-weight:600}
+.value-channels summary{margin-top:8px;font-size:10px;cursor:pointer}
