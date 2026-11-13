@@ -1,7 +1,7 @@
 import { analyze } from './analysis';
 import { expandGraph, EXPAND_SEP } from './subgraph';
 import { isGroup, repeatOf, type Graph, type Layer, type SubgraphDef } from './types';
-import { attentionConfig, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
+import { attentionConfig, incomingEdges, inspectsAttention, isAttention, isProjectionPort } from './attentionConfig';
 import attentionRuntime from '../backend/attention.py?raw';
 import tensorRuntime from '../backend/tensor_ops.py?raw';
 
@@ -206,6 +206,8 @@ export function generatePython(graph: Graph) {
           expr = `${node.op === 'Transformer' ? 'TensorLabTransformer' : 'TensorLabAttention'}(embed_dim=${p.embed_dim ?? 64}, num_heads=${cfg.heads}, kv_heads=${cfg.kvHeads}, dropout=${p.dropout ?? 0.1}, attention_type=${JSON.stringify(cfg.type)}, branches=${cfg.branches}${node.op === 'Transformer' ? `, ff_dim=${p.ff_dim ?? 128}, norm_first=${Number(p.norm_first ?? 1) ? 'True' : 'False'}, activation=${JSON.stringify(p.activation ?? 'gelu')}` : ''}${Number(p.causal ?? 0) ? ', causal=True' : ''})`;
           break;
         }
+        // MLA is a plain single-input module (no ports), so it takes the ordinary call path below.
+        case 'LatentAttention': expr = `TensorLabLatentAttention(embed_dim=${p.embed_dim ?? 64}, num_heads=${p.num_heads ?? 4}, q_lora_rank=${p.q_lora_rank ?? 32}, kv_lora_rank=${p.kv_lora_rank ?? 32}, qk_nope_head_dim=${p.qk_nope_head_dim ?? 16}, qk_rope_head_dim=${p.qk_rope_head_dim ?? 8}, v_head_dim=${p.v_head_dim ?? 16}, rope_theta=${p.rope_theta ?? 10000}, causal=${Number(p.causal ?? 1) ? 'True' : 'False'}, eps=${p.eps ?? 1e-6})`; break;
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
         case 'Multiply': forward.push(`        values[${key}] = ${inputs.join(' * ')}`); continue;
         // Operand order is edge order: the first input is the dividend. `/` broadcasts a keepdim
@@ -280,7 +282,7 @@ export function generatePython(graph: Graph) {
   let emitted = emitScope(graph, '', 'moduleDict', null, null, []);
   if (!emitted) { definitions.length = 0; classMemo.clear(); attentionClassMemo.clear(); emitted = emitScope(expanded, '', 'moduleDict', null, null, []); }
   if (!emitted) throw new Error('请先修复形状或连线错误后导出代码');
-  const helper = (expanded.nodes.some(n => isAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul') ? `\n${tensorRuntime}\n` : '');
+  const helper = (expanded.nodes.some(n => inspectsAttention(n.op)) ? `\n${attentionRuntime}\n` : '') + (expanded.nodes.some(n => n.op === 'ConstantAdd' || n.op === 'ConstantMul') ? `\n${tensorRuntime}\n` : '');
   const embeddingInputs = new Map<string, number>();
   for (const node of expanded.nodes.filter(n => n.op === 'Embedding')) {
     const edge = expanded.edges.find(e => e.target === node.id && !e.targetPort);

@@ -46,6 +46,8 @@ function layout(graph: Graph, analysis: Analysis, expanded: boolean) {
 function contentsDimensions(shape: number[] | undefined, op: string, node?: Layer, expanded = false): [number, number, number] {
   if (node && isAttention(op)) return attentionLayout(node, expanded).dimensions;
   if (op === 'Add' || op === 'Multiply' || op === 'Divide') return [0.3, 0.3, 0.3];
+  // Latent attention draws three parts side by side (input, latent, output), so it is wider.
+  if (op === 'LatentAttention') return [1.15, Math.min(2.5, Math.max(0.65, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), 0.8];
   if (!shape) return [0.5, 1, 1];
   if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
   return [['ReLU', 'GELU', 'Dropout', 'Flatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
@@ -133,6 +135,25 @@ function TensorBlock({ dims, color, glow, cells, paint }: { dims: [number, numbe
   if (paint?.strip) { u.uStripAxis.value.copy(AXES[paint.strip.axis]); u.uStripRange.value.set(paint.strip.total, paint.strip.start, paint.strip.count); }
   else u.uStripRange.value.set(1, 0, 0);
   return <mesh userData={{ exportMesh: true, exportShade: true, exportCells: cells }} material={block.material}><boxGeometry args={dims} /></mesh>;
+}
+
+/**
+ * Multi-head Latent Attention as a waist: the input tensor, the narrower K/V latent it is squeezed
+ * through (its height is kv_lora_rank over embed_dim) and the output tensor, inside the layer's own
+ * footprint so the layout, routes and image export keep their places. Measured values paint the
+ * output part, which is the tensor the layer reports.
+ */
+function LatentAttentionBlock({ dims, color, glow, input, output, latent, paint, outline }: { dims: [number, number, number]; color: string; glow: number; input?: number[]; output?: number[]; latent: number; paint: BlockPaint | null; outline: string }) {
+  const [width, height, depth] = dims, gap = 0.05, side = 0.28, waist = 0.22, rest = width - side - waist - 2 * gap;
+  const ratio = Math.min(0.85, Math.max(0.2, latent / Math.max(1, output?.at(-1) ?? 64)));
+  const latentShape = output ? [output[0], output[1], latent] : undefined;
+  const tint = (amount: number) => `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), amount).getHexString()}`;
+  const parts: { x: number; dims: [number, number, number]; color: string; cells: [number, number, number]; paint: BlockPaint | null }[] = [
+    { x: -width / 2 + side / 2, dims: [side, height, depth], color: tint(0.28), cells: tensorCells(input), paint: null },
+    { x: -width / 2 + side + gap + waist / 2, dims: [waist, height * ratio, depth], color: `#${new THREE.Color(color).multiplyScalar(0.86).getHexString()}`, cells: tensorCells(latentShape), paint: null },
+    { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
+  ];
+  return <>{parts.map((part, index) => <group key={index} position={[part.x, 0, 0]}><TensorBlock dims={part.dims} color={part.color} glow={glow} cells={part.cells} paint={part.paint} /><NodeOutline dims={part.dims} color={outline} /></group>)}</>;
 }
 
 const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
@@ -422,8 +443,9 @@ function World(props: Props) {
         {/* Solid, matte blocks: a translucent block blended with whatever stood behind it, which
             muddied both colours wherever neighbours overlapped. A merge node's small cube stands
             for the operation, not for a tensor, so it has no grid. */}
+        {n.op === 'LatentAttention' ? <LatentAttentionBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} latent={Number(n.params.kv_lora_rank ?? 32)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> : <>
         <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} paint={paints[n.id] ?? null} />
-        <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
+        <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} /></>}{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}
         {!isAttention(n.op) && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
         {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color="#1d3943" transparent opacity={0.75} /></mesh>}

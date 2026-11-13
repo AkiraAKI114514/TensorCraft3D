@@ -8,8 +8,16 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "Group"
 }
+
+
+def latent_attention_parameters(embed, heads, q_lora, kv_lora, nope, rope, value):
+    """Weights of DeepSeek-style MLA (no biases): the query path (one projection, or a latent with
+    its RMSNorm), the shared K/V latent plus rotary key, its RMSNorm, the K/V up-projection and the
+    output projection. Must mirror src/analysis.ts."""
+    query = embed * heads * (nope + rope) if not q_lora else embed * q_lora + q_lora + q_lora * heads * (nope + rope)
+    return query + embed * (kv_lora + rope) + kv_lora + kv_lora * heads * (nope + value) + heads * value * embed
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
 # The PyTorch methods a `Reduce` node stands for. `amin` mirrors `amax`; `max`/`min` are
@@ -439,6 +447,23 @@ def analyze_expanded_graph(graph):
                     if shape[0] * shape[1] * ff > 16_000_000: raise ValueError("FFN activation exceeds local limits")
                     activation += shape[1] * ff * 4
                     count += 2 * embed * ff + ff + 5 * embed
+            elif op == "LatentAttention":
+                # DeepSeek-style Multi-head Latent Attention: self-attention on [B,S,E] that keeps the
+                # input shape. Must mirror src/analysis.ts.
+                if len(shape) != 3: raise ValueError(f"{key}: latent attention requires [B,S,E]")
+                embed = integer("embed_dim", 64, maximum=4096); heads = integer("num_heads", 4, maximum=16)
+                q_lora = integer("q_lora_rank", 32, 0, 4096); kv_lora = integer("kv_lora_rank", 32, maximum=4096)
+                nope = integer("qk_nope_head_dim", 16, maximum=512); rope = integer("qk_rope_head_dim", 8, 2, 512); value = integer("v_head_dim", 16, maximum=512)
+                if rope % 2: raise ValueError(f"{key}: qk_rope_head_dim must be even")
+                if shape[2] != embed: raise ValueError(f"{key}: embed_dim must match the input's last dimension")
+                for name, default, upper in (("rope_theta", 10000.0, 1e9), ("eps", 1e-6, 1.0)):
+                    number = p.get(name, default)
+                    if isinstance(number, bool) or not isinstance(number, (int, float)) or not isfinite(number) or not 0 < number <= upper: raise ValueError(f"{key}: {name} must be a positive number up to {upper:g}")
+                integer("causal", 1, 0, 1)
+                elements = shape[0] * heads * shape[1] * shape[1]
+                if elements > 16_000_000: raise ValueError("Attention matrix exceeds local limits")
+                activation += elements // shape[0] * 4
+                count = latent_attention_parameters(embed, heads, q_lora, kv_lora, nope, rope, value)
             elif op in _DROPOUTS:
                 rate = p.get("p", 0.3)
                 if not isinstance(rate, (int, float)) or not isfinite(rate) or not 0 <= rate < 1: raise ValueError("Dropout must be in [0,1)")

@@ -1375,6 +1375,134 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "latent_attention_with_a_query_latent",
+      "graph": {
+        "version": 1, "name": "latent_attention_with_a_query_latent",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 32, "num_heads": 4, "q_lora_rank": 16, "kv_lora_rank": 8, "qk_nope_head_dim": 8, "qk_rope_head_dim": 4, "v_head_dim": 8, "rope_theta": 10000, "causal": 1, "eps": 1e-06}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 32], "parameters": 3224 }
+    },
+    {
+      "id": "latent_attention_without_a_query_latent",
+      "graph": {
+        "version": 1, "name": "latent_attention_without_a_query_latent",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 32, "num_heads": 4, "q_lora_rank": 0, "kv_lora_rank": 8, "qk_nope_head_dim": 8, "qk_rope_head_dim": 4, "v_head_dim": 8, "rope_theta": 10000, "causal": 0, "eps": 1e-06}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 32], "parameters": 3464 }
+    },
+    {
+      "id": "latent_attention_defaults_agree",
+      "graph": {
+        "version": 1, "name": "latent_attention_defaults_agree",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 8, 64]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 8, 64], "parameters": 15936 }
+    },
+    {
+      "id": "latent_attention_folds_as_a_shape_preserving_layer",
+      "graph": {
+        "version": 1, "name": "latent_attention_folds_as_a_shape_preserving_layer",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 32, "num_heads": 4, "q_lora_rank": 16, "kv_lora_rank": 8, "qk_nope_head_dim": 8, "qk_rope_head_dim": 4, "v_head_dim": 8}, "position": { "x": 100, "y": 0 }, "repeat": 2 },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 32], "parameters": 6448 }
+    },
+    {
+      "id": "latent_attention_rejects_an_odd_rotary_width",
+      "graph": {
+        "version": 1, "name": "latent_attention_rejects_an_odd_rotary_width",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 32, "num_heads": 4, "qk_rope_head_dim": 3}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "latent_attention_rejects_a_mismatched_embedding",
+      "graph": {
+        "version": 1, "name": "latent_attention_rejects_a_mismatched_embedding",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 64, "num_heads": 4}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "latent_attention_rejects_a_flat_input",
+      "graph": {
+        "version": 1, "name": "latent_attention_rejects_a_flat_input",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 32, "num_heads": 4}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "latent_attention_rejects_seventeen_heads",
+      "graph": {
+        "version": 1, "name": "latent_attention_rejects_seventeen_heads",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "MLA", "op": "LatentAttention", "params": {"embed_dim": 32, "num_heads": 17}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

@@ -15,7 +15,7 @@ const ALPHABET = 'abcdefghijklmnopqrstuvwxyz';
 /** 节点 id 只允许 `[a-zA-Z][a-zA-Z0-9_]{0,63}`，自动生成的块名必须落在同一字符集里。 */
 const blockName = (ordinal: number, hint: string) => `auto_${hint}_${ordinal < ALPHABET.length ? ALPHABET[ordinal] : `_${ordinal}`}`;
 
-const isAttentionOp = (op: string) => op === 'Transformer' || op === 'MultiHeadAttention';
+const isAttentionOp = (op: string) => op === 'Transformer' || op === 'MultiHeadAttention' || op === 'LatentAttention';
 const hintFor = (block: Layer[]) => block.some(n => isAttentionOp(n.op)) ? 'attn' : block.some(n => n.op.startsWith('Conv')) ? 'conv' : block.some(n => n.op === 'Linear') ? 'linear' : 'block';
 const labelFor = (block: Layer[]) => block.some(n => isAttentionOp(n.op)) ? 'Attention Block' : block.some(n => n.op.startsWith('Conv')) ? 'Conv Block' : block.some(n => n.op === 'Linear') ? 'Linear Block' : 'Block';
 

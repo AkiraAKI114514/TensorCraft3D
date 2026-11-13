@@ -92,7 +92,7 @@ class Tensor:
 class Parser:
     def __init__(self, tree, input_shapes):
         self.tree = tree
-        self.aliases = {name: name for name in ("TensorLabAttention", "TensorLabTransformer", "TensorLabConstantAdd", "TensorLabConstantMul")}
+        self.aliases = {name: name for name in ("TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabConstantAdd", "TensorLabConstantMul")}
         for statement in tree.body:
             if isinstance(statement, ast.Import):
                 for name in statement.names:
@@ -104,7 +104,7 @@ class Parser:
                         and any(self.path(b) in ("torch.nn.Module", "nn.Module") for b in n.bases)}
         self.functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         # The embedded runtime in TensorLab exports is provided by our backend.
-        for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer", "TensorLabConstantAdd", "TensorLabConstantMul"):
+        for name in ("AttentionBranch", "TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention", "TensorLabConstantAdd", "TensorLabConstantMul"):
             self.classes.pop(name, None)
         self.constants = {}
         for n in tree.body:
@@ -386,7 +386,7 @@ class Parser:
             params = {"shape": args["shape"], "values": args["values"]}
             if args["sequence_dim"] is not None: params["sequence_dim"] = args["sequence_dim"]
             return Module(path.removeprefix("TensorLab"), params=params, node=expression)
-        if not path.startswith(("torch.nn.", "nn.")) and kind not in ("TensorLabAttention", "TensorLabTransformer"):
+        if not path.startswith(("torch.nn.", "nn.")) and kind not in ("TensorLabAttention", "TensorLabTransformer", "TensorLabLatentAttention"):
             raise ImportIssue(f"不支持自定义层 {path or ast.unparse(expression.func)}", expression)
         if kind in ("Sequential", "ModuleList", "ModuleDict"):
             if expression.keywords: raise ImportIssue("容器不支持关键字参数", expression)
@@ -468,6 +468,8 @@ class Parser:
             "TransformerEncoderLayer": (["d_model", "nhead", "dim_feedforward", "dropout", "activation", "layer_norm_eps", "batch_first", "norm_first", "bias", "device", "dtype"], {"dim_feedforward": 2048, "dropout": 0.1, "activation": "relu", "layer_norm_eps": 1e-5, "batch_first": False, "norm_first": False, "bias": True, "device": None, "dtype": None}),
             "TensorLabAttention": (["embed_dim", "num_heads", "kv_heads", "dropout", "attention_type", "branches", "causal"], {"num_heads": 1, "kv_heads": None, "dropout": 0.1, "attention_type": "self", "branches": 1, "causal": False}),
             "TensorLabTransformer": (["embed_dim", "num_heads", "kv_heads", "ff_dim", "dropout", "attention_type", "branches", "norm_first", "activation", "causal"], {"num_heads": 1, "kv_heads": None, "ff_dim": 128, "dropout": 0.1, "attention_type": "self", "branches": 1, "norm_first": True, "activation": "gelu", "causal": False}),
+            # Same signature and defaults as backend.attention.TensorLabLatentAttention.
+            "TensorLabLatentAttention": (["embed_dim", "num_heads", "q_lora_rank", "kv_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim", "v_head_dim", "rope_theta", "causal", "eps"], {"num_heads": 4, "q_lora_rank": 32, "kv_lora_rank": 32, "qk_nope_head_dim": 16, "qk_rope_head_dim": 8, "v_head_dim": 16, "rope_theta": 10000.0, "causal": True, "eps": 1e-6}),
         }
         if kind == "TransformerEncoder":
             if not expression.args: raise ImportIssue("TransformerEncoder 缺少编码器层", expression)
@@ -586,6 +588,14 @@ class Parser:
             if type(causal) is not bool: raise ImportIssue("causal 需要布尔常量 True 或 False", expression)
             if causal: params["causal"] = 1
             kind = "Transformer" if kind == "TensorLabTransformer" else "MultiHeadAttention"
+        elif kind == "TensorLabLatentAttention":
+            # A new operator, so every parameter is stored, the mask flag included.
+            expected = args["embed_dim"]; params = args.copy()
+            if type(params["causal"]) is not bool: raise ImportIssue("causal 需要布尔常量 True 或 False", expression)
+            params["causal"] = int(params["causal"])
+            for name in ("rope_theta", "eps"):
+                if isinstance(params[name], bool) or not isinstance(params[name], (int, float)): raise ImportIssue(f"{name} 需要数值常量", expression)
+            kind = "LatentAttention"
         return Module(kind, params=params, expected=expected, node=expression)
 
     def resolve_module(self, expression, attrs, env):
@@ -642,7 +652,7 @@ class Parser:
         if module.kind in ("Conv1d", "ConvTranspose1d", "BatchNorm1d", "InstanceNorm1d"): shape = [1, module.expected, 32]
         elif module.kind in ("Conv2d", "ConvTranspose2d", "BatchNorm2d", "InstanceNorm2d"): shape = [1, module.expected, 32, 32]
         elif module.kind in ("Conv3d", "ConvTranspose3d", "BatchNorm3d", "InstanceNorm3d"): shape = [1, module.expected, 8, 16, 16]
-        elif module.kind in ("Transformer", "MultiHeadAttention"): shape = [1, 8, module.expected]
+        elif module.kind in ("Transformer", "MultiHeadAttention", "LatentAttention"): shape = [1, 8, module.expected]
         else: shape = [1, module.expected]
         node["params"]["shape"] = shape
 
@@ -687,7 +697,7 @@ class Parser:
         # node that reuses the first node's weights. A block instance owns its weights and its
         # inner ids are rewritten on expansion, so sharing into or out of a folded block has no
         # faithful form and keeps the rejection.
-        stateful = module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "RMSNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention")
+        stateful = module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "RMSNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention", "LatentAttention")
         owner = self.module_nodes.get(id(module)) if stateful else None
         if stateful and (self.group_depth and id(module) in self.used_modules or owner is not None and (self.group_depth or any(owner in body for body in self.group_bodies.values()))):
             raise ImportIssue("结构块内的参数层被重复调用：块实例各自拥有权重，这种权重共享目前无法忠实转换", call, "SHARED_WEIGHTS")
@@ -1558,7 +1568,7 @@ class Parser:
             if not incoming: continue
             edge = incoming[0]
             shape = analysis["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else analysis["shapes"][edge["source"]]
-            actual = shape[-1] if kind in ("Transformer", "MultiHeadAttention", "LayerNorm", "RMSNorm", "Linear", "Bilinear") else shape[1]
+            actual = shape[-1] if kind in ("Transformer", "MultiHeadAttention", "LatentAttention", "LayerNorm", "RMSNorm", "Linear", "Bilinear") else shape[1]
             if actual != expected: raise ImportIssue(f"{kind} 声明输入维度 {expected}，实际为 {actual}；请检查输入形状或代码", source, "SHAPE_MISMATCH")
         # Only top-level nodes have a position; a folded body is laid out inside its subgraph.
         depths, rows = {}, {}
