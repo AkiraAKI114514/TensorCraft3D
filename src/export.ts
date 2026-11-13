@@ -162,7 +162,8 @@ export function generatePython(graph: Graph) {
         case 'AdaptiveMaxPool1d':
         case 'AdaptiveMaxPool2d':
         case 'AdaptiveMaxPool3d': expr = `nn.${node.op}(${Array.isArray(p.output_size) ? `(${p.output_size.join(', ')})` : p.output_size ?? 1})`; break;
-        case 'Flatten': expr = 'nn.Flatten(start_dim=1)'; break;
+        case 'Flatten': { const start = Number(p.start_dim ?? 1), end = Number(p.end_dim ?? -1); expr = start === 1 && end === -1 ? 'nn.Flatten(start_dim=1)' : `nn.Flatten(start_dim=${start}, end_dim=${end})`; break; }
+        case 'Unflatten': { const sizes = (Array.isArray(p.sizes) ? p.sizes : [p.sizes]).map(Number); expr = `nn.Unflatten(${p.dim ?? -1}, (${sizes.join(', ')}${sizes.length === 1 ? ',' : ''}))`; break; }
         case 'Unsqueeze': forward.push(`        values[${key}] = torch.unsqueeze(${inputs[0]}, dim=${p.dim ?? 0})`); continue;
         case 'Squeeze': {
           const dim = p.dim ?? 'all', argument = dim === 'all' ? '' : `, dim=${Array.isArray(dim) ? `(${dim.join(', ')}${dim.length === 1 ? ',' : ''})` : dim}`;

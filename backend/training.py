@@ -105,7 +105,10 @@ def build_model(graph):
                         cls = getattr(nn, op); return cls(int(p.get("kernel_size", 2)), int(p.get("stride", 2)), int(p.get("padding", 0)))
                     elif op in ("AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d"):
                         size = p.get("output_size", 1); size = tuple(size) if isinstance(size, list) else size; return getattr(nn, op)(size)
-                    elif op == "Flatten": return nn.Flatten(1)
+                    elif op == "Flatten": return nn.Flatten(int(p.get("start_dim", 1)), int(p.get("end_dim", -1)))
+                    elif op == "Unflatten":
+                        sizes = p["sizes"] if isinstance(p["sizes"], list) else [p["sizes"]]
+                        return nn.Unflatten(int(p.get("dim", -1)), tuple(int(v) for v in sizes))
                     elif op in ("Unsqueeze", "Squeeze", "Slice", "Select", "Reduce"): return None
                     elif op == "ConstantAdd": return TensorLabConstantAdd(p["shape"], p["values"], p.get("sequence_dim"))
                     elif op == "ConstantMul": return TensorLabConstantMul(p["shape"], p["values"], p.get("sequence_dim"))

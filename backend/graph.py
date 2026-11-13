@@ -7,7 +7,7 @@ OPS = {
     "ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity",
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
-    "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
+    "Flatten", "Unflatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
     "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "MoE", "Group"
 }
 MOE_SCORE_FUNCTIONS = ("softmax", "sigmoid")
@@ -341,7 +341,29 @@ def analyze_expanded_graph(graph):
                 sizes = size if isinstance(size, list) else [size] * (rank - 2)
                 if len(sizes) != rank - 2 or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 or v > 256 for v in sizes): raise ValueError(f"{key}: invalid output_size")
                 shape = [shape[0], shape[1], *sizes]
-            elif op == "Flatten": shape = [shape[0], prod(shape[1:])]
+            elif op == "Flatten":
+                # Merges start_dim..end_dim into one axis, as nn.Flatten does; older projects store
+                # neither bound. Must mirror src/analysis.ts.
+                rank = len(shape)
+                first = integer("start_dim", 1, -rank, rank - 1) % rank
+                last = integer("end_dim", -1, -rank, rank - 1) % rank
+                if first == 0: raise ValueError(f"{key}: Flatten cannot fold the batch axis; start_dim must be 1 or later")
+                if last < first: raise ValueError(f"{key}: Flatten end_dim cannot come before start_dim")
+                shape = [*shape[:first], prod(shape[first:last + 1]), *shape[last + 1:]]
+            elif op == "Unflatten":
+                # Splits one axis into `sizes`, as nn.Unflatten does; one entry may be -1.
+                rank = len(shape)
+                dim = integer("dim", -1, -rank, rank - 1) % rank
+                if dim == 0: raise ValueError(f"{key}: Unflatten cannot split the batch axis")
+                sizes = p.get("sizes")
+                sizes = sizes if isinstance(sizes, list) else [sizes]
+                if not 1 <= len(sizes) <= 5 or any(isinstance(v, bool) or not isinstance(v, int) or not (v == -1 or 1 <= v <= 65536) for v in sizes) or sizes.count(-1) > 1:
+                    raise ValueError(f"{key}: Unflatten sizes need 1-5 positive integers with at most one -1")
+                if rank - 1 + len(sizes) > 6: raise ValueError(f"{key}: Unflatten output cannot exceed rank 6")
+                known = prod(v for v in sizes if v != -1)
+                if (shape[dim] % known != 0) if -1 in sizes else known != shape[dim]:
+                    raise ValueError(f"{key}: Unflatten sizes must multiply to the size of axis {dim} ({shape[dim]})")
+                shape = [*shape[:dim], *(shape[dim] // known if v == -1 else v for v in sizes), *shape[dim + 1:]]
             elif op == "Unsqueeze":
                 dim = integer("dim", 0, minimum=-len(shape) - 1, maximum=len(shape))
                 if dim < 0: dim += len(shape) + 1

@@ -1679,6 +1679,300 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "flatten_merges_inner_axes",
+      "graph": {
+        "version": 1, "name": "flatten_merges_inner_axes",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Flatten", "op": "Flatten", "params": {"start_dim": 2, "end_dim": 3}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 4, 48], "parameters": 0 }
+    },
+    {
+      "id": "flatten_negative_bounds",
+      "graph": {
+        "version": 1, "name": "flatten_negative_bounds",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Flatten", "op": "Flatten", "params": {"start_dim": -3, "end_dim": -2}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 24, 8], "parameters": 0 }
+    },
+    {
+      "id": "flatten_single_axis_is_identity",
+      "graph": {
+        "version": 1, "name": "flatten_single_axis_is_identity",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Flatten", "op": "Flatten", "params": {"start_dim": 2, "end_dim": 2}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 4, 6], "parameters": 0 }
+    },
+    {
+      "id": "flatten_rejects_batch_axis",
+      "graph": {
+        "version": 1, "name": "flatten_rejects_batch_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Flatten", "op": "Flatten", "params": {"start_dim": 0, "end_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "flatten_rejects_negative_start_on_batch",
+      "graph": {
+        "version": 1, "name": "flatten_rejects_negative_start_on_batch",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Flatten", "op": "Flatten", "params": {"start_dim": -3, "end_dim": -1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "flatten_rejects_end_before_start",
+      "graph": {
+        "version": 1, "name": "flatten_rejects_end_before_start",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Flatten", "op": "Flatten", "params": {"start_dim": 2, "end_dim": 1}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "flatten_rejects_rank_one_input",
+      "graph": {
+        "version": 1, "name": "flatten_rejects_rank_one_input",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 4]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Pick", "op": "Select", "params": {"dim": 1, "index": 0}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Flatten", "op": "Flatten", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_splits_heads",
+      "graph": {
+        "version": 1, "name": "unflatten_splits_heads",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [4, -1]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 6, 4, 8], "parameters": 0 }
+    },
+    {
+      "id": "unflatten_splits_inner_axis",
+      "graph": {
+        "version": 1, "name": "unflatten_splits_inner_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": 1, "sizes": [2, 3]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 2, 3, 32], "parameters": 0 }
+    },
+    {
+      "id": "unflatten_then_flatten_restores_heads",
+      "graph": {
+        "version": 1, "name": "unflatten_then_flatten_restores_heads",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Split", "op": "Unflatten", "params": {"dim": -1, "sizes": [4, 8]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Merge", "op": "Flatten", "params": {"start_dim": 2, "end_dim": -1}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Head", "op": "Linear", "params": {"out_features": 3}, "position": { "x": 300, "y": 0 } },
+          { "id": "n4", "name": "Out", "op": "Output", "params": {}, "position": { "x": 400, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 6, 3], "parameters": 99 }
+    },
+    {
+      "id": "unflatten_rejects_batch_axis",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_batch_axis",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": 0, "sizes": [1, 1]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_rejects_negative_dim_on_batch",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_negative_dim_on_batch",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -3, "sizes": [1, 1]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_rejects_size_mismatch",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_size_mismatch",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [5, 7]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_rejects_indivisible_wildcard",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_indivisible_wildcard",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [5, -1]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_rejects_two_wildcards",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_two_wildcards",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [-1, -1]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_rejects_zero_size",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_zero_size",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 6, 32]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [0, -1]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "unflatten_reaches_rank_six",
+      "graph": {
+        "version": 1, "name": "unflatten_reaches_rank_six",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 2, 2, 2, 2]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [1, 2]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [1, 2, 2, 2, 1, 2], "parameters": 0 }
+    },
+    {
+      "id": "unflatten_rejects_rank_seven",
+      "graph": {
+        "version": 1, "name": "unflatten_rejects_rank_seven",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [1, 2, 2, 2, 2]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Unflatten", "op": "Unflatten", "params": {"dim": -1, "sizes": [1, 1, 2]}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

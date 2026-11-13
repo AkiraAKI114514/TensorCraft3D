@@ -54,6 +54,36 @@ print("matched")
     expect(imported.nodes.find(n => n.op === 'Bilinear')!.params.in2_features).toBe(width);
   }, 60000);
 
+  it('round-trips a head split and merge through Unflatten and Flatten', () => {
+    // [B,S,E] -> [B,S,H,D] -> scaled -> [B,S,E]: the export writes nn.Unflatten / nn.Flatten with
+    // their bounds, and re-importing it keeps both nodes and computes the same values.
+    const graph = PRESETS.blank();
+    graph.nodes[0].params.shape = [2, 6, 32];
+    graph.nodes.splice(1, 0,
+      { id: 'proj', name: 'Projection', op: 'Linear', params: { out_features: 32, bias: 0 }, position: { x: 100, y: 100 } },
+      { id: 'split', name: 'Split heads', op: 'Unflatten', params: { dim: -1, sizes: [4, -1] }, position: { x: 200, y: 100 } },
+      { id: 'scale', name: 'Scale', op: 'Scale', params: { factor: 0.5 }, position: { x: 300, y: 100 } },
+      { id: 'merge', name: 'Merge heads', op: 'Flatten', params: { start_dim: 2, end_dim: -1 }, position: { x: 400, y: 100 } });
+    graph.edges = [['layer_0', 'proj'], ['proj', 'split'], ['split', 'scale'], ['scale', 'merge'], ['merge', 'layer_1']].map(([source, target], i) => ({ id: `e${i}`, source, target }));
+    const analysis = analyze(graph), code = generatePython(graph);
+    expect(analysis.valid).toBe(true);
+    expect(analysis.layers.split.output).toEqual([2, 6, 4, 8]);
+    expect(analysis.layers.merge.output).toEqual([2, 6, 32]);
+    expect(code).toContain('nn.Unflatten(-1, (4, -1))');
+    expect(code).toContain('nn.Flatten(start_dim=2, end_dim=-1)');
+    const imported = roundtrip(graph);
+    expect(imported.nodes.filter(n => ['Unflatten', 'Flatten'].includes(n.op)).map(n => [n.op, n.params])).toEqual([['Unflatten', { dim: -1, sizes: [4, -1] }], ['Flatten', { start_dim: 2, end_dim: -1 }]]);
+    expect(analyze(imported).parameters).toBe(analysis.parameters);
+  }, 30000);
+
+  it('keeps the plain flatten export for older projects without bounds', () => {
+    const graph = PRESETS.mlp();
+    graph.nodes.splice(1, 0, { id: 'flat', name: 'Flatten', op: 'Flatten', params: {}, position: { x: 100, y: 100 } });
+    graph.edges = graph.nodes.slice(1).map((node, i) => ({ id: `e${i}`, source: graph.nodes[i].id, target: node.id }));
+    expect(generatePython(graph)).toContain('nn.Flatten(start_dim=1)');
+    expect(analyze(graph).layers.flat.output).toEqual([1, 16]);
+  });
+
   it('round-trips an authored Einsum contraction', () => {
     // Two inputs whose shared `d` axis contracts away; the export must re-import with
     // the equation intact and the same forward values.

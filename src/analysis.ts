@@ -210,7 +210,22 @@ function analyzeExpanded(graph: Graph): Analysis {
         const rank = Number(n.op.match(/([123])d$/)?.[1] || 2) + 2; if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
         const raw = n.params.output_size ?? 1, sizes: number[] = (Array.isArray(raw) ? raw : Array(rank - 2).fill(raw)).map(Number);
         if (sizes.length !== rank - 2 || !sizes.every(v => Number.isInteger(v) && v > 0 && v <= 256)) throw new Error('自适应池化 output_size 无效'); output = [output[0], output[1], ...sizes];
-      } else if (n.op === 'Flatten') output = [output[0], product(output.slice(1))];
+      } else if (n.op === 'Flatten') {
+        // Merges start_dim..end_dim into one axis, as nn.Flatten does; older projects store neither bound.
+        const rank = output.length, first = (integer('start_dim', 1, -rank, rank - 1) + rank) % rank, last = (integer('end_dim', -1, -rank, rank - 1) + rank) % rank;
+        if (first === 0) throw new Error('Flatten 不能展平 batch 维度，start_dim 需从 1 开始');
+        if (last < first) throw new Error('Flatten 的 end_dim 不能在 start_dim 之前');
+        output = [...output.slice(0, first), product(output.slice(first, last + 1)), ...output.slice(last + 1)];
+      } else if (n.op === 'Unflatten') {
+        // Splits one axis into `sizes`, as nn.Unflatten does; one entry may be -1 and takes what is left.
+        const rank = output.length, dim = (integer('dim', -1, -rank, rank - 1) + rank) % rank, raw = n.params.sizes, sizes = (Array.isArray(raw) ? raw : [raw]) as number[];
+        if (dim === 0) throw new Error('Unflatten 不能拆分 batch 维度');
+        if (!sizes.length || sizes.length > 5 || !sizes.every(v => Number.isInteger(v) && (v === -1 || (v >= 1 && v <= 65536))) || sizes.filter(v => v === -1).length > 1) throw new Error('Unflatten sizes 需要 1–5 个正整数，最多一个 -1');
+        if (rank - 1 + sizes.length > 6) throw new Error('Unflatten 输出不能超过 6 维');
+        const known = product(sizes.filter(v => v !== -1));
+        if (sizes.includes(-1) ? output[dim] % known !== 0 : known !== output[dim]) throw new Error(`Unflatten sizes 的乘积必须等于第 ${dim} 维的大小 ${output[dim]}`);
+        output = [...output.slice(0, dim), ...sizes.map(v => v === -1 ? output[dim] / known : v), ...output.slice(dim + 1)];
+      }
       else if (n.op === 'Unsqueeze') { const dim = integer('dim', 0, -output.length - 1, output.length); const index = dim < 0 ? dim + output.length + 1 : dim; output = [...output.slice(0, index), 1, ...output.slice(index)]; }
       else if (n.op === 'Squeeze') {
         const raw = n.params.dim ?? 'all';

@@ -51,7 +51,7 @@ function contentsDimensions(shape: number[] | undefined, op: string, node?: Laye
   if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 1.3 : 1.15, Math.min(2.5, Math.max(0.65, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), 0.8];
   if (!shape) return [0.5, 1, 1];
   if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
-  return [['ReLU', 'GELU', 'Dropout', 'Flatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
+  return [['ReLU', 'GELU', 'Dropout', 'Flatten', 'Unflatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
 }
 
 function nodePort(node: Layer, position: THREE.Vector3, side: 'input' | 'output' | 'context', expanded: boolean, shape?: number[]) {

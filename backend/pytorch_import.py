@@ -89,6 +89,19 @@ class Tensor:
     port: str | None = None
 
 
+class _BatchSize:
+    """The batch size read off a runtime tensor: `x.size(0)`, `x.shape[0]`, `B, S, E = x.shape`.
+
+    Every other axis has a static size once the input shapes are known, but the graph is batch-
+    generic, so this one stays symbolic. It may stand as the leading axis of a `view`/`reshape`
+    and nowhere else, and never in arithmetic: `B * S` would fold samples together.
+    """
+    def __repr__(self): return "B"
+
+
+BATCH = _BatchSize()
+
+
 class Parser:
     def __init__(self, tree, input_shapes):
         self.tree = tree
@@ -458,6 +471,7 @@ class Parser:
             "AdaptiveAvgPool1d": (["output_size"], {}), "AdaptiveAvgPool2d": (["output_size"], {}), "AdaptiveAvgPool3d": (["output_size"], {}),
             "AdaptiveMaxPool1d": (["output_size", "return_indices"], {"return_indices": False}), "AdaptiveMaxPool2d": (["output_size", "return_indices"], {"return_indices": False}), "AdaptiveMaxPool3d": (["output_size", "return_indices"], {"return_indices": False}),
             "Flatten": (["start_dim", "end_dim"], {"start_dim": 1, "end_dim": -1}),
+            "Unflatten": (["dim", "unflattened_size"], {}),
             "Dropout": (["p", "inplace"], {"p": 0.5, "inplace": False}), "Dropout1d": (["p", "inplace"], {"p": 0.5, "inplace": False}), "Dropout2d": (["p", "inplace"], {"p": 0.5, "inplace": False}), "Dropout3d": (["p", "inplace"], {"p": 0.5, "inplace": False}), "AlphaDropout": (["p", "inplace"], {"p": 0.5, "inplace": False}),
             "ReLU": (["inplace"], {"inplace": False}),
             "GELU": (["approximate"], {"approximate": "none"}),
@@ -548,7 +562,19 @@ class Parser:
         elif kind.startswith("Adaptive"):
             if kind.startswith("AdaptiveMaxPool"): self.require(args, {"return_indices": False}, expression)
             dims = int(kind[-2]); params = {"output_size": args["output_size"] if isinstance(args["output_size"], int) else [self.spatial_value(args["output_size"], dims, expression)] * dims}
-        elif kind == "Flatten": self.require(args, {"start_dim": 1, "end_dim": -1}, expression)
+        elif kind == "Flatten":
+            start, end = args["start_dim"], args["end_dim"]
+            if type(start) is not int or type(end) is not int: raise ImportIssue("Flatten 的 start_dim/end_dim 需要整数常量", expression)
+            if start == 0: raise ImportIssue("Flatten 不能展平批次维度：start_dim 需要从 1 开始", expression)
+            # The default bounds are stored as nothing, so a plain flatten keeps the parameters it
+            # always had; a negative start that lands on the batch axis is caught by the analysis.
+            if (start, end) != (1, -1): params = {"start_dim": start, "end_dim": end}
+        elif kind == "Unflatten":
+            dim, sizes = args["dim"], args["unflattened_size"]
+            if type(dim) is not int: raise ImportIssue("Unflatten 的 dim 需要整数常量", expression)
+            if dim == 0: raise ImportIssue("Unflatten 不能拆分批次维度", expression)
+            if not isinstance(sizes, (list, tuple)) or not sizes or any(type(value) is not int for value in sizes): raise ImportIssue("Unflatten 的 sizes 需要整数元组", expression)
+            params = {"dim": dim, "sizes": list(sizes)}
         elif kind in ("ReLU", "SiLU", "SELU", "Hardsigmoid", "Hardswish", "Mish", "LeakyReLU", "ELU", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"):
             self.require(args, {"inplace": False}, expression)
             if kind in ("Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout"): params = {"p": args["p"]}
@@ -838,6 +864,74 @@ class Parser:
         if not -len(shape) <= dim < len(shape): raise ImportIssue("size/shape 维度越界", node)
         return tensor, dim % len(shape)
 
+    def shape_values(self, tensor, node):
+        """`x.shape` / `x.size()` of a runtime tensor: the symbolic batch size, then static sizes."""
+        if isinstance(tensor, StaticTensor): return tuple(tensor.shape)
+        shape = self.tensor_shape(tensor, node)
+        return (BATCH, *shape[1:])
+
+    def view_dimensions(self, nodes, env, attrs, source):
+        """The target shape of `view`/`reshape`: separate sizes, one tuple, or `*x.shape[:-1]`."""
+        values = []
+        for node in nodes:
+            value = self.expr(node.value if isinstance(node, ast.Starred) else node, env, attrs)
+            if isinstance(node, ast.Starred) or isinstance(value, (tuple, list)):
+                if not isinstance(value, (tuple, list)): raise ImportIssue("view/reshape 只能展开形状元组", node)
+                if not isinstance(node, ast.Starred) and len(nodes) != 1: raise ImportIssue("view/reshape 的形状要么逐维给出，要么整体给一个元组", node)
+                values.extend(value)
+            else: values.append(value)
+        for value in values:
+            if value is not BATCH and (type(value) is not int or value < -1 or value == 0):
+                raise ImportIssue("view/reshape 的每一维需要是正整数、-1 或批次大小", source)
+        return values
+
+    def reshape(self, source, target, node):
+        """Lower a batch-preserving `view`/`reshape` onto at most one Flatten and one Unflatten.
+
+        Both are exact row-major reinterpretations, as view and reshape are, so all that matters is
+        which axes change: the leading and trailing axes the two shapes share are kept, and the run
+        between them is merged into one axis and split again. A head split [B,S,E] -> [B,S,H,D] is
+        a single Unflatten, the merge back a single Flatten.
+        """
+        shape = self.tensor_shape(source, node)
+        if len(shape) < 2: raise ImportIssue("view/reshape 的输入至少需要一个非批次维度", node)
+        if not target: raise ImportIssue("view/reshape 需要目标形状", node)
+        if BATCH in target[1:]: raise ImportIssue("批次大小只能作为 view/reshape 的第一维", node)
+        head, rest = target[0], list(target[1:])
+        if rest.count(-1) + (head == -1) > 1: raise ImportIssue("view/reshape 最多只能有一个 -1", node)
+        if head is not BATCH and head != -1: raise ImportIssue("view/reshape 的第一维需要保留批次：写 x.size(0)、x.shape[0]、解包得到的批次变量或 -1", node)
+        total, known = math.prod(shape[1:]), math.prod(value for value in rest if value != -1)
+        if -1 in rest:
+            if total % known: raise ImportIssue(f"view/reshape 无法把非批次维度 {shape[1:]} 排成 {target[1:]}", node)
+            rest[rest.index(-1)] = total // known
+        elif known != total:
+            if head == -1: raise ImportIssue("view/reshape 会把批次维度并入其他维度（第一维的 -1 不再等于批次大小），本图不支持", node)
+            raise ImportIssue(f"view/reshape 的元素数与输入不一致：非批次维度 {shape[1:]} 共 {total} 个元素", node)
+        if not rest: raise ImportIssue("view/reshape 结果至少需要保留一个非批次维度", node)
+        before, after = shape[1:], rest
+        prefix = 0
+        while prefix < min(len(before), len(after)) and before[prefix] == after[prefix]: prefix += 1
+        suffix = 0
+        while suffix < min(len(before), len(after)) - prefix and before[-1 - suffix] == after[-1 - suffix]: suffix += 1
+        if prefix + suffix == len(before) == len(after): return source
+        # Adding or dropping a singleton axis leaves one side of the run empty; widen it by a
+        # neighbour, which both sides share, so the run is still one merge and one split.
+        if prefix + suffix in (len(before), len(after)):
+            if suffix: suffix -= 1
+            else: prefix -= 1
+        merged, split = before[prefix:len(before) - suffix], after[prefix:len(after) - suffix]
+        first = prefix + 1
+        result = source
+        if len(merged) > 1:
+            # A run that reaches the last axis is written `end_dim=-1`, and the plain flatten from
+            # axis 1 keeps the parameters `x.view(x.size(0), -1)` has always imported with.
+            end = -1 if not suffix else prefix + len(merged)
+            params = {} if (first, end) == (1, -1) else {"start_dim": first, "end_dim": end}
+            result = self.add("Flatten", params, [(result, None)], "合并维度", node)
+        if len(split) > 1:
+            result = self.add("Unflatten", {"dim": -1 if not suffix else first, "sizes": list(split)}, [(result, None)], "拆分维度", node)
+        return result
+
     def dynamic_static_slice(self, parent, node, env, attrs, source):
         items = self.index_items(node, len(parent.shape), source)
         references = [(dim, self.size_reference(item.upper, env, attrs)) for dim, item in enumerate(items) if isinstance(item, ast.Slice)]
@@ -907,7 +1001,7 @@ class Parser:
             ancestors.add(key); pending.extend(e["source"] for e in self.graph["edges"] if e["target"] == key)
         nodes = [n for n in self.graph["nodes"] if n["id"] in ancestors]
         if any(n["op"] == "Input" and not n["params"].get("shape") for n in nodes):
-            raise ImportIssue("索引或位置编码需要明确的输入形状，请填写后重新解析", source, "INPUT_SHAPE")
+            raise ImportIssue("索引、读取形状或位置编码需要明确的输入形状，请填写后重新解析", source, "INPUT_SHAPE")
         edges = [e for e in self.graph["edges"] if e["target"] in ancestors]
         output = {"id": "import_shape_output", "op": "Output", "params": {}}
         edge = {"source": tensor.node, "target": output["id"]}
@@ -940,6 +1034,7 @@ class Parser:
                 return "torch.float32"
             source = self.expr(expression.value, env, attrs)
             if isinstance(source, StaticTensor) and expression.attr == "shape": return list(source.shape)
+            if isinstance(source, Tensor) and expression.attr == "shape": return self.shape_values(source, expression)
             raise ImportIssue(f"不支持属性 {expression.attr}", expression)
         if isinstance(expression, ast.Constant): return self.literal(expression, env)
         if isinstance(expression, (ast.List, ast.Tuple)): return [self.expr(n, env, attrs) for n in expression.elts]
@@ -955,6 +1050,11 @@ class Parser:
                 except StaticTensorError as error: raise ImportIssue(str(error), expression) from error
             if isinstance(parent, Tensor):
                 return self.dynamic_index(parent, expression.slice, env, attrs, expression)
+            if isinstance(parent, tuple) and isinstance(expression.slice, ast.Slice):
+                # `x.shape[:2]` / `x.size()[1:]`: a static slice of a shape tuple.
+                bounds = [None if value is None else self.literal(value, env) for value in (expression.slice.lower, expression.slice.upper, expression.slice.step)]
+                if any(value is not None and type(value) is not int for value in bounds) or bounds[2] == 0: raise ImportIssue("形状元组的切片需要整数边界", expression)
+                return parent[slice(*bounds)]
             key = self.literal(expression.slice, env)
             try: value = parent[key]
             except (TypeError, KeyError, IndexError) as error: raise ImportIssue("未知索引或不支持此切片", expression) from error
@@ -971,6 +1071,7 @@ class Parser:
             raise ImportIssue("静态一元运算需要数值或缓冲区", expression)
         if isinstance(expression, ast.BinOp):
             left, right = self.expr(expression.left, env, attrs), self.expr(expression.right, env, attrs)
+            if left is BATCH or right is BATCH: raise ImportIssue("批次大小不能参与运算，只能原样作为 view/reshape 的第一维", expression)
             if isinstance(expression.op, (ast.Add, ast.Mult)) and ((isinstance(left, (StaticTensor, DynamicStaticSlice)) and isinstance(right, Tensor)) or (isinstance(right, (StaticTensor, DynamicStaticSlice)) and isinstance(left, Tensor))):
                 constant = left if isinstance(left, (StaticTensor, DynamicStaticSlice)) else right
                 tensor = right if constant is left else left
@@ -1079,6 +1180,19 @@ class Parser:
                     if len(args) != 1 or not isinstance(args[0], StaticTensor): raise ImportIssue("静态逐元素函数需要静态张量", expression)
                     return args[0].unary({"torch.exp": math.exp, "torch.sin": math.sin, "torch.cos": math.cos, "torch.sqrt": math.sqrt, "torch.abs": abs}[path])
                 except (StaticTensorError, ValueError, OverflowError) as error: raise ImportIssue(str(error), expression) from error
+            if isinstance(function, ast.Attribute) and function.attr in ("size", "contiguous") and not path.startswith("torch."):
+                receiver = self.expr(function.value, env, attrs)
+                if isinstance(receiver, (Tensor, StaticTensor)):
+                    if function.attr == "contiguous":
+                        # Memory layout only: the graph has none, so the value passes through.
+                        if expression.args or expression.keywords: raise ImportIssue("contiguous 不支持参数", expression)
+                        return receiver
+                    if expression.keywords or len(expression.args) > 1: raise ImportIssue("size 只接受一个维度参数", expression)
+                    values = self.shape_values(receiver, expression)
+                    if not expression.args: return values
+                    dim = self.literal(expression.args[0], env)
+                    if type(dim) is not int or not -len(values) <= dim < len(values): raise ImportIssue("size/shape 维度越界", expression)
+                    return values[dim]
             if path in ("torch.select", "torch.Tensor.select") or isinstance(function, ast.Attribute) and function.attr == "select":
                 method = path not in ("torch.select", "torch.Tensor.select")
                 names = ["dim", "index"] if method else ["input", "dim", "index"]
@@ -1140,7 +1254,7 @@ class Parser:
                 pieces = [self.add("Slice", {"dim": axis, "start": start, "end": end, "step": 1}, [(tensor, None)], "切片", expression) for axis, start, end in pieces]
                 return tuple(pieces)
             functional_paths = {
-                "torch.flatten": "Flatten", "torch.relu": "ReLU", "torch.sigmoid": "Sigmoid", "torch.tanh": "Tanh",
+                "torch.flatten": "Flatten", "torch.relu": "ReLU", "torch.sigmoid": "Sigmoid", "torch.tanh": "Tanh", "torch.softmax": "Softmax", "torch.log_softmax": "LogSoftmax",
                 "torch.nn.functional.relu": "ReLU", "torch.nn.functional.gelu": "GELU", "torch.nn.functional.silu": "SiLU", "torch.nn.functional.sigmoid": "Sigmoid", "torch.nn.functional.tanh": "Tanh", "torch.nn.functional.hardsigmoid": "Hardsigmoid", "torch.nn.functional.hardswish": "Hardswish", "torch.nn.functional.mish": "Mish", "torch.nn.functional.softsign": "Softsign", "torch.nn.functional.leaky_relu": "LeakyReLU", "torch.nn.functional.elu": "ELU", "torch.nn.functional.selu": "SELU", "torch.nn.functional.softplus": "Softplus", "torch.nn.functional.softmax": "Softmax", "torch.nn.functional.log_softmax": "LogSoftmax", "torch.nn.functional.glu": "GLU",
                 "torch.nn.functional.dropout": "Dropout", "torch.nn.functional.max_pool1d": "MaxPool1d", "torch.nn.functional.max_pool2d": "MaxPool2d", "torch.nn.functional.max_pool3d": "MaxPool3d", "torch.nn.functional.avg_pool1d": "AvgPool1d", "torch.nn.functional.avg_pool2d": "AvgPool2d", "torch.nn.functional.avg_pool3d": "AvgPool3d", "torch.nn.functional.adaptive_avg_pool1d": "AdaptiveAvgPool1d", "torch.nn.functional.adaptive_avg_pool2d": "AdaptiveAvgPool2d", "torch.nn.functional.adaptive_avg_pool3d": "AdaptiveAvgPool3d", "torch.nn.functional.adaptive_max_pool1d": "AdaptiveMaxPool1d", "torch.nn.functional.adaptive_max_pool2d": "AdaptiveMaxPool2d", "torch.nn.functional.adaptive_max_pool3d": "AdaptiveMaxPool3d",
                 "torch.nn.functional.layer_norm": "LayerNorm", "torch.nn.functional.rms_norm": "RMSNorm", "torch.nn.functional.group_norm": "GroupNorm", "torch.nn.functional.interpolate": "Upsample",
@@ -1205,6 +1319,14 @@ class Parser:
                 # Tensor.flatten starts at dimension zero by default.
                 if not fake.args and not any(k.arg == "start_dim" for k in fake.keywords): raise ImportIssue("请使用 flatten(1)，保留批次维度", expression)
                 return self.apply(self.module(fake, env), [source], {}, "Flatten", expression)
+            if isinstance(function, ast.Attribute) and function.attr in ("softmax", "log_softmax") and not path.startswith("torch."):
+                # `scores.softmax(dim=-1)`, the method spelling hand-written attention uses. Unlike
+                # nn.Softmax the method has no implicit axis, so the dim has to be given.
+                if not expression.args and not any(k.arg == "dim" for k in expression.keywords): raise ImportIssue(f"{function.attr} 需要 dim", expression)
+                kind = "Softmax" if function.attr == "softmax" else "LogSoftmax"
+                fake = ast.Call(func=ast.Attribute(value=ast.Name(id="nn"), attr=kind), args=expression.args, keywords=expression.keywords)
+                ast.copy_location(fake, expression)
+                return self.apply(self.module(fake, env), [self.expr(function.value, env, attrs)], {}, kind, expression)
             if isinstance(function, ast.Attribute) and function.attr in ("unsqueeze", "squeeze"):
                 return self.shape_operation(expression, env, attrs, method=True)
             if isinstance(function, ast.Attribute) and function.attr in ("transpose", "permute"):
@@ -1241,15 +1363,36 @@ class Parser:
                     rank = len(self.tensor_shape(self.expr(function.value, env, attrs), expression))
                     if rank != 3: raise ImportIssue("bmm 需要两个三维张量", expression)
                 return self.contract(self.expr(function.value, env, attrs), self.expr(expression.args[0], env, attrs), expression)
-            if isinstance(function, ast.Attribute) and function.attr in ("view", "reshape"):
-                # A very common flatten spelling; arbitrary reshapes require a new op.
-                dimensions = expression.args
-                if len(dimensions) == 1 and isinstance(dimensions[0], (ast.List, ast.Tuple)): dimensions = dimensions[0].elts
-                batch = dimensions[0] if len(dimensions) == 2 else None
-                batch_ok = isinstance(batch, ast.Call) and isinstance(batch.func, ast.Attribute) and batch.func.attr == "size" and ast.dump(batch.func.value) == ast.dump(function.value) and len(batch.args) == 1 and self.literal(batch.args[0], env) == 0
-                batch_ok = batch_ok or isinstance(batch, ast.Subscript) and isinstance(batch.value, ast.Attribute) and batch.value.attr == "shape" and ast.dump(batch.value.value) == ast.dump(function.value) and self.literal(batch.slice, env) == 0
-                if expression.keywords or not batch_ok or self.literal(dimensions[1], env) != -1: raise ImportIssue("reshape/view 目前仅支持保留 batch 的展平，如 x.view(x.size(0), -1)", expression)
-                return self.add("Flatten", {}, [(self.expr(function.value, env, attrs), None)], "Flatten", expression)
+            if path == "torch.reshape" or isinstance(function, ast.Attribute) and function.attr in ("view", "reshape") and not path.startswith("torch."):
+                # Any reshape that keeps the batch axis: a head split, the merge back, a flatten.
+                # It lowers onto Flatten/Unflatten rather than a free-form reshape op.
+                if path == "torch.reshape":
+                    arguments = dict(zip(["input", "shape"], expression.args))
+                    for keyword in expression.keywords:
+                        if keyword.arg not in ("input", "shape") or keyword.arg in arguments: raise ImportIssue("torch.reshape 参数无效或重复", expression)
+                        arguments[keyword.arg] = keyword.value
+                    if len(expression.args) > 2 or set(arguments) != {"input", "shape"}: raise ImportIssue("torch.reshape 需要 input 与 shape", expression)
+                    receiver, dimensions = arguments["input"], [arguments["shape"]]
+                else:
+                    if expression.keywords: raise ImportIssue(f"{function.attr} 不支持关键字参数", expression)
+                    receiver, dimensions = function.value, list(expression.args)
+                source = self.expr(receiver, env, attrs)
+                if not isinstance(source, Tensor): raise ImportIssue("view/reshape 需要运行时张量", expression)
+                return self.reshape(source, self.view_dimensions(dimensions, env, attrs, expression), expression)
+            if path == "torch.unflatten" or isinstance(function, ast.Attribute) and function.attr == "unflatten" and not path.startswith("torch."):
+                # `x.unflatten(-1, (heads, -1))` is nn.Unflatten applied to x; the keyword is `sizes`.
+                method = path != "torch.unflatten"
+                names = (["dim", "sizes"] if method else ["input", "dim", "sizes"])
+                if len(expression.args) > len(names): raise ImportIssue("unflatten 参数过多", expression)
+                arguments = dict(zip(names, expression.args))
+                for keyword in expression.keywords:
+                    if keyword.arg not in names or keyword.arg in arguments: raise ImportIssue("unflatten 参数无效或重复", expression)
+                    arguments[keyword.arg] = keyword.value
+                if set(arguments) != set(names): raise ImportIssue("unflatten 需要 dim 与 sizes", expression)
+                source = self.expr(function.value if method else arguments["input"], env, attrs)
+                fake = ast.Call(func=ast.Attribute(value=ast.Name(id="nn"), attr="Unflatten"), args=[arguments["dim"], arguments["sizes"]], keywords=[])
+                ast.copy_location(fake, expression)
+                return self.apply(self.module(fake, env), [source], {}, "Unflatten", expression)
             # The reduce family: `x.mean(dim)`, `torch.sum(x, dim)`, `torch.amax(x, dim, True)`.
             # `max`/`min` are handled through `.values` only; see the guard further down.
             if path in ("torch.mean", "torch.sum", "torch.amax", "torch.amin") or isinstance(function, ast.Attribute) and function.attr in ("mean", "sum", "amax", "amin"):
