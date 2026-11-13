@@ -1,0 +1,54 @@
+name: Online demo
+
+# Publishes the static workbench to GitHub Pages from main. Pages has no Python service, so the
+# demo covers what runs in the browser: building, shape checks, 3D/topology views and exports.
+# A maintainer enables it once under Settings → Pages → Source: GitHub Actions; until then the
+# deployment job fails, and nothing else depends on it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the static demo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install JavaScript dependencies
+        run: npm ci
+      # A project site is served from /<repository>/, so every asset URL needs that base.
+      - name: Build for the repository's Pages path
+        run: npm run build -- --base=/${{ github.event.repository.name }}/
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

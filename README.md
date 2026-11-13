@@ -4,7 +4,9 @@
 
 A local **3D neural network workbench**: build visually or import PyTorch code, explore your model, run real training, then export code and diagrams. Chinese and English UI supported.
 
-![The TensorCraft3D workbench: a residual CNN in the 3D view, the loss curves of a finished training run, and the selected convolution's own gradient-norm curve in the properties panel](docs/images/workbench.png)
+**[▶ Try the online demo](https://akiraaki114514.github.io/TensorCraft3D/)** — building, shape checks, the 3D and topology views and code/diagram export run right in the browser. Training and tensor inspection need the local Python service ([quick start](#-quick-start-windows)).
+
+[![The TensorCraft3D workbench: a residual CNN in the 3D view, the loss curves of a finished training run, and the selected convolution's own gradient-norm curve in the properties panel](docs/images/workbench.png)](https://akiraaki114514.github.io/TensorCraft3D/)
 
 ## ✨ What can you do?
 
@@ -58,6 +60,7 @@ For editing and 3D only, omit `-Training`. CUDA training needs a compatible NVID
 - **Animation is illustrative:** particles and weight colors are schematics; training metrics and explicitly requested tensor observations come from real PyTorch computation.
 - **Structure, not weights:** source import parses supported static structures and constants, without executing uploaded code or loading original trainable weights.
 - **Weights stay in memory:** only the latest successfully trained model is retained; restarting the backend clears it. Exported code and JSON do not include trained weights.
+- **The online demo is static:** GitHub Pages has no Python service, so training, inference and PyTorch import only work in a local install. Projects in the demo are saved in your own browser.
 - **Learning and small experiments:** training currently targets classification. Use professional tools for large models, distributed training and full profiling; warnings do not guarantee training results.
 
 ## Learn more

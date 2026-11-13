@@ -59,6 +59,16 @@ CI runs frontend checks on Ubuntu and automatically discovers every `backend/tes
 
 `build.ps1` produces `release/TensorCraft3D.zip`, containing source, build output, the backend and the launch scripts, but not `node_modules` or the virtual environment. Recipients need Python to run it, and real training additionally needs the backend dependencies installed; this is not a runtime-free Windows EXE.
 
+### Online demo
+
+`.github/workflows/pages.yml` publishes the static workbench to GitHub Pages on every push to `main`, or when run by hand. It builds with `npm run build -- --base=/<repository>/`, because a project site lives under the repository's path, and deploys `dist`.
+
+**Works in the demo:** templates, editing, shape checks, the 3D and topology views, image export and Python/JSON export, with projects saved in that browser.
+
+**Needs the local Python service:** training, inference, tensor and attention inspection, PyTorch import and CUDA diagnostics. Pages has no backend, so the status bar shows the service as unavailable. It keeps checking `/api/health` every 15 seconds, and those checks get 404s.
+
+A maintainer enables the site once, under **Settings → Pages → Source: GitHub Actions**. Until then the deployment job fails, and nothing else depends on it. To check a build under the same path locally, build with `npm exec --no -- vite build --base=/TensorCraft3D/ --outDir <folder>/TensorCraft3D` and serve `<folder>` with any static server.
+
 ## The workbench
 
 - The **?** button in the header opens a getting-started checklist of five steps: pick a template, select a layer, run one sample, train, export. It ticks a step when you do it yourself, in any order, and remembers the progress in this browser (`tensorcraft-guide`). Each step's button only navigates — it switches the view or tab, or opens a dialog — and never starts inference or training.
