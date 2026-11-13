@@ -12,13 +12,17 @@ import { crossInputRole, isCrossAttention, isProjectionPort } from './attentionC
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
 import { blank, createTensorMaterial, floatTexture, majorGroup, tensorCells, type TensorUniforms } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
+import { receptiveField, WINDOW_OPS, type Field } from './receptiveField';
+import { tensorNumber } from './inferenceTypes';
 import type { ImageExportOptions } from './imageLayout';
 import { useI18n } from './i18n';
 
 export interface SceneHandle { capture: (size: number, transparent: boolean, options?: ImageExportOptions) => Promise<Blob>; svg: (options?: ImageExportOptions, width?: number) => string; reset: () => void; focus: (nodeId: string) => void; focusHead: (nodeId: string, index: number) => void; }
 interface Props { graph: Graph; analysis: Analysis; selected: string | null; onSelect: (id: string | null) => void; selectedHead: number | null; selectedProjection: string | null; onSelectProjection: (id: string, port: string) => void; onSelectHead: (id: string, index: number) => void; rotating: boolean; playing: boolean; direction: 'forward' | 'backward'; speed: number; expanded: boolean; diagnostics: Diagnostic[]; onReady: (handle: SceneHandle) => void; onGpu: (name: string) => void;
   /** Measured values for this level's layers, keyed by their IDs here; painted while present. */
-  observation?: SceneObservation | null; }
+  observation?: SceneObservation | null;
+  /** One kernel window per convolution or pooling layer; on unless turned off. */
+  showKernels?: boolean; }
 interface SceneRoute extends Edge { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; residual: boolean; }
 
 function layout(graph: Graph, analysis: Analysis, expanded: boolean) {
@@ -172,6 +176,65 @@ function GroundShadow({ width, depth, lift }: { width: number; depth: number; li
 // 每节点一个 <Html> 标签是最重的成本：它们不受 three.js 视锥剔除约束，节点一多就
 // 全是常驻 DOM。按缩放分三档，远景只留骨架，这是「低缩放聚合」的渲染侧。
 type Detail = 'far' | 'mid' | 'near';
+const KERNEL_COLOR = '#f97316';
+const UNIT_EDGES = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+
+/**
+ * The block-local box of a range of elements of a `[1,C,H,W]` block, laid out as tensorBlock.ts
+ * draws its cells: channel 0 at the front, row 0 at the top, column 0 nearest the viewer. A
+ * small lift keeps the highlight just outside the faces it covers.
+ */
+function elementBox(dims: [number, number, number], shape: number[], field: Field) {
+  const along = (size: number, count: number, [first, last]: [number, number]) => {
+    const top = size / 2 - first * size / count, bottom = size / 2 - (last + 1) * size / count;
+    return { center: (top + bottom) / 2, size: top - bottom + 0.012 };
+  };
+  const x = along(dims[0], shape[1], field.channels), y = along(dims[1], shape[2], field.rows), z = along(dims[2], shape[3], field.columns);
+  return { center: new THREE.Vector3(x.center, y.center, z.center), size: new THREE.Vector3(x.size, y.size, z.size) };
+}
+
+interface KernelProps { node: Layer; input: number[]; output: number[]; from: THREE.Vector3; to: THREE.Vector3; fromDims: [number, number, number]; toDims: [number, number, number] }
+
+/**
+ * One output element of a convolution or pooling layer and the input window it reads: the
+ * window on the input block (through every channel a convolution reads, or the one channel a
+ * pooling reads), the element on the layer's own block, and four beams between them. One window
+ * per layer: it sweeps the output grid while the data flow plays and holds still while paused.
+ * With measured values painted, the element shows its measured value.
+ */
+function KernelWindow({ node, input, output, from, to, fromDims, toDims, playing, speed, measured }: KernelProps & { playing: boolean; speed: number; measured?: (row: number, column: number) => number | null | undefined }) {
+  const [step, setStep] = useState(0);
+  const clock = useRef(0);
+  const total = output[2] * output[3];
+  useFrame((_, delta) => {
+    if (!playing) return;
+    clock.current += delta * speed;
+    const next = Math.floor(clock.current * 1.5) % total;
+    setStep(current => current === next ? current : next);
+  });
+  const beams = useMemo(() => new THREE.BufferGeometry(), []);
+  useEffect(() => () => beams.dispose(), [beams]);
+  const row = Math.floor(step / output[3]) % output[2], column = step % output[3];
+  const field = receptiveField(node, input, output, row, column);
+  if (!field) return null;
+  const window = elementBox(fromDims, input, field), cell = elementBox(toDims, output, { channels: [0, 0], rows: [row, row], columns: [column, column] });
+  const windowCenter = from.clone().add(window.center), cellCenter = to.clone().add(cell.center);
+  // From the window's face toward the layer to the facing side of the element.
+  const corners: number[] = [];
+  for (const [dy, dz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) corners.push(
+    windowCenter.x + window.size.x / 2, windowCenter.y + dy * window.size.y / 2, windowCenter.z + dz * window.size.z / 2,
+    cellCenter.x - cell.size.x / 2, cellCenter.y + dy * cell.size.y / 2, cellCenter.z + dz * cell.size.z / 2);
+  beams.setAttribute('position', new THREE.Float32BufferAttribute(corners, 3));
+  const value = measured?.(row, column);
+  return <group name="scene_overlay">
+    <mesh raycast={() => {}} position={windowCenter} scale={window.size} renderOrder={2}><boxGeometry /><meshBasicMaterial color={KERNEL_COLOR} transparent opacity={0.22} depthWrite={false} /></mesh>
+    <lineSegments raycast={() => {}} position={windowCenter} scale={window.size} geometry={UNIT_EDGES}><lineBasicMaterial color={KERNEL_COLOR} /></lineSegments>
+    <mesh raycast={() => {}} position={cellCenter} scale={cell.size}><boxGeometry /><meshBasicMaterial color={KERNEL_COLOR} /></mesh>
+    <lineSegments raycast={() => {}} geometry={beams} frustumCulled={false}><lineBasicMaterial color={KERNEL_COLOR} transparent opacity={0.7} /></lineSegments>
+    {value !== undefined && <Html position={[cellCenter.x, cellCenter.y + cell.size.y / 2 + 0.16, cellCenter.z]} center zIndexRange={[11, 0]} style={{ pointerEvents: 'none' }}><div className="kernel-value">= {value === null ? '—' : tensorNumber(value)}</div></Html>}
+  </group>;
+}
+
 // The default framing of a template lands around zoom 35–45; every layer keeps its label there.
 const DETAIL_THRESHOLDS: [number, number] = [16, 32];
 
@@ -264,6 +327,20 @@ function World(props: Props) {
   }, [props.graph, props.analysis, props.expanded, positions, routes]);
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
+  // A convolution or pooling layer fed by a feature map gets its one kernel window.
+  const kernels = useMemo(() => props.showKernels === false ? [] : props.graph.nodes.flatMap<KernelProps>(node => {
+    if (!WINDOW_OPS.has(node.op)) return [];
+    const edge = props.graph.edges.find(e => e.target === node.id && !e.targetPort), source = edge && props.graph.nodes.find(n => n.id === edge.source);
+    const input = edge && props.analysis.layers[edge.source]?.output, output = props.analysis.layers[node.id]?.output;
+    if (!edge || !source || !input || !output || input.length !== 4 || output.length !== 4 || !positions[source.id] || !positions[node.id]) return [];
+    return [{ node, input, output, from: positions[source.id], to: positions[node.id], fromDims: contentsDimensions(input, source.op, source, props.expanded), toDims: contentsDimensions(output, node.op, node, props.expanded) }];
+  }), [props.graph, props.analysis, positions, props.expanded, props.showKernels]);
+  // The measured value of a layer's output element, when the painted window holds channel 0 there.
+  const measuredAt = (id: string) => {
+    const tensor = props.observation?.tensors[id];
+    if (!tensor || tensor.shape.length !== 4 || tensor.slice.indices[1] !== 0) return undefined;
+    return (row: number, column: number) => row < tensor.slice.rows && column < tensor.slice.columns ? tensor.slice.values[row][column] : undefined;
+  };
   // One paint per observed layer, kept stable per observation so block textures are built once.
   const paints = useMemo(() => {
     const observation = props.observation;
@@ -334,6 +411,7 @@ function World(props: Props) {
       const flow = { start: route.start, end: route.end, control1: route.control1, control2: route.control2 };
       return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? '#7095a6' : '#e26969'} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
     })}
+    {kernels.map(kernel => <KernelWindow key={kernel.node.id} {...kernel} playing={props.playing} speed={props.speed} measured={measuredAt(kernel.node.id)} />)}
     {props.graph.nodes.map(n => {
       const pos = positions[n.id], dims = contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded);
       const issue = props.diagnostics.find(d => d.nodeId === n.id && d.level === 'error'), selected = props.selected === n.id;

@@ -93,6 +93,8 @@ function prepareImage(source: ExportSource, width: number, options: ImageExportO
   const scene = source.scene.clone(true), camera = source.camera.clone(), allocated: (THREE.BufferGeometry | THREE.Material)[] = [];
   scene.background = new THREE.Color('#f5f8fa');
   const grid = scene.getObjectByName('export_grid'); if (grid) grid.visible = false;
+  // Kernel windows explain the live view; an exported diagram shows the architecture only.
+  scene.traverse(object => { if (object.name === 'scene_overlay') object.visible = false; });
   const placementDimensions = options.layout === 'compact' ? layoutDimensions(source) : source.dimensions;
   const compact = options.layout === 'compact' ? compactImageLayout(source.graph, source.analysis.order, placementDimensions, options.aspect) : undefined;
   const positions: Record<string, THREE.Vector3> = {}, renderScale: Record<string, number> = {}, attention: Record<string, ReturnType<typeof buildAttentionExport>> = {}, dimensions = { ...source.dimensions };

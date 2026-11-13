@@ -378,3 +378,31 @@ print(snapshot_json(capture_snapshot(json.load(sys.stdin), seed=42)))
   expect(inferences).toHaveLength(2);
   expect(errors).toEqual([]);
 });
+
+test('shows one kernel window per convolution and pooling layer, with its measured output value', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/');
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  // Paused, so only the toggle can change the frame.
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  const checksum = () => page.locator('canvas').evaluate(canvas => new Promise<number>(resolve => requestAnimationFrame(() => {
+    const c = canvas as HTMLCanvasElement, gl = c.getContext('webgl2')!, buffer = new Uint8Array(c.width * c.height * 4);
+    gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+    let sum = 0; for (let i = 0; i < buffer.length; i += 4) sum = (sum + buffer[i] * (1 + i % 31) + buffer[i + 2]) >>> 0;
+    resolve(sum);
+  })));
+  const shown = await checksum();
+  await page.getByRole('button', { name: '隐藏卷积窗口', exact: true }).click();
+  await expect.poll(checksum).not.toBe(shown);
+  const hidden = await checksum();
+  await page.getByRole('button', { name: '显示卷积窗口', exact: true }).click();
+  await expect.poll(checksum).not.toBe(hidden);
+  // With every layer measured, an output element inside the painted window shows its value.
+  await expect(page.locator('.kernel-value')).toHaveCount(0);
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  await page.getByRole('button', { name: '观测全部层，画到三维视图', exact: true }).click();
+  await expect(page.locator('.scene-observation')).toContainText('实测值 · 单样本');
+  await expect(page.locator('.kernel-value').first()).toHaveText(/^= -?\d/);
+  expect(errors).toEqual([]);
+});
