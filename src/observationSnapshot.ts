@@ -1,5 +1,6 @@
 import { validateGraph } from './analysis';
-import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type HeadSummary, type ParameterSnapshot, type TensorSnapshot } from './inferenceTypes';
+import { inspectsAttention } from './attentionConfig';
+import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type HeadSummary, type ParameterSnapshot, type RoutingSnapshot, type TensorSnapshot } from './inferenceTypes';
 import { expandGraph } from './subgraph';
 import { computationKey } from './trainedModel';
 import type { Graph } from './types';
@@ -26,6 +27,8 @@ export interface ObservationSnapshot {
   mode: 'eval';
   tensors: TensorSnapshot[];
   attentions: AttentionSnapshot[];
+  /** Every MoE layer's routing; empty for a file written before routing was captured. */
+  routings: RoutingSnapshot[];
   /** Each layer's weights and biases, by layer; empty for a file written before they were added. */
   parameters: Record<string, ParameterSnapshot[]>;
 }
@@ -122,6 +125,28 @@ function attention(value: unknown, field: string): AttentionSnapshot {
   };
 }
 
+/**
+ * One MoE layer's routing. Its windows are bounded like attention matrices, every chosen expert
+ * exists, and the load counts top_k experts for every token, as the routing it describes did.
+ */
+function routing(value: unknown, field: string): RoutingSnapshot {
+  const item = record(value, field);
+  const window = (key: 'scores' | 'weights'): AttentionMatrix => { const raw = record(item[key], `${field}.${key}`); return { ...tensor(raw, `${field}.${key}`), rowStart: integer(raw.rowStart, `${field}.${key}.rowStart`), columnStart: integer(raw.columnStart, `${field}.${key}.columnStart`) }; };
+  const experts = integer(item.experts, `${field}.experts`, 1, 64), topK = integer(item.topK, `${field}.topK`, 1, Math.min(8, experts)), tokens = integer(item.positions, `${field}.positions`, 1);
+  const positionStart = integer(item.positionStart, `${field}.positionStart`, 0, tokens - 1), expertStart = integer(item.expertStart, `${field}.expertStart`, 0, experts - 1);
+  const scores = window('scores'), weights = window('weights');
+  for (const [key, matrix] of [['scores', scores], ['weights', weights]] as const) if (matrix.shape.join(',') !== `${tokens},${experts}` || matrix.rowStart !== positionStart || matrix.columnStart !== expertStart) invalid(`${field}.${key}`);
+  const chosen = list(item.chosen, `${field}.chosen`, MAX_SIDE).map((row, index) => { const picks = list(row, `${field}.chosen[${index}]`, 8).map((expert, slot) => integer(expert, `${field}.chosen[${index}][${slot}]`, 0, experts - 1)); return picks.length === topK && new Set(picks).size === topK ? picks : invalid(`${field}.chosen[${index}]`); });
+  if (chosen.length !== Math.min(MAX_SIDE, tokens - positionStart)) invalid(`${field}.chosen`);
+  const load = list(item.load, `${field}.load`, 64).map((count, index) => integer(count, `${field}.load[${index}]`, 0, tokens));
+  if (load.length !== experts || load.reduce((sum, count) => sum + count, 0) !== tokens * topK) invalid(`${field}.load`);
+  return {
+    nodeId: text(item.nodeId, `${field}.nodeId`, 512), positions: tokens, experts, topK, sharedExperts: integer(item.sharedExperts, `${field}.sharedExperts`, 0, 4),
+    scoreFunc: oneOf(item.scoreFunc, ['softmax', 'sigmoid'] as const, `${field}.scoreFunc`), routeScale: finite(item.routeScale, `${field}.routeScale`),
+    positionStart, expertStart, scores, weights, chosen, load,
+  };
+}
+
 /** Parse and check a snapshot file's text. Throws {@link ObservationSnapshotError} with an i18n key. */
 export function parseObservationSnapshot(source: string): ObservationSnapshot {
   let value: unknown;
@@ -140,7 +165,11 @@ export function parseObservationSnapshot(source: string): ObservationSnapshot {
   const seen = new Set<string>();
   tensors.forEach((item, index) => { if (!nodes.has(item.nodeId) || seen.has(item.nodeId)) invalid(`tensors[${index}].nodeId`); seen.add(item.nodeId); });
   const attended = new Set<string>();
-  attentions.forEach((item, index) => { const op = nodes.get(item.nodeId); if ((op !== 'MultiHeadAttention' && op !== 'Transformer') || attended.has(item.nodeId)) invalid(`attentions[${index}].nodeId`); attended.add(item.nodeId); });
+  attentions.forEach((item, index) => { const op = nodes.get(item.nodeId); if (!op || !inspectsAttention(op) || attended.has(item.nodeId)) invalid(`attentions[${index}].nodeId`); attended.add(item.nodeId); });
+  // Routing is optional: a file from before it was captured has none.
+  const routings = file.routings === undefined ? [] : list(file.routings, 'routings').map((item, index) => routing(item, `routings[${index}]`));
+  const routed = new Set<string>();
+  routings.forEach((item, index) => { if (nodes.get(item.nodeId) !== 'MoE' || routed.has(item.nodeId)) invalid(`routings[${index}].nodeId`); routed.add(item.nodeId); });
   // Weights and biases are optional: a file from before they were written simply has none.
   const parameterFile = file.parameters === undefined ? {} : record(file.parameters, 'parameters');
   if (Object.keys(parameterFile).length > MAX_ENTRIES) invalid('parameters');
@@ -160,7 +189,7 @@ export function parseObservationSnapshot(source: string): ObservationSnapshot {
     label: file.label === null || file.label === undefined ? null : text(file.label, 'label', 120), graph,
     device: oneOf(file.device, ['CPU', 'CUDA'] as const, 'device'), seed: integer(file.seed, 'seed'), sampleIndex: oneOf(file.sampleIndex, [0] as const, 'sampleIndex'),
     inputSource: oneOf(file.inputSource, ['synthetic', 'provided'] as const, 'inputSource'), weights: oneOf(file.weights, ['external', 'random-initialized'] as const, 'weights'),
-    mode: oneOf(file.mode, ['eval'] as const, 'mode'), tensors, attentions, parameters,
+    mode: oneOf(file.mode, ['eval'] as const, 'mode'), tensors, attentions, routings, parameters,
   };
 }
 

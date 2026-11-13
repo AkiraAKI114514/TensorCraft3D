@@ -7,9 +7,25 @@ OPS = {
     "ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity",
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
-    "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
+    "Flatten", "Unflatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
+    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "CausalMask", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "LatentAttention", "MoE", "Group"
 }
+MOE_SCORE_FUNCTIONS = ("softmax", "sigmoid")
+
+
+def moe_parameters(dim, experts, shared, hidden):
+    """Weights of DeepSeek-style MoE (no biases): the gate's expert-by-dim matrix, three SwiGLU
+    matrices per routed expert, and one SwiGLU `shared * hidden` wide for the shared experts. The
+    gate's balancing bias is a buffer, not a trained parameter. Must mirror src/analysis.ts."""
+    return dim * experts + experts * 3 * dim * hidden + (3 * dim * shared * hidden if shared else 0)
+
+
+def latent_attention_parameters(embed, heads, q_lora, kv_lora, nope, rope, value):
+    """Weights of DeepSeek-style MLA (no biases): the query path (one projection, or a latent with
+    its RMSNorm), the shared K/V latent plus rotary key, its RMSNorm, the K/V up-projection and the
+    output projection. Must mirror src/analysis.ts."""
+    query = embed * heads * (nope + rope) if not q_lora else embed * q_lora + q_lora + q_lora * heads * (nope + rope)
+    return query + embed * (kv_lora + rope) + kv_lora + kv_lora * heads * (nope + value) + heads * value * embed
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
 # The PyTorch methods a `Reduce` node stands for. `amin` mirrors `amax`; `max`/`min` are
@@ -325,7 +341,29 @@ def analyze_expanded_graph(graph):
                 sizes = size if isinstance(size, list) else [size] * (rank - 2)
                 if len(sizes) != rank - 2 or any(isinstance(v, bool) or not isinstance(v, int) or v < 1 or v > 256 for v in sizes): raise ValueError(f"{key}: invalid output_size")
                 shape = [shape[0], shape[1], *sizes]
-            elif op == "Flatten": shape = [shape[0], prod(shape[1:])]
+            elif op == "Flatten":
+                # Merges start_dim..end_dim into one axis, as nn.Flatten does; older projects store
+                # neither bound. Must mirror src/analysis.ts.
+                rank = len(shape)
+                first = integer("start_dim", 1, -rank, rank - 1) % rank
+                last = integer("end_dim", -1, -rank, rank - 1) % rank
+                if first == 0: raise ValueError(f"{key}: Flatten cannot fold the batch axis; start_dim must be 1 or later")
+                if last < first: raise ValueError(f"{key}: Flatten end_dim cannot come before start_dim")
+                shape = [*shape[:first], prod(shape[first:last + 1]), *shape[last + 1:]]
+            elif op == "Unflatten":
+                # Splits one axis into `sizes`, as nn.Unflatten does; one entry may be -1.
+                rank = len(shape)
+                dim = integer("dim", -1, -rank, rank - 1) % rank
+                if dim == 0: raise ValueError(f"{key}: Unflatten cannot split the batch axis")
+                sizes = p.get("sizes")
+                sizes = sizes if isinstance(sizes, list) else [sizes]
+                if not 1 <= len(sizes) <= 5 or any(isinstance(v, bool) or not isinstance(v, int) or not (v == -1 or 1 <= v <= 65536) for v in sizes) or sizes.count(-1) > 1:
+                    raise ValueError(f"{key}: Unflatten sizes need 1-5 positive integers with at most one -1")
+                if rank - 1 + len(sizes) > 6: raise ValueError(f"{key}: Unflatten output cannot exceed rank 6")
+                known = prod(v for v in sizes if v != -1)
+                if (shape[dim] % known != 0) if -1 in sizes else known != shape[dim]:
+                    raise ValueError(f"{key}: Unflatten sizes must multiply to the size of axis {dim} ({shape[dim]})")
+                shape = [*shape[:dim], *(shape[dim] // known if v == -1 else v for v in sizes), *shape[dim + 1:]]
             elif op == "Unsqueeze":
                 dim = integer("dim", 0, minimum=-len(shape) - 1, maximum=len(shape))
                 if dim < 0: dim += len(shape) + 1
@@ -439,6 +477,41 @@ def analyze_expanded_graph(graph):
                     if shape[0] * shape[1] * ff > 16_000_000: raise ValueError("FFN activation exceeds local limits")
                     activation += shape[1] * ff * 4
                     count += 2 * embed * ff + ff + 5 * embed
+            elif op == "LatentAttention":
+                # DeepSeek-style Multi-head Latent Attention: self-attention on [B,S,E] that keeps the
+                # input shape. Must mirror src/analysis.ts.
+                if len(shape) != 3: raise ValueError(f"{key}: latent attention requires [B,S,E]")
+                embed = integer("embed_dim", 64, maximum=4096); heads = integer("num_heads", 4, maximum=16)
+                q_lora = integer("q_lora_rank", 32, 0, 4096); kv_lora = integer("kv_lora_rank", 32, maximum=4096)
+                nope = integer("qk_nope_head_dim", 16, maximum=512); rope = integer("qk_rope_head_dim", 8, 2, 512); value = integer("v_head_dim", 16, maximum=512)
+                if rope % 2: raise ValueError(f"{key}: qk_rope_head_dim must be even")
+                if shape[2] != embed: raise ValueError(f"{key}: embed_dim must match the input's last dimension")
+                for name, default, upper in (("rope_theta", 10000.0, 1e9), ("eps", 1e-6, 1.0)):
+                    number = p.get(name, default)
+                    if isinstance(number, bool) or not isinstance(number, (int, float)) or not isfinite(number) or not 0 < number <= upper: raise ValueError(f"{key}: {name} must be a positive number up to {upper:g}")
+                integer("causal", 1, 0, 1)
+                elements = shape[0] * heads * shape[1] * shape[1]
+                if elements > 16_000_000: raise ValueError("Attention matrix exceeds local limits")
+                activation += elements // shape[0] * 4
+                count = latent_attention_parameters(embed, heads, q_lora, kv_lora, nope, rope, value)
+            elif op == "MoE":
+                # DeepSeek-style mixture of experts over the last axis; keeps the input shape. Must
+                # mirror src/analysis.ts.
+                if len(shape) < 2: raise ValueError(f"{key}: MoE requires at least [B,F]")
+                experts = integer("experts", 8, maximum=64); top_k = integer("top_k", 2, maximum=8); shared = integer("shared_experts", 1, 0, 4)
+                hidden = integer("expert_dim", 64, maximum=16384); groups = integer("groups", 1, maximum=64); topk_groups = integer("topk_groups", 1, maximum=64)
+                bias = integer("gate_bias", 1, 0, 1)
+                if top_k > experts: raise ValueError(f"{key}: top_k cannot exceed experts")
+                if experts % groups or topk_groups > groups: raise ValueError(f"{key}: experts must split evenly into groups and topk_groups cannot exceed groups")
+                if groups > 1 and top_k > topk_groups * (experts // groups): raise ValueError(f"{key}: the chosen groups must hold at least top_k experts")
+                if groups > 1 and bias and experts // groups < 2: raise ValueError(f"{key}: a gate bias rates each group by its two best experts, so a group needs two")
+                if p.get("score_func", "sigmoid") not in MOE_SCORE_FUNCTIONS: raise ValueError(f"{key}: score_func must be softmax or sigmoid")
+                scale = p.get("route_scale", 1.0)
+                if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not isfinite(scale) or not 0 < scale <= 1000: raise ValueError(f"{key}: route_scale must be a positive number up to 1000")
+                tokens = prod(shape[:-1])
+                if tokens * (top_k + shared) * hidden > 16_000_000: raise ValueError("MoE hidden activation exceeds local limits")
+                activation += tokens // shape[0] * ((top_k + shared) * hidden * 3 + experts) * 4
+                count = moe_parameters(shape[-1], experts, shared, hidden)
             elif op in _DROPOUTS:
                 rate = p.get("p", 0.3)
                 if not isinstance(rate, (int, float)) or not isfinite(rate) or not 0 <= rate < 1: raise ValueError("Dropout must be in [0,1)")
@@ -470,6 +543,14 @@ def analyze_expanded_graph(graph):
                 factor = p.get("factor")
                 if type(factor) is not float and type(factor) is not int: raise ValueError(f"{key}: Scale requires a numeric factor")
                 if not isfinite(factor) or abs(factor) > 3.4028234663852886e38: raise ValueError(f"{key}: Scale factor is out of float32 range")
+            elif op == "CausalMask":
+                # Scores whose key comes after their query become -inf; the two position axes must be
+                # distinct, non-batch and equally long. Must mirror src/analysis.ts.
+                rank = len(shape)
+                query = integer("query_dim", -2, -rank, rank - 1) % rank
+                key_axis = integer("key_dim", -1, -rank, rank - 1) % rank
+                if query == key_axis or 0 in (query, key_axis): raise ValueError(f"{key}: CausalMask needs two distinct non-batch position axes")
+                if shape[query] != shape[key_axis]: raise ValueError(f"{key}: CausalMask query and key axes must be equally long ({shape[query]} and {shape[key_axis]})")
             elif op == "Einsum":
                 equation = p.get("equation")
                 try:

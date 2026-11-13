@@ -60,3 +60,27 @@ class TensorLabConstantMul(nn.Module):
     def forward(self, x):
         return x * TensorLabConstantAdd.broadcast(self, x, "ConstantMul")
 
+
+class TensorLabCausalMask(nn.Module):
+    """Sets every attention score whose key comes after its query to -inf, as a decoder does.
+
+    `query_dim` and `key_dim` name the two position axes of the score tensor: the last two for
+    `q @ k.transpose(-2, -1)`, others for layouts such as `bsht`. Both must be equally long. A
+    softmax over the key axis then weighs each position and the ones before it only.
+    """
+
+    def __init__(self, query_dim=-2, key_dim=-1):
+        super().__init__()
+        self.query_dim, self.key_dim = query_dim, key_dim
+
+    def forward(self, x):
+        query, key = self.query_dim % x.ndim, self.key_dim % x.ndim
+        if query == key or 0 in (query, key) or x.shape[query] != x.shape[key]:
+            raise ValueError("CausalMask needs two distinct, equally long non-batch position axes")
+        size = x.shape[query]
+        blocked = torch.ones(size, size, dtype=torch.bool, device=x.device).triu(1)
+        # `blocked` is laid out [query, key]; give it the score's rank with both axes in place.
+        shape = [1] * x.ndim
+        shape[query] = shape[key] = size
+        return x.masked_fill((blocked if query < key else blocked.T).reshape(shape), float("-inf"))
+

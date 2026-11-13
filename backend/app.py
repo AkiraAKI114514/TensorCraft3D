@@ -30,6 +30,8 @@ class TrainingConfig(BaseModel):
     validationFraction: float = Field(0.2, ge=0.1, le=0.4)
     earlyStopping: bool = True
     patience: int = Field(5, ge=3, le=30)
+    # DeepSeek-V3's auxiliary-loss-free balancing of MoE gate biases; off by default.
+    moeBalancing: bool = False
 
 
 @app.get("/api/health")
