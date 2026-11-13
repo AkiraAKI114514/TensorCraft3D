@@ -267,3 +267,40 @@ test('explains one output value as the measured inputs times weights plus the bi
   await expect(view).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+test('backpropagates one sample against a chosen class to the observed layer and its weights', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), convolution);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="layer_1"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true }), run = panel.getByRole('button', { name: '运行单样本推理', exact: true });
+  const backward = panel.getByRole('checkbox', { name: '同时反向传播一次', exact: true });
+  await expect(backward).not.toBeChecked();
+  await backward.check();
+  await panel.getByLabel('梯度目标类别', { exact: true }).selectOption('1');
+  let response = page.waitForResponse('**/api/infer'); await run.click();
+  let report = await (await response).json() as InferenceReport;
+  const gradient = report.gradient!;
+  expect(gradient).toMatchObject({ target: 1, classes: 2 });
+  expect(gradient.tensors.map(tensor => tensor.nodeId).sort()).toEqual(['layer_1', 'layer_4']);
+  // At the logits the gradient is softmax minus the one-hot target: it sums to zero.
+  const logits = gradient.tensors.find(tensor => tensor.nodeId === 'layer_4')!.slice.values[0];
+  expect(logits[0]! + logits[1]!).toBeCloseTo(0, 6);
+  expect(logits[1]!).toBeCloseTo(gradient.probability! - 1, 6);
+  expect(gradient.parameters.map(entry => [entry.name, entry.shape])).toEqual([['weight', [3, 2, 3, 3]], ['bias', [3]]]);
+  await expect(panel.locator('.tensor-gradient-summary')).toContainText('单样本梯度 · 交叉熵对类别 1');
+  await expect(panel.getByRole('region', { name: '梯度切片', exact: true })).toBeVisible();
+  await expect(panel.getByRole('region', { name: '参数梯度切片', exact: true })).toBeVisible();
+  // The values are the ones a run without the backward pass reports.
+  await panel.getByLabel('梯度目标类别', { exact: true }).selectOption('0');
+  await expect(panel.locator('.tensor-gradient')).toHaveCount(0);
+  await expect(panel.locator('.tensor-stale')).toContainText('旧快照已失效');
+  await backward.uncheck();
+  response = page.waitForResponse('**/api/infer'); await run.click();
+  const plain = await (await response).json() as InferenceReport;
+  expect(plain.gradient).toBeNull();
+  expect(plain.tensors).toEqual(report.tensors);
+  expect(errors).toEqual([]);
+});

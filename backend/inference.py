@@ -55,6 +55,13 @@ class ValueSelection(BaseModel):
     index: list[StrictInt] = Field(min_length=1, max_length=4)
 
 
+class GradientSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    # The class whose cross-entropy is backpropagated; logits have at most 256 classes.
+    target: StrictInt = Field(ge=0, le=255)
+
+
 class TensorInferenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
@@ -72,6 +79,8 @@ class TensorInferenceRequest(BaseModel):
     attention: dict[StrictStr, AttentionSelection] = Field(default_factory=dict, max_length=8)
     # One output element of a selected Linear, convolution or pooling layer, split into its terms.
     explain: ValueSelection | None = None
+    # One backward pass of the output's cross-entropy against this class.
+    gradient: GradientSelection | None = None
 
     @field_validator("nodeIds")
     @classmethod
@@ -91,8 +100,8 @@ class TensorInferenceRequest(BaseModel):
     def one_kind_of_selection(self) -> "TensorInferenceRequest":
         # Either named layers (with optional attention windows), or every layer and nothing else.
         if self.allNodes:
-            if self.nodeIds or self.attention or self.explain:
-                raise ValueError("allNodes observes every layer; leave nodeIds, attention and explain empty")
+            if self.nodeIds or self.attention or self.explain or self.gradient:
+                raise ValueError("allNodes observes every layer; leave nodeIds, attention, explain and gradient empty")
         elif not self.nodeIds:
             raise ValueError("nodeIds must name at least one node")
         return self
@@ -442,6 +451,21 @@ def _explain_scratch(explain: ValueSelection | None, info: dict[str, Any], selec
     return terms * 8 * 6
 
 
+def _validate_gradient(gradient: GradientSelection | None, info: dict[str, Any]) -> None:
+    """A backward pass needs classification logits to take the cross-entropy of, and memory for
+    every activation autograd keeps plus its gradient; both are checked before allocation."""
+    if gradient is None:
+        return
+    shape = info["shapes"][info["output"]]
+    if len(shape) != 2 or not 2 <= int(shape[1]) <= 256:
+        raise InferenceError("Gradient inspection needs classification logits [B, C] with 2-256 classes at the Output")
+    if gradient.target >= int(shape[1]):
+        raise InferenceError(f"Gradient target class must be in [0,{int(shape[1]) - 1}]")
+    # Autograd keeps what the backward pass needs of every activation, and each gets a gradient.
+    if int(info["activationBytesPerSample"]) * 3 > MAX_CAPTURE_BYTES:
+        raise InferenceError("Gradient inspection exceeds 64 MB: the backward pass keeps every activation and its gradient")
+
+
 def _validate_attention(attention: dict[str, AttentionSelection], info: dict[str, Any], selected: list[str], other_scratch: int = 0) -> None:
     by_id = {node["id"]: node for node in info["nodes"]}
     unknown = set(attention) - set(selected)
@@ -589,7 +613,7 @@ def _device_name(requested: str, torch: Any) -> str:
     return "cuda" if requested == "cuda" or (requested == "auto" and torch.cuda.is_available()) else "cpu"
 
 
-def describe_parameters(model: Any, node_id: str, slices: dict[str, list[int]], torch: Any) -> list[dict[str, Any]]:
+def describe_parameters(model: Any, node_id: str, slices: dict[str, list[int]], torch: Any, gradients: bool = False) -> list[dict[str, Any]]:
     """The weights and biases a layer runs with, each described like an activation.
 
     They come from the very module the forward pass used, so they are the weights behind the
@@ -597,6 +621,9 @@ def describe_parameters(model: Any, node_id: str, slices: dict[str, list[int]], 
     folded layer its first instance. A rank-4 convolution weight `[out, in, kh, kw]` is read like a
     feature map: the window is one filter's kernel for one input channel (leading indices, zeros
     by default) and the channel page shows that filter's kernels across input channels.
+
+    With `gradients`, each tensor is the gradient a backward pass left on that parameter instead;
+    a parameter the pass did not reach is left out. Shared weights hold the sum over every use.
     """
     from torch import nn
     owner = getattr(model, "shared", {}).get(node_id, node_id)
@@ -607,6 +634,10 @@ def describe_parameters(model: Any, node_id: str, slices: dict[str, list[int]], 
         module = module[0]
     described = []
     for name, value in list(module.named_parameters())[:MAX_PARAMETER_TENSORS]:
+        if gradients:
+            if value.grad is None:
+                continue
+            value = value.grad
         prefix_rank = max(0, value.dim() - 2)
         indices = list(slices.get(name, [0] * prefix_rank))
         if len(indices) != prefix_rank or prefix_rank > 3 or any(index < 0 or index >= size for index, size in zip(indices, value.shape)):
@@ -770,7 +801,27 @@ def _explain_value(node_id: str, op: str, module: Any, x: Any, y: Any, index: li
     }
 
 
-def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: dict[str, Any], device_name: str, selected: list[str], slices: dict[str, list[int]], attention: dict[str, AttentionSelection], torch: Any, explain: ValueSelection | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
+def _backward(output: Any, gradient: GradientSelection, selected: list[str], retained: dict[str, Any], slices: dict[str, list[int]], model: Any, torch: Any) -> dict[str, Any]:
+    """Backpropagate the cross-entropy of the [1, C] logits against the chosen class, once, and
+    describe each retained layer output's gradient like its value. The pass frees the graph."""
+    if output.dim() != 2 or int(output.shape[0]) != 1 or not 2 <= int(output.shape[1]) <= 256:
+        raise InferenceError("Gradient inspection needs classification logits [1, C] with 2-256 classes")
+    logits = output.float()
+    loss = torch.nn.functional.cross_entropy(logits, torch.tensor([gradient.target], device=logits.device))
+    if not loss.requires_grad:
+        raise InferenceError("The output depends on nothing trainable, so it has no gradient")
+    model.zero_grad(set_to_none=True)
+    loss.backward()
+    with torch.no_grad():
+        probabilities = torch.softmax(logits.detach(), dim=-1)[0]
+        tensors = [_describe(node_id, retained[node_id].grad, slices[node_id], torch) for node_id in selected if node_id in retained and retained[node_id].grad is not None]
+        return {
+            "target": gradient.target, "classes": int(logits.shape[1]), "loss": _number(loss.detach()),
+            "predicted": int(probabilities.argmax()), "probability": _number(probabilities[gradient.target]), "tensors": tensors,
+        }
+
+
+def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: dict[str, Any], device_name: str, selected: list[str], slices: dict[str, list[int]], attention: dict[str, AttentionSelection], torch: Any, explain: ValueSelection | None = None, gradient: GradientSelection | None = None) -> dict[str, Any]:
     """Run one eval forward pass and describe the selected nodes and attention windows.
 
     The inspector endpoint and the offline snapshot writer both measure through this, so a
@@ -781,6 +832,13 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
     layer's module record each call's input and output; the call the layer itself made is the
     latest one when the layer's value is observed, which holds for a layer that shares its
     owner's module and for the last instance of a folded one.
+
+    `gradient` runs the same pass with autograd instead of inference mode, then backpropagates
+    the output's cross-entropy against one class once. The model stays in eval mode, so dropout is
+    off and BatchNorm uses its running statistics, and no weight changes. Floating-point inputs
+    get a gradient too; integer IDs have none. The values are described as they are produced,
+    from detached tensors, so they equal an inference-mode run; the graph is freed by the one
+    backward pass and nothing here keeps it. Parameter gradients stay on the model for the caller.
     """
     from torch import nn
     model.to(device_name)
@@ -792,6 +850,7 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
     attention_results: dict[str, dict[str, Any]] = {}
     latest: dict[str, Any] = {}
     explained: dict[str, Any] = {}
+    retained: dict[str, Any] = {}
     hooks = []
     instances: list[Any] = []
     if explain is not None:
@@ -804,6 +863,12 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
             hooks.append(instance.register_forward_hook(lambda module, args, output, position=position: latest.update(call=(module, args[0], output, position))))
     def observe(node_id: str, value: Any) -> None:
         if node_id in wanted:
+            if gradient is not None:
+                if value.requires_grad:
+                    if not value.is_leaf:
+                        value.retain_grad()
+                    retained[node_id] = value
+                value = value.detach()
             captured[node_id] = _describe(node_id, value, slices[node_id], torch)
         if explain is not None and node_id == explain.nodeId and "call" in latest:
             explained["call"] = latest["call"]
@@ -824,16 +889,22 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
         else:
             wanted_stage = {"q": "q", "k": "k", "v": "v", "weighted": "weighted", "output": "output"}[stage]
             record[wanted_stage] = tensors[wanted_stage].detach()
-    explanation = None
+    explanation = backward = None
     try:
-        with torch.inference_mode():
-            model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if attention else None)
+        with torch.enable_grad() if gradient is not None else torch.inference_mode():
+            if gradient is not None:
+                inputs = {key: value.requires_grad_(True) if value.is_floating_point() else value for key, value in inputs.items()}
+            output = model(inputs if len(info["inputs"]) > 1 else inputs[info["inputs"][0]], observer=observe, attention_observer=observe_attention if attention else None)
+            if gradient is not None:
+                backward = _backward(output, gradient, selected, retained, slices, model, torch)
+            del output
             if explain is not None:
                 if "call" not in explained:
                     raise InferenceError(f"{explain.nodeId}: the explained layer did not run")
                 module, value_in, value_out, position = explained.pop("call")
                 op = by_id[explain.nodeId]["op"]
-                explanation = {"nodeId": explain.nodeId, "op": op, "index": list(explain.index), **_explain_value(explain.nodeId, op, module, value_in, value_out, list(explain.index), torch)}
+                with torch.no_grad():
+                    explanation = {"nodeId": explain.nodeId, "op": op, "index": list(explain.index), **_explain_value(explain.nodeId, op, module, value_in, value_out, list(explain.index), torch)}
                 edge = info["baseEdges"][explain.nodeId][0]
                 explanation.update({"inputNode": edge["source"], "inputShape": [int(size) for size in value_in.shape[1:]], "instance": position, "instances": len(instances)})
                 if owner != explain.nodeId:
@@ -842,9 +913,11 @@ def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: di
         for hook in hooks:
             hook.remove()
         latest.clear()
+        explained.clear()
+        retained.clear()
     if set(attention_results) != set(attention):
         raise InferenceError("Attention observer did not capture the selected nodes")
-    return [captured[node_id] for node_id in selected], [attention_results[node_id] for node_id in attention], explanation
+    return {"tensors": [captured[node_id] for node_id in selected], "attentions": [attention_results[node_id] for node_id in attention], "explanation": explanation, "gradient": backward}
 
 
 def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
@@ -865,6 +938,7 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
     if any(node_id not in by_id for node_id in selected):
         raise InferenceError("nodeIds must refer to graph nodes")
     _validate_attention(request.attention, info, selected, _explain_scratch(request.explain, info, selected))
+    _validate_gradient(request.gradient, info)
     slices = _resolve_slices(request.slices, info, by_id)
     device_name = _device_name(request.device, torch)
     rng_devices = [torch.cuda.current_device()] if device_name == "cuda" else []
@@ -880,10 +954,15 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         if snapshot is not None:
             model.load_state_dict(snapshot.state, strict=True)
             inputs = {key: (value - snapshot.preprocessing[key]["mean"]) / snapshot.preprocessing[key]["scale"] if key in snapshot.preprocessing else value for key, value in inputs.items()}
-        tensors, attentions, explanation = _execute(model, info, by_id, inputs, device_name, selected, slices, request.attention, torch, request.explain)
+        measured = _execute(model, info, by_id, inputs, device_name, selected, slices, request.attention, torch, request.explain, request.gradient)
         if request.parameters is not None and request.parameters not in by_id:
             raise InferenceError("parameters must name a graph node")
         parameters = describe_parameters(model, request.parameters, request.parameterSlices, torch) if request.parameters is not None else []
+        gradient = measured["gradient"]
+        if gradient is not None:
+            # The backward pass left these on the very parameters described above.
+            gradient["parameters"] = describe_parameters(model, request.parameters, request.parameterSlices, torch, gradients=True) if request.parameters is not None else []
+            model.zero_grad(set_to_none=True)
     return {
         "runId": str(uuid.uuid4()),
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -895,8 +974,9 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         "model": copy.deepcopy(snapshot.metadata) if snapshot is not None else None,
         "inputTransform": snapshot.metadata["preprocessing"] if snapshot is not None else "none",
         "mode": "eval",
-        "tensors": tensors,
-        "attentions": attentions,
+        "tensors": measured["tensors"],
+        "attentions": measured["attentions"],
         "parameters": parameters,
-        "explanation": explanation,
+        "explanation": measured["explanation"],
+        "gradient": gradient,
     }

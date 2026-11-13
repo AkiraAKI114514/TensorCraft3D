@@ -151,7 +151,8 @@ def capture_snapshot(graph: dict[str, Any], weights: Any = None, inputs: Any = N
             except RuntimeError as error:
                 # Same names, different shapes: the weights belong to another configuration.
                 raise InferenceError(f"weights do not match this graph: {str(error)[:400]}") from error
-        tensors, attentions, _ = _execute(model, info, by_id, sample, device_name, order, resolved, selections, torch)
+        measured = _execute(model, info, by_id, sample, device_name, order, resolved, selections, torch)
+        tensors, attentions = measured["tensors"], measured["attentions"]
         # The weights a run outside the workbench trained are the reason to bring it in, so every
         # layer that has any carries their summaries, at the default leading indices.
         parameters = {node_id: described for node_id in order if (described := describe_parameters(model, node_id, {}, torch))}

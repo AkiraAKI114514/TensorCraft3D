@@ -135,6 +135,21 @@ export interface ValueExplanation {
   owner?: string;
 }
 
+/**
+ * One backward pass of the cross-entropy between the output logits and `target`, in eval mode.
+ * `tensors` are the gradients of the captured layer outputs (a layer whose output has none, such
+ * as integer IDs, is absent) and `parameters` those of the requested layer's weights and biases.
+ */
+export interface GradientReport {
+  target: number;
+  classes: number;
+  loss: number | null;
+  predicted: number;
+  probability: number | null;
+  tensors: TensorSnapshot[];
+  parameters: ParameterSnapshot[];
+}
+
 export interface InferenceReport {
   runId: string;
   createdAt: string;
@@ -152,6 +167,8 @@ export interface InferenceReport {
   parameters?: ParameterSnapshot[];
   /** The requested output value, split into its terms; null when none was requested. */
   explanation?: ValueExplanation | null;
+  /** Gradients of the requested backward pass; null when none was requested. */
+  gradient?: GradientReport | null;
 }
 
 export function tensorNumber(value: number | null) {

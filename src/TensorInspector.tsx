@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Box, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
 import { isGroup, type Graph } from './types';
 import { useI18n } from './i18n';
-import type { AttentionSelection, InferenceReport, ParameterSnapshot } from './inferenceTypes';
+import { tensorNumber, type AttentionSelection, type InferenceReport, type ParameterSnapshot } from './inferenceTypes';
 import TensorReadout from './TensorReadout';
 import { MAX_OBSERVATION_BYTES, ObservationSnapshotError, parseObservationSnapshot, snapshotMatches, withChannel, type ObservationSnapshot } from './observationSnapshot';
 import type { TrainedModelMetadata } from './trainedModel';
@@ -74,12 +74,19 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
     const next = [...explainIndex]; next[axis] = value;
     setExplainIndices(previous => ({ ...previous, [observedId]: next }));
   };
+  // One backward pass of the output's cross-entropy against a chosen class; classifiers only.
+  const [gradientOn, setGradientOn] = useState(false), [gradientTarget, setGradientTarget] = useState(0);
+  const outputId = graph.nodes.find(layer => layer.op === 'Output')?.id;
+  const outputShape = outputId ? layers[outputId]?.output : undefined;
+  const classes = outputShape?.length === 2 && outputShape[1] >= 2 && outputShape[1] <= 256 ? outputShape[1] : 0;
+  const gradientRequested = gradientOn && classes > 0;
+  const gradientValid = !gradientRequested || Number.isInteger(gradientTarget) && gradientTarget >= 0 && gradientTarget < classes;
   const chooseInstance = (key: string, index: number) => setInstances(previous => ({ ...previous, [key]: index }));
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const requesting = useRef(false), controller = useRef<AbortController | null>(null), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
-  useEffect(() => { setIndices({}); setAttentionSelections({}); setParameterIndices({}); setExplainIndices({}); setError(''); }, [graph]);
-  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, parameterIndices, explainIndices });
+  useEffect(() => { setIndices({}); setAttentionSelections({}); setParameterIndices({}); setExplainIndices({}); setGradientTarget(0); setError(''); }, [graph]);
+  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, parameterIndices, explainIndices, gradient: gradientRequested ? gradientTarget : null });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
   const previousSnapshot = result?.graph === graph && observedId ? result.report.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineTensor = offlineBound && offline && observedId ? offline.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
@@ -87,6 +94,8 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const snapshot = live ? (current ? previousSnapshot : undefined) : offlineTensor && (offlineChannel === undefined ? offlineTensor : withChannel(offlineTensor, offlineChannel));
   const attentionSnapshot = !observedId ? undefined : live ? (current ? result.report.attentions?.find(value => value.nodeId === observedId) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === observedId) : undefined;
   const explanation = live && current && observedId && result.report.explanation?.nodeId === observedId ? result.report.explanation : undefined;
+  const gradientReport = live && current ? result.report.gradient ?? undefined : undefined;
+  const gradientSnapshot = gradientReport && observedId ? gradientReport.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   // What the views below show comes from one run or one file; a new one remounts them.
   const viewKey = live ? result?.report.runId ?? '' : offline?.snapshotId ?? '';
   // The observed layer's weights and biases: shown from a current run or a bound snapshot; the
@@ -100,6 +109,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const parameterShown = parameterList.find(entry => entry.name === parameterName);
   const parameter = parameterShown && !live && offlineParameterChannels[parameterKey] !== undefined ? withChannel(parameterShown, offlineParameterChannels[parameterKey]) : parameterShown;
   const parameterOwner = parameter?.owner ? runtime?.nodes.find(layer => layer.id === parameter.owner)?.name ?? parameter.owner : null;
+  const parameterGradient = gradientReport && parameter ? gradientReport.parameters.find(entry => entry.name === parameter.name) : undefined;
   const changeParameterIndex = (axis: number, value: number) => {
     if (!parameterControl || !parameterKey) return;
     const next = [...(parameterIndices[parameterKey] ?? parameterControl.slice.indices)]; next[axis] = value;
@@ -118,7 +128,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   // `everyLayer` observes every executed layer at once and hands the result to the 3D view; it
   // needs no selected layer and takes no attention window.
   const run = async (everyLayer = false) => {
-    if (requesting.current || blocked || !ready || !valid || !weightsAvailable || (!everyLayer && (!observedId || !attentionValid || !explainValid))) return;
+    if (requesting.current || blocked || !ready || !valid || !weightsAvailable || (!everyLayer && (!observedId || !attentionValid || !explainValid || !gradientValid))) return;
     requesting.current = true; setBusy(true); setError(''); onBusy(true);
     controller.current = new AbortController();
     try {
@@ -144,7 +154,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.current.signal,
         body: JSON.stringify(everyLayer
           ? { graph, allNodes: true, seed, device, modelId, inputs, slices: Object.fromEntries(sliced), ...weights }
-          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced), ...weights, explain: explainShape ? { nodeId: observedId, index: explainIndex } : undefined })
+          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced), ...weights, explain: explainShape ? { nodeId: observedId, index: explainIndex } : undefined, gradient: gradientRequested ? { target: gradientTarget } : undefined })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `单样本推理失败 (${response.status})`);
@@ -209,7 +219,12 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
       })}</div>
       <p className="tensor-note">{t('运行时把这个输出元素拆成实测的各项：Linear 与卷积是输入 × 权重再加偏置，池化是窗口内的平均或最大值。修改位置后需重新运行。')}</p>
     </div>}
-    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !explainValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
+    {classes > 0 && <div className="gradient-controls"><h3>{t('单样本梯度')}</h3>
+      <label className="checkbox-label"><input type="checkbox" checked={gradientOn} disabled={busy} onChange={e => setGradientOn(e.target.checked)} />{t('同时反向传播一次')}</label>
+      {gradientOn && <label className="field-label">{t('目标类别')}<select aria-label={t('梯度目标类别')} value={gradientTarget} disabled={busy} onChange={e => setGradientTarget(Number(e.target.value))}>{Array.from({ length: classes }, (_, index) => <option key={index} value={index}>{index}</option>)}</select></label>}
+      <p className="tensor-note">{t('对输出 logits 与所选类别的交叉熵做一次反向传播，显示这一层输出与权重的梯度。eval 模式：dropout 关闭，BatchNorm 用运行统计；不更新权重，也不保留计算图。序列的梯度按位置显示，不是 token 梯度。')}</p>
+    </div>}
+    <button className="button primary wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !attentionValid || !explainValid || !gradientValid || !observedId || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run()}>{busy ? <LoaderCircle size={14} className="spin" /> : <Activity size={14} />}{busy ? t('单样本推理中') : t('运行单样本推理')}</button>
     {onSceneObservation && <button className="button subtle wide" disabled={busy || blocked || !ready || !valid || !weightsAvailable || !Number.isInteger(seed) || seed < 0 || seed > 2147483647} onClick={() => void run(true)}><Box size={14} />{t('观测全部层，画到三维视图')}</button>}
     <p className="tensor-note">{node ? t('采样 {name} 与模型输出；修改切片后需重新运行。', { name: node.name }) : t('请在三维视图或拓扑图中选择一层。')}{t('训练或环境检查期间不可运行。')}</p>
     {error && <div className="diagnostic-item error" role="alert"><TriangleAlert size={15} /><p>{t(error)}</p></div>}
@@ -250,6 +265,12 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
     {!live && offlineBound && node && !snapshot && <p className="tensor-note">{t('快照里没有这一层的观测。')}</p>}
     {snapshot && <div className="tensor-activation"><TensorReadout title={`${node?.name} · ${t('实测输出')}`} snapshot={snapshot} viewKey={viewKey + snapshot.nodeId} tableLabel={t('实测张量切片')} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeIndex(1, channel) : setOfflineChannels(previous => ({ ...previous, [snapshot.nodeId]: channel }))} /></div>}
     {explanation && <ValueExplanationView key={viewKey + explanation.nodeId} explanation={explanation} layer={node?.name ?? explanation.nodeId} input={runtime?.nodes.find(layer => layer.id === explanation.inputNode)?.name ?? explanation.inputNode} />}
+    {gradientReport && observedId && <div className="tensor-gradient">
+      <div className="tensor-gradient-summary" role="status"><strong>{t('单样本梯度 · 交叉熵对类别 {target}', { target: gradientReport.target })}</strong><span>{t('损失 {loss} · 预测类别 {predicted} · 目标类别概率 {probability}', { loss: t(tensorNumber(gradientReport.loss)), predicted: gradientReport.predicted, probability: gradientReport.probability === null ? t('非有限值') : `${(gradientReport.probability * 100).toFixed(1)}%` })}</span></div>
+      {gradientSnapshot
+        ? <TensorReadout title={`${node?.name} · ${t('输出的梯度 ∂L/∂y')}`} snapshot={gradientSnapshot} viewKey={`${viewKey}gradient${gradientSnapshot.nodeId}`} tableLabel={t('梯度切片')} disabled={busy} rerun onSelectChannel={channel => changeIndex(1, channel)} />
+        : <p className="tensor-note">{t('这一层的输出没有梯度：它是整数 ID 输入，或不在通往输出的计算路径上。')}</p>}
+    </div>}
     {parameterOptions.length > 0 && <div className="tensor-parameters">
       <div className="inspector-section"><h3>{t('权重与偏置')}<span>{live ? (result?.report.weights === 'trained' ? t('本地训练') : t('随机初始化（不是已训练模型）')) : offline?.weights === 'external' ? t('外部进程加载的权重') : t('随机初始化（不是已训练模型）')}</span></h3>
         <label className="field-label">{t('参数张量')}<select aria-label={t('查看的参数张量')} value={parameterName} disabled={busy} onChange={e => { if (observedId) setParameterChoice(previous => ({ ...previous, [observedId]: e.target.value })); }}>{parameterOptions.map(entry => <option key={entry.name} value={entry.name}>{`${entry.name} · [${entry.shape.join(', ')}]`}</option>)}</select></label>
@@ -258,6 +279,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
         <p className="tensor-note">{t('来自这次运行所用的同一个模型。修改滤波器或输入通道后需重新运行。')}</p>
       </div>
       {parameter && <TensorReadout title={t('{name} · 参数', { name: parameter.name })} snapshot={parameter} subject="parameter" viewKey={`${viewKey}${parameterKey}`} tableLabel={t('参数切片')} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeParameterIndex(1, channel) : setOfflineParameterChannels(previous => ({ ...previous, [parameterKey]: channel }))} />}
+      {parameterGradient && <div className="tensor-gradient"><TensorReadout title={t('{name} · 梯度 ∂L/∂W', { name: parameterGradient.name })} snapshot={parameterGradient} subject="parameter" viewKey={`${viewKey}${parameterKey}gradient`} tableLabel={t('参数梯度切片')} disabled={busy} rerun onSelectChannel={channel => changeParameterIndex(1, channel)} /></div>}
     </div>}
   </section>;
 }

@@ -51,6 +51,21 @@ describe('tensor observation presentation', () => {
     expect(markup).not.toContain('当前计算图没有已确认的训练权重');
   });
 
+  it('offers one backward pass only for a classifier, off by default and labelled as eval-mode', () => {
+    const classifier = renderToStaticMarkup(<TensorInspector graph={PRESETS.mlp()} selected="layer_1" active ready cuda={false} valid blocked={false} onBusy={() => {}} />);
+    expect(classifier).toContain('单样本梯度');
+    expect(classifier).toContain('同时反向传播一次');
+    expect(classifier).not.toContain('checked=""');
+    // The class picker appears once the pass is switched on.
+    expect(classifier).not.toContain('梯度目标类别');
+    expect(classifier).toContain('不是 token 梯度');
+    // A model whose output is not [B, C] logits has nothing to take a cross-entropy of.
+    const regression = PRESETS.mlp();
+    [...regression.nodes].reverse().find(layer => layer.op === 'Linear')!.params.out_features = 1;
+    const markup = renderToStaticMarkup(<TensorInspector graph={regression} selected="layer_1" active ready cuda={false} valid blocked={false} onBusy={() => {}} />);
+    expect(markup).not.toContain('同时反向传播一次');
+  });
+
   it('does not enable trained inference on a backend without the capability', () => {
     const markup = renderToStaticMarkup(<TensorInspector graph={PRESETS.mlp()} trainedModel={trainedModel} selected="layer_1" active ready cuda={false} valid blocked={false} onBusy={() => {}} />);
     expect(markup).toContain('后端暂不支持训练权重推理');
