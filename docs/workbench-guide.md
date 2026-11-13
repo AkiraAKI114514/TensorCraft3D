@@ -118,6 +118,40 @@ node scripts/record-readme-demo.mjs
 
 One polygon is drawn per shared K/V group, with all Q vertices that use that K/V placed in the same face; K and V are each drawn once, with no extra floating shared layer. The number of sides equals the number of queries in the group plus 2: a single query gives a triangle; MQA's 4 queries sharing one K/V give a hexagon; GQA's 8 queries over 2 K/V groups give two hexagons. `qkv_count` has been removed from the parameters panel, and the field is ignored in older projects. Groups are stacked along the data-flow X axis in the same direction, with attention heads computing in parallel; multiple branches are displayed separately per branch. Each query has its own softmax and V-weighting path, and the shared K/V connect directly to those compute nodes. The Transformer continues to show LN, FFN and the two pink residual paths. Rotation stops on selection or hover; once per-vertex connections are configured, the polygon orientation is fixed so that external particles stay aligned with the vertices. PNG / SVG share the same geometry and port layout as the scene. In image export, heads that split one shared input into Q/K/V subspaces are drawn as a stepped stack instead of side by side: every face keeps its full size, the front face shows the Q/K/V detail and the head range (e.g. `H1–H8`), and each face behind it shows only a stepped edge, with a `×N` count. A head whose own Q/K/V port is wired to another layer keeps its own column, and branches are never stacked together.
 
+### Multi-head Latent Attention
+
+`LatentAttention` is the Multi-head Latent Attention (MLA) of DeepSeek-V2/V3, computed the way DeepSeek-V3's reference `inference/model.py` does without a KV cache. It is a separate operator from `MultiHeadAttention`: it takes one `[B,S,E]` input and returns the same shape, and it has no Q/K/V ports.
+
+- **Query path:** `q_lora_rank` > 0 sends the query through a low-rank latent (Linear → RMSNorm → Linear); 0 projects it directly.
+- **K/V path:** keys and values share one latent of width `kv_lora_rank` (Linear → RMSNorm → Linear).
+- **Head layout:** each head's query and key join a position-free part (`qk_nope_head_dim`) and a rotary part (`qk_rope_head_dim`, even). The rotary key part comes from the input directly and every head shares it. Values are `v_head_dim` wide per head.
+- **Rotary encoding:** adjacent pairs of the rotary part turn by position as complex numbers, with base `rope_theta`. YaRN long-context scaling is not modelled.
+- **Scores and mask:** scores are scaled by `(qk_nope_head_dim + qk_rope_head_dim)^-0.5`. `causal` is on by default, as in a decoder; RMSNorm uses `eps`.
+- **Weights:** no projection has a bias, so the parameter count is exactly the projections and the two RMSNorm weights.
+
+In the 3D view the layer is a waist: the input, the K/V latent (its height is `kv_lora_rank` over `embed_dim`) and the output. Measured values paint the output part. The Attention Inspector reads it like any attention layer, one head at a time: Q and K are the joined position-free and rotary parts after the latent is expanded, and the probabilities are recomputed from them with the same scale and mask. The Python export embeds the `TensorLabLatentAttention` runtime, and source import recognises that helper.
+
+### Mixture of experts
+
+`MoE` is DeepSeek-V3's mixture-of-experts layer, as its reference `inference/model.py` computes it on one device. It works on the last axis of any input of rank 2 or more and returns the same shape, so it can replace a feed-forward block.
+
+- **Routing:** the gate scores every token against `experts` routed experts (1–64), with `score_func` `sigmoid` (DeepSeek-V3) or `softmax` (DeepSeek-V2). Each token keeps its `top_k` best (1–8) and adds those experts' outputs weighted by its scores. With `sigmoid` the kept scores are renormalised to sum to 1. Every weight is then multiplied by `route_scale`.
+- **Groups:** with `groups` > 1 the experts split evenly into groups. Only the best `topk_groups` groups stay eligible: a group is rated by its best score, or by its two best when the gate has a bias.
+- **Experts:** every expert is a bias-free SwiGLU (`w2(silu(w1 x) * w3 x)`) `expert_dim` wide. `shared_experts` (0–4) shared experts see every token; like DeepSeek's, they are one SwiGLU `shared_experts × expert_dim` wide.
+- **Gate bias:** `gate_bias` gives the gate a per-expert bias that changes which experts are chosen, never their weights. It is a buffer, not a trained parameter, and starts at zero. Turning on **MoE balancing** in the training settings applies DeepSeek-V3's auxiliary-loss-free balancing: after every step each bias moves by 0.001 against its expert's load, up when the expert received fewer tokens than the average and down when it received more. The switch is off by default and only appears when a layer has a gate bias.
+- **Parameters:** the parameter count is the gate matrix plus three matrices per expert and for the shared experts.
+
+The 3D view draws the gate (its grid is positions by experts), one bar per routed expert (past 16, each bar stands for a run of experts), the shared experts and the output, inside the layer's footprint. The Python export embeds the `TensorLabMoE` runtime, and source import recognises that helper.
+
+**Observing the routing.** When the Tensor Inspector observes an MoE layer, the single-sample run also reports how the layer routed that sample. A position here is one row the layer routes; without tokenizer metadata the workbench does not call it a token.
+
+- **Expert load:** how many positions each routed expert received, as one bar per expert with the average dashed. It always covers every expert and adds up to positions × `top_k`.
+- **Routing weights:** the weight each position gave each expert, 0 where it chose another.
+- **Gate scores:** the gate's scores before the bias was added.
+- **Chosen experts:** the experts each windowed position kept.
+
+The two matrices show a window of at most 16 positions × 16 experts, chosen with **Position start** and **Expert start**; moving the window needs a rerun. Observing every layer for the 3D view carries the routing too, and the expert bars are then shaded by load, from pale (no positions) to the full colour (the busiest bar). Offline snapshots record every MoE layer's routing at the top-left window.
+
 Clicking a 3D Q/K/V cube centres it and opens that object's connection configuration, and it can also be selected from the "Q/K/V objects" selector in the properties panel. Each vertex inherits the model layer's inputs by default (for Cross-Attention, Q inherits Query and K/V inherit Context); specifying an upstream object overrides the corresponding projection source, and deleting the override connection restores the default source. A vertex outputs a real projected tensor `[B,S,E/num_heads]` and can connect to other model layers or to the input ports of other Q/K/V objects. All vertex inputs require `[B,S,E]`; a query's sequence length must match the layer's Query, and within a branch all K/V must share a sequence length. The Transformer's Q and self-attention overrides also pass through LN. Each projection port takes at most one specified input, while outputs can fan out to multiple objects. A complete model still needs a base input, and the Transformer's residual comes from the base Query.
 
 Project connections store vertex ports via `sourcePort` / `targetPort`, for example `{"source":"memory","target":"attention","targetPort":"b0:k0"}` specifies the input of K1 in the first branch; `{"source":"attention","sourcePort":"b0:q0","target":"flatten"}` passes the projected Q1 of the first branch to Flatten. The same pair of model layers can be connected multiple times through different ports. Training, shape validation and standalone Python export all use the same connection semantics.

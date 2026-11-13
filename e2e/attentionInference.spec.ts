@@ -166,6 +166,39 @@ test('turns the causal mask on in the properties panel and observes it in the ex
   expect(errors).toEqual([]);
 });
 
+test('reads every head of a latent attention layer, masked like a decoder', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const layer = (id: string, op: string, params: Record<string, unknown>, x: number) => ({ id, name: id, op, params, position: { x, y: 100 } });
+  // `layer_1` is the layer the workbench selects on load, so the inspector observes the MLA.
+  const latent = {
+    version: 1, name: 'Latent fixture',
+    nodes: [layer('layer_0', 'Input', { shape: [1, 12, 32] }, 0), layer('layer_1', 'LatentAttention', { embed_dim: 32, num_heads: 4, q_lora_rank: 16, kv_lora_rank: 8, qk_nope_head_dim: 8, qk_rope_head_dim: 4, v_head_dim: 8, rope_theta: 10000, causal: 1, eps: 1e-6 }, 210), layer('layer_2', 'Flatten', {}, 420), layer('layer_3', 'Linear', { out_features: 3 }, 630), layer('layer_4', 'Output', {}, 840)],
+    edges: [0, 1, 2, 3].map(i => ({ id: `e${i}`, source: `layer_${i}`, target: `layer_${i + 1}` }))
+  };
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), latent);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await expect(page.locator('.scene-legend')).toContainText('MLA');
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  // MLA is its own operator, but the inspector offers its heads like any attention layer's.
+  await expect(panel.getByLabel('Attention Head').locator('option')).toHaveCount(4);
+  const response = page.waitForResponse('**/api/infer');
+  await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
+  const item = (await waitForReport(await response)).attentions[0];
+  expect([item.numHeads, item.kvHeads, item.branches, item.headDim]).toEqual([4, 4, 1, 12]);
+  expect(item.mask).toBe('causal');
+  // Q/K heads are the position-free part plus the rotary part (8 + 4); V heads are 8 wide.
+  expect(item.tensors.q.shape).toEqual([12, 12]); expect(item.tensors.v.shape).toEqual([12, 8]);
+  item.tensors.probabilities.slice.values.forEach((row, query) => row.forEach((value, key) => { if (key > query) expect(value).toBe(0); }));
+  const attention = panel.getByRole('region', { name: 'Attention Inspector', exact: true });
+  await expect(attention.locator('.head-overview').getByRole('group', { name: '全部 Head', exact: true }).getByRole('button')).toHaveCount(4);
+  await page.getByRole('button', { name: '导出代码', exact: true }).click();
+  await expect(page.locator('.code-preview, pre').first()).toContainText('TensorLabLatentAttention(embed_dim=32');
+  expect(errors).toEqual([]);
+});
+
 test('keeps attention requests bounded and reports resource errors without a silent fallback', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '张量观测', exact: true }).click();
