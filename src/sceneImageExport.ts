@@ -46,6 +46,16 @@ const BLOCK_LAYOUT_SCALE = 1.6;
 const BLOCK_SCALE = 2;
 const ATTENTION_SCALE = 1.12;
 const scaled = (dimensions: Point3, scale = BLOCK_SCALE) => dimensions.map(value => value * scale) as Point3;
+
+// The 3D view's key light and sky/ground fill (Scene.tsx). Layer blocks are opaque, so a flat
+// fill would draw each one as a single-coloured silhouette; shading every face the way the
+// lights do keeps three tones of the block's one colour.
+const KEY_LIGHT = new THREE.Vector3(9, 16, 11).normalize();
+function shadedFill(color: THREE.Color, points: THREE.Vector3[]) {
+  const normal = new THREE.Vector3().subVectors(points[1], points[0]).cross(new THREE.Vector3().subVectors(points[2], points[0])).normalize();
+  const shade = 0.74 + 0.16 * (normal.y * 0.5 + 0.5) + 0.2 * Math.max(0, normal.dot(KEY_LIGHT));
+  return `#${color.clone().multiplyScalar(shade).getHexString()}`;
+}
 const layoutDimensions = (source: ExportSource) => Object.fromEntries(source.graph.nodes.map(node => [node.id, isAttention(node.op) ? attentionLayout(node, source.expanded, true, exportStacks(source.graph, node)).dimensions : scaled(source.dimensions[node.id], BLOCK_LAYOUT_SCALE)]));
 
 function prepareImage(source: ExportSource, width: number, options: ImageExportOptions): PreparedImage {
@@ -271,10 +281,21 @@ export function exportSceneSvg(source: ExportSource, width: number, options = DE
         const positions = object.geometry.getAttribute('position'), indices = object.geometry.index, material = object.material as THREE.MeshStandardMaterial;
         const center = project(object.getWorldPosition(new THREE.Vector3()));
         const identity = ` data-part="${escape(object.userData.exportPart || 'mesh')}" data-center-x="${center[0]}" data-center-y="${center[1]}"${object.userData.exportSides ? ` data-sides="${object.userData.exportSides}"` : ''}`;
-        for (let i = 0; i < (indices?.count ?? positions.count); i += 3) {
-          const points = [0, 1, 2].map(offset => new THREE.Vector3().fromBufferAttribute(positions, indices ? indices.getX(i + offset) : i + offset).applyMatrix4(object.matrixWorld));
-          const depth = points.reduce((sum, p) => sum + p.clone().applyMatrix4(image.camera.matrixWorldInverse).z, 0) / 3;
-          polygons.push({ depth, text: `<polygon${identity} points="${points.map(p => project(p).join(',')).join(' ')}" fill="#${material.color.getHexString()}" fill-opacity="${material.opacity}" stroke="#${material.color.getHexString()}" stroke-width="0.4"/>` });
+        const count = indices?.count ?? positions.count, solid = Boolean(object.userData.exportShade);
+        const index = (k: number) => indices ? indices.getX(k) : k;
+        const vertex = (k: number) => new THREE.Vector3().fromBufferAttribute(positions, index(k)).applyMatrix4(object.matrixWorld);
+        for (let i = 0; i < count; i += 3) {
+          let points = [0, 1, 2].map(offset => vertex(i + offset));
+          // A solid block shows only the faces turned toward the camera. Drawing its back faces as
+          // well let the depth sort put one over a front face, as a dark triangle. Its outline is
+          // the same either way, since a box's silhouette is made of its front faces.
+          if (solid && new THREE.Vector3().subVectors(points[1], points[0]).cross(new THREE.Vector3().subVectors(points[2], points[0])).transformDirection(image.camera.matrixWorldInverse).z <= 0) continue;
+          // A box face is the triangles (a, b, d) and (b, c, d). As one quad, the anti-aliased seam
+          // along their shared diagonal no longer shows through an opaque fill.
+          if (solid && i + 5 < count && index(i + 1) === index(i + 3) && index(i + 2) === index(i + 5)) { points = [points[0], points[1], vertex(i + 4), points[2]]; i += 3; }
+          const depth = points.reduce((sum, p) => sum + p.clone().applyMatrix4(image.camera.matrixWorldInverse).z, 0) / points.length;
+          const fill = solid ? shadedFill(material.color, points) : `#${material.color.getHexString()}`;
+          polygons.push({ depth, text: `<polygon${identity} points="${points.map(p => project(p).join(',')).join(' ')}" fill="${fill}" fill-opacity="${material.opacity}" stroke="${fill}" stroke-width="0.4"/>` });
         }
       }
     });

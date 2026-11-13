@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
@@ -60,14 +60,37 @@ function boxCorners(box: THREE.Box3) {
   return Array.from({ length: 8 }, (_, i) => new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z));
 }
 
-function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: number, height: number) {
+// The canvas area the model is framed in, in CSS pixels: the title block sits above it, the
+// legend and the playback bar below.
+const SAFE_AREA = { top: 112, bottom: 72, left: 28, right: 28 };
+
+/**
+ * Fit the camera to `bounds`.
+ *
+ * A focused part (no `overview` target) stays exactly at the centre of the canvas, which is what
+ * clicking it promises, so the zoom is fitted around the orbit target.
+ *
+ * The whole-model overview pans instead: it zooms so the projected bounds fill the safe area,
+ * then moves camera and orbit target together so the bounds sit in its middle. Fitting the
+ * actual extent, rather than one mirrored around the target, keeps a model with a residual loop
+ * on one side from being drawn half size, and keeps its first blocks clear of the title.
+ */
+function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: number, height: number, overview?: THREE.Vector3) {
   camera.updateMatrixWorld(true);
   const view = new THREE.Box3().setFromPoints(boxCorners(bounds).map(p => p.applyMatrix4(camera.matrixWorldInverse)));
-  // Fit around the orbit target even when residual branches lie on one side.
-  const dimensions = new THREE.Vector2(2 * Math.max(Math.abs(view.min.x), Math.abs(view.max.x)), 2 * Math.max(Math.abs(view.min.y), Math.abs(view.max.y)));
-  // Leave room for the scene title and the bottom playback controls.
-  camera.zoom = Math.min(Math.max(100, width - 70) / (dimensions.x + 1.5), Math.max(100, height - 145) / (dimensions.y + 1), 110);
-  camera.updateProjectionMatrix();
+  if (!overview) {
+    const dimensions = new THREE.Vector2(2 * Math.max(Math.abs(view.min.x), Math.abs(view.max.x)), 2 * Math.max(Math.abs(view.min.y), Math.abs(view.max.y)));
+    // Leave room for the scene title and the bottom playback controls.
+    camera.zoom = Math.min(Math.max(100, width - 70) / (dimensions.x + 1.5), Math.max(100, height - 145) / (dimensions.y + 1), 110);
+    camera.updateProjectionMatrix();
+    return;
+  }
+  const extent = view.getSize(new THREE.Vector3()), center = view.getCenter(new THREE.Vector3());
+  const safeWidth = Math.max(100, width - SAFE_AREA.left - SAFE_AREA.right), safeHeight = Math.max(100, height - SAFE_AREA.top - SAFE_AREA.bottom);
+  camera.zoom = Math.min(safeWidth / (extent.x + 0.8), safeHeight / (extent.y + 0.6), 110);
+  const shift = new THREE.Vector3(center.x - (SAFE_AREA.left - SAFE_AREA.right) / 2 / camera.zoom, center.y - (SAFE_AREA.bottom - SAFE_AREA.top) / 2 / camera.zoom, 0).applyQuaternion(camera.quaternion);
+  camera.position.add(shift); overview.add(shift);
+  camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
 }
 
 // 盒子轮廓的边几何体必须缓存：写在 JSX 里的 new THREE.BoxGeometry(...dims) 会在每次渲染时
@@ -75,13 +98,45 @@ function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: 
 function NodeOutline({ dims, color }: { dims: [number, number, number]; color: string }) {
   const geometry = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(dims[0], dims[1], dims[2])), [dims[0], dims[1], dims[2]]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={0.85} /></lineSegments>;
+  return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={0.9} /></lineSegments>;
+}
+
+/** The block's own hue, darker: edges that read as the block's, not as a second colour. */
+const edgeTone = (color: string) => `#${new THREE.Color(color).multiplyScalar(0.62).getHexString()}`;
+
+const GROUND_Y = -0.09;
+let shadowTexture: THREE.CanvasTexture | null = null;
+/** One soft radial falloff shared by every shadow; its green channel is read as alpha. */
+function groundShadowTexture() {
+  if (shadowTexture) return shadowTexture;
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
+  const context = canvas.getContext('2d')!, gradient = context.createRadialGradient(64, 64, 6, 64, 64, 63);
+  gradient.addColorStop(0, '#ffffff'); gradient.addColorStop(0.45, '#8c8c8c'); gradient.addColorStop(1, '#000000');
+  context.fillStyle = gradient; context.fillRect(0, 0, 128, 128);
+  shadowTexture = new THREE.CanvasTexture(canvas);
+  return shadowTexture;
+}
+
+/**
+ * A soft shadow on the ground under a block, so the model reads as standing in space rather than
+ * floating. It is decoration only: not clickable, not part of the image export's geometry, and
+ * edge-on (invisible) in the straight-on compact export.
+ */
+function GroundShadow({ width, depth, lift }: { width: number; depth: number; lift: number }) {
+  const texture = useMemo(groundShadowTexture, []);
+  // Higher above the ground, wider and fainter, the way a contact shadow behaves.
+  const spread = 1.3 + Math.min(lift, 6) * 0.08, opacity = Math.max(0.1, 0.26 - Math.min(lift, 6) * 0.025);
+  return <mesh raycast={() => {}} rotation={[-Math.PI / 2, 0, 0]} position={[0, -lift, 0]} renderOrder={-1}>
+    <planeGeometry args={[width * spread + 0.4, depth * spread + 0.4]} />
+    <meshBasicMaterial color="#3f5c67" alphaMap={texture} transparent opacity={opacity} depthWrite={false} />
+  </mesh>;
 }
 
 // 每节点一个 <Html> 标签是最重的成本：它们不受 three.js 视锥剔除约束，节点一多就
 // 全是常驻 DOM。按缩放分三档，远景只留骨架，这是「低缩放聚合」的渲染侧。
 type Detail = 'far' | 'mid' | 'near';
-const DETAIL_THRESHOLDS: [number, number] = [16, 42];
+// The default framing of a template lands around zoom 35–45; every layer keeps its label there.
+const DETAIL_THRESHOLDS: [number, number] = [16, 32];
 
 function useDetailTier(): Detail {
   const camera = useThree(state => state.camera);
@@ -102,6 +157,28 @@ function labelVisible(node: Layer, tier: Detail, selectedId: string | null, hove
   if (node.op === 'Group' || node.op === 'Input' || node.op === 'Output') return true;
   if (node.id === selectedId || node.id === hovered) return true;
   return tier === 'mid' && repeatOf(node) > 1;
+}
+
+/**
+ * Hide the labels that would cover a more important one. A few times a second, the labels are
+ * placed greedily by priority and graph order, and one that overlaps an already placed label is
+ * hidden until zooming in makes room. Along a chain this keeps every other label, spread evenly,
+ * instead of a staircase of pills covering each other's shapes.
+ */
+function useLabelDeclutter(labels: RefObject<Map<string, HTMLDivElement>>, rank: (id: string) => number) {
+  const frame = useRef(0);
+  useFrame(() => {
+    if (++frame.current % 8) return;
+    const placed: DOMRect[] = [];
+    const ordered = [...labels.current.entries()].sort(([a], [b]) => rank(a) - rank(b));
+    for (const [, element] of ordered) {
+      const box = element.getBoundingClientRect();
+      const blocked = placed.some(other => box.left < other.right + 3 && box.right > other.left - 3 && box.top < other.bottom + 2 && box.bottom > other.top - 2);
+      // An attribute rather than a class: React owns className and rewrites it on re-render.
+      element.toggleAttribute('data-decluttered', blocked);
+      if (!blocked) placed.push(box);
+    }
+  });
 }
 
 function World(props: Props) {
@@ -150,6 +227,14 @@ function World(props: Props) {
   }, [props.graph, props.analysis, props.expanded, positions, routes]);
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
+  // Selected first, then hovered, then the skeleton (inputs, outputs, blocks), then graph order.
+  const labelElements = useRef(new Map<string, HTMLDivElement>());
+  const labelOrder = useMemo(() => new Map(props.graph.nodes.map((node, index) => [node.id, { index, skeleton: node.op === 'Input' || node.op === 'Output' || node.op === 'Group' }])), [props.graph]);
+  useLabelDeclutter(labelElements, id => {
+    const entry = labelOrder.get(id);
+    const tier = id === props.selected ? 0 : id === hover ? 1 : entry?.skeleton ? 2 : 3;
+    return tier * 100000 + (entry?.index ?? 99999);
+  });
   const centerView = (center: THREE.Vector3, dimensions: THREE.Vector3, offset: THREE.Vector3, bounds?: THREE.Box3) => {
     camera.position.copy(center.clone().add(offset)); camera.lookAt(center);
     if (controls.current) { controls.current.target.copy(center); controls.current.update(); }
@@ -178,8 +263,9 @@ function World(props: Props) {
     const reset = () => {
       const center = bounds.getCenter(new THREE.Vector3());
       camera.position.copy(center.clone().add(attentionView ? new THREE.Vector3(14, 8, 26) : new THREE.Vector3(15, 9, 18))); camera.lookAt(center);
-      if (controls.current) { controls.current.target.copy(center); controls.current.update(); }
-      fitCamera(camera as THREE.OrthographicCamera, bounds, size.width, size.height);
+      const target = center.clone();
+      fitCamera(camera as THREE.OrthographicCamera, bounds, size.width, size.height, target);
+      if (controls.current) { controls.current.target.copy(target); controls.current.update(); }
     };
     reset();
     const exportSource = { scene, camera: camera as THREE.OrthographicCamera, graph: props.graph, analysis: props.analysis, expanded: props.expanded, viewport: size, direction: () => flowDirection.current,
@@ -194,9 +280,11 @@ function World(props: Props) {
   }, [camera, gl, scene, positions, routes, size, bounds, attentionView, props.expanded, props.graph, props.analysis, props.onReady]);
   useEffect(() => { if (props.selected && props.selectedHead !== null && isAttention(props.graph.nodes.find(n => n.id === props.selected)?.op || '')) focus(props.selected, props.selectedHead); }, [camera, props.selected, props.selectedHead, props.expanded, positions, size]);
   return <>
-    <color attach="background" args={['#f5f8fa']} />
-    <ambientLight intensity={1.5} /><directionalLight position={[8, 14, 10]} intensity={2.2} />
-    <Grid name="export_grid" position={[0, -0.1, 0]} args={[80, 40]} cellSize={1} cellThickness={0.5} cellColor="#d9e2e5" sectionSize={5} sectionThickness={0.8} sectionColor="#bacacf" fadeDistance={60} fadeStrength={1.3} infiniteGrid />
+    {/* No scene background: the canvas is transparent over the workspace's soft gradient. */}
+    {/* Sky/ground fill plus a key light from the upper right and a weak rim from behind, so a
+        block's top, front and side read as three distinct tones of its one colour. */}
+    <hemisphereLight args={['#ffffff', '#b9c8cf', 1.7]} /><directionalLight position={[9, 16, 11]} intensity={1.9} /><directionalLight position={[-10, 5, -8]} intensity={0.55} />
+    <Grid name="export_grid" position={[0, -0.1, 0]} args={[80, 40]} cellSize={1} cellThickness={0.5} cellColor="#e0e8eb" sectionSize={5} sectionThickness={0.85} sectionColor="#cad6db" fadeDistance={55} fadeStrength={1.6} infiniteGrid />
     <OrbitControls ref={controls} makeDefault enableDamping={false} minZoom={1.5} maxZoom={180} />
     {routes.map(route => {
       const flow = { start: route.start, end: route.end, control1: route.control1, control2: route.control2 };
@@ -209,12 +297,16 @@ function World(props: Props) {
       const label = layerLabel(n, dims, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} /> : <>
-        <mesh userData={{ exportMesh: true }}>
-          <boxGeometry args={dims} /><meshStandardMaterial color={color} transparent opacity={selected || hover === n.id ? 0.78 : 0.48} roughness={0.28} metalness={0.12} emissive={color} emissiveIntensity={issue ? 0.5 : selected ? 0.16 : 0} />
+        {/* Solid, matte blocks: a translucent block blended with whatever stood behind it, which
+            muddied both colours wherever neighbours overlapped. */}
+        <mesh userData={{ exportMesh: true, exportShade: true }}>
+          <boxGeometry args={dims} /><meshStandardMaterial color={color} roughness={0.62} metalness={0.04} emissive={color} emissiveIntensity={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} />
         </mesh>
-        <NodeOutline dims={dims} color={selected ? '#223b43' : color} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
-        {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.48, 40]} /><meshBasicMaterial color="#233f47" transparent opacity={0.7} /></mesh>}
-        {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
+        <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
+        {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}
+        {!isAttention(n.op) && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
+        {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color="#1d3943" transparent opacity={0.75} /></mesh>}
+        {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div ref={element => { if (element) labelElements.current.set(n.id, element); else labelElements.current.delete(n.id); }} className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
       </group>;
     })}
   </>;
@@ -227,5 +319,5 @@ class SceneBoundary extends Component<{ children: ReactNode; failure: string }, 
 }
 export default function Scene(props: Props) {
   const { t } = useI18n();
-  return <SceneBoundary failure={t('WebGL 初始化失败。请启用浏览器硬件加速，或切换到拓扑图。')}><Canvas gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }} dpr={[1, 2]} onPointerMissed={() => props.onSelect(null)}><OrthographicCamera makeDefault position={[15, 11, 18]} near={0.1} far={200} zoom={35} /><World {...props} /></Canvas></SceneBoundary>;
+  return <SceneBoundary failure={t('WebGL 初始化失败。请启用浏览器硬件加速，或切换到拓扑图。')}><Canvas className="scene-canvas" flat gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' }} dpr={[1, 2]} onPointerMissed={() => props.onSelect(null)}><OrthographicCamera makeDefault position={[15, 11, 18]} near={0.1} far={200} zoom={35} /><World {...props} /></Canvas></SceneBoundary>;
 }
