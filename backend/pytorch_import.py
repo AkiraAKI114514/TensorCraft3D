@@ -129,6 +129,11 @@ class Parser:
         self.group_map = {}
         # Counts Group applications, so a loop can tell whether index 0 covered all instances.
         self.group_applies = 0
+        # First node built for each parameter-owning module, so a second call of the same module
+        # becomes a node that shares the first one's weights instead of a second set of weights.
+        self.module_nodes = {}
+        # Depth of folded-block replays in progress; sharing is not expressible inside a block.
+        self.group_depth = 0
         self.constraints = []
         self.warnings = []
         self.calls = 0
@@ -461,8 +466,8 @@ class Parser:
             "Upsample": (["size", "scale_factor", "mode", "align_corners", "recompute_scale_factor", "antialias"], {"size": None, "scale_factor": None, "mode": "nearest", "align_corners": None, "recompute_scale_factor": None, "antialias": False}),
             "MultiheadAttention": (["embed_dim", "num_heads", "dropout", "bias", "add_bias_kv", "add_zero_attn", "kdim", "vdim", "batch_first", "device", "dtype"], {"dropout": 0.0, "bias": True, "add_bias_kv": False, "add_zero_attn": False, "kdim": None, "vdim": None, "batch_first": False, "device": None, "dtype": None}),
             "TransformerEncoderLayer": (["d_model", "nhead", "dim_feedforward", "dropout", "activation", "layer_norm_eps", "batch_first", "norm_first", "bias", "device", "dtype"], {"dim_feedforward": 2048, "dropout": 0.1, "activation": "relu", "layer_norm_eps": 1e-5, "batch_first": False, "norm_first": False, "bias": True, "device": None, "dtype": None}),
-            "TensorLabAttention": (["embed_dim", "num_heads", "kv_heads", "dropout", "attention_type", "branches"], {"num_heads": 1, "kv_heads": None, "dropout": 0.1, "attention_type": "self", "branches": 1}),
-            "TensorLabTransformer": (["embed_dim", "num_heads", "kv_heads", "ff_dim", "dropout", "attention_type", "branches", "norm_first", "activation"], {"num_heads": 1, "kv_heads": None, "ff_dim": 128, "dropout": 0.1, "attention_type": "self", "branches": 1, "norm_first": True, "activation": "gelu"}),
+            "TensorLabAttention": (["embed_dim", "num_heads", "kv_heads", "dropout", "attention_type", "branches", "causal"], {"num_heads": 1, "kv_heads": None, "dropout": 0.1, "attention_type": "self", "branches": 1, "causal": False}),
+            "TensorLabTransformer": (["embed_dim", "num_heads", "kv_heads", "ff_dim", "dropout", "attention_type", "branches", "norm_first", "activation", "causal"], {"num_heads": 1, "kv_heads": None, "ff_dim": 128, "dropout": 0.1, "attention_type": "self", "branches": 1, "norm_first": True, "activation": "gelu", "causal": False}),
         }
         if kind == "TransformerEncoder":
             if not expression.args: raise ImportIssue("TransformerEncoder 缺少编码器层", expression)
@@ -575,6 +580,11 @@ class Parser:
             expected = args["embed_dim"]; params = args.copy()
             if params["kv_heads"] is None: params["kv_heads"] = 1 if params["attention_type"] == "multi_query" else params["num_heads"]
             if kind == "TensorLabTransformer": params["norm_first"] = int(bool(params["norm_first"]))
+            # `causal` is stored only when it is on, so a graph that never used a mask keeps the
+            # exact parameters it had before the flag existed.
+            causal = params.pop("causal")
+            if type(causal) is not bool: raise ImportIssue("causal 需要布尔常量 True 或 False", expression)
+            if causal: params["causal"] = 1
             kind = "Transformer" if kind == "TensorLabTransformer" else "MultiHeadAttention"
         return Module(kind, params=params, expected=expected, node=expression)
 
@@ -625,7 +635,7 @@ class Parser:
         node = next(n for n in self.graph["nodes"] if n["id"] == tensor.node)
         # Shape-preserving ops and the folded-block instance pass their declared dimension
         # upstream; a `Group` node is transparent, so a body's expectation reaches the Input.
-        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Multiply", "Group"):
+        if node["op"] in ("ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Add", "Multiply", "Divide", "Group"):
             for edge in self.graph["edges"]:
                 if edge["target"] == node["id"]: self.hint(Tensor(edge["source"], edge.get("sourcePort")), module)
         if node["op"] != "Input" or node["params"]["shape"]: return
@@ -664,15 +674,23 @@ class Parser:
             # infer the body from the finished graph.
             before = len(self.graph["nodes"])
             unit = module.children["0"]
+            self.group_depth += 1
             try: value = self.apply(unit, [Tensor(identifier.node)], {}, f"{name}.0", call)
             except ImportIssue as error:
                 error.diagnostic.setdefault("occurrences", module.count)
                 raise
+            finally: self.group_depth -= 1
             self.group_bodies[identifier.node] = [candidate["id"] for candidate in self.graph["nodes"][before:]]
             return identifier
         if module.kind in ("ModuleDict", "ModuleList"): raise ImportIssue("容器需选取具体层或静态遍历", call)
-        if id(module) in self.used_modules and module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention"):
-            raise ImportIssue("同一参数层被多次调用涉及权重共享，目前无法忠实转换", call, "SHARED_WEIGHTS")
+        # Calling one parameter-owning module twice is weight sharing: the second call becomes a
+        # node that reuses the first node's weights. A block instance owns its weights and its
+        # inner ids are rewritten on expansion, so sharing into or out of a folded block has no
+        # faithful form and keeps the rejection.
+        stateful = module.kind in ("Conv1d", "Conv2d", "Conv3d", "ConvTranspose1d", "ConvTranspose2d", "ConvTranspose3d", "Linear", "Bilinear", "BatchNorm1d", "BatchNorm2d", "BatchNorm3d", "LayerNorm", "RMSNorm", "GroupNorm", "InstanceNorm1d", "InstanceNorm2d", "InstanceNorm3d", "Embedding", "PReLU", "Transformer", "MultiHeadAttention")
+        owner = self.module_nodes.get(id(module)) if stateful else None
+        if stateful and (self.group_depth and id(module) in self.used_modules or owner is not None and (self.group_depth or any(owner in body for body in self.group_bodies.values()))):
+            raise ImportIssue("结构块内的参数层被重复调用：块实例各自拥有权重，这种权重共享目前无法忠实转换", call, "SHARED_WEIGHTS")
         self.used_modules[id(module)] = module
         params = module.params.copy()
         standard = False
@@ -713,6 +731,8 @@ class Parser:
                 self.hint(tensor, Module("Bilinear", expected=params["in2_features"]) if module.kind == "Bilinear" and i == 1 else module)
             sources = [(tensor, None) for tensor in args]
         result = self.add(module.kind, params, sources, name, call)
+        if owner is not None: self.graph["nodes"][-1]["shares"] = owner
+        elif stateful: self.module_nodes[id(module)] = result.node
         if module.expected is not None: self.constraints.append((result.node, module.expected, module.kind, call))
         if standard:
             return (result, "attention_weights_unsupported")
@@ -967,6 +987,12 @@ class Parser:
             if isinstance(expression.op, ast.Mult) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 # Element-wise gating (`gate * value`), the shape of a SwiGLU/GLU feed-forward.
                 return self.add("Multiply", {}, [(left, None), (right, None)], "逐元素相乘", expression)
+            if isinstance(expression.op, ast.Div) and isinstance(left, Tensor) and isinstance(right, Tensor):
+                # Division of one runtime tensor by another, the shape of a renormalisation
+                # (`w / w.sum(-1, keepdim=True)`). Operand order is kept as edge order, so the left
+                # operand is the dividend; the final analysis rejects a divisor that is neither the
+                # dividend's shape nor a keepdim singleton, and reports this source location.
+                return self.add("Divide", {}, [(left, None), (right, None)], "逐元素相除", expression)
             if isinstance(expression.op, ast.MatMult) and isinstance(left, Tensor) and isinstance(right, Tensor):
                 return self.contract(left, right, expression)
             # One runtime tensor paired with a statically-reduced number: the attention scale
@@ -1371,11 +1397,16 @@ class Parser:
                     # is not, the remaining instances are replayed normally.
                     count = self.range_count(statement.iter, env)
                     if count is None: raise ImportIssue("循环只支持静态层容器", statement)
-                    if self.referenced(statement.body, statement.target) != 1: raise ImportIssue("循环体需要恰好使用一次循环变量", statement)
+                    uses = self.referenced(statement.body, statement.target)
+                    if uses > 1: raise ImportIssue("循环体最多使用一次循环变量", statement)
                     before = self.group_applies
                     self.assign(statement.target, 0, env)
                     self.statements(statement.body, env, attrs)
-                    if self.group_applies == before:
+                    # A body that ignores the index -- `for _ in range(n): x = self.layer(x)` --
+                    # calls the same modules on every pass. That is weight sharing, so each pass
+                    # is replayed and the repeated calls become sharing nodes. A body that uses
+                    # the index is replayed too unless index 0 already stood for a folded chain.
+                    if uses == 0 or self.group_applies == before:
                         for ordinal in range(1, count):
                             self.assign(statement.target, ordinal, env)
                             self.statements(statement.body, env, attrs)
@@ -1502,6 +1533,19 @@ class Parser:
             input_info["shape"] = node["params"]["shape"]
             if input_info["inferred"]:
                 self.warnings.append({"level": "warning", "code": "INFERRED_SHAPE", "message": f"输入 {input_info['name']} 使用推断形状 {input_info['shape']}，请确认批次、序列长度或图像尺寸。"})
+        sharing = [node for node in self.graph["nodes"] if node.get("shares") is not None]
+        if sharing:
+            # A module called twice only shares something if it owns parameters. An affine-free
+            # norm does not, and two calls of it are simply two identical layers, so those
+            # references are dropped rather than refused as "nothing to share". The probe runs
+            # on the graph without any sharing; if it fails, the real analysis below reports why.
+            try:
+                counts = analyze_graph({**self.graph, "nodes": [{key: value for key, value in node.items() if key != "shares"} for node in self.graph["nodes"]]})["parameters"]
+                for node in sharing:
+                    if not counts.get(node["shares"]): del node["shares"]
+            except (ValueError, TypeError, KeyError, OverflowError): pass
+            kept = sum(1 for node in sharing if node.get("shares") is not None)
+            if kept: self.warnings.append({"level": "info", "code": "SHARED_WEIGHTS", "message": f"有 {kept} 处重复调用同一参数层，已导入为权重共享：这些层复用首次调用的权重，不重复计入参数量。"})
         try: analysis = analyze_graph(self.graph)
         except (ValueError, TypeError, KeyError, OverflowError) as error:
             source = self.node_sources.get(str(error).split(":", 1)[0])

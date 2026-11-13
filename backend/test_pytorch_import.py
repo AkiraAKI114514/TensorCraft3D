@@ -97,6 +97,52 @@ class PyTorchImportTests(unittest.TestCase):
             "return self.wide(x) * self.narrow(x)")
         self.reject(code, input_shapes={"x": [2, 4, 8]})
 
+    def test_runtime_division_imports_as_divide(self):
+        # A router's renormalisation: positive gate weights divided by their own sum. The
+        # reduction already imported; before Divide existed the `/` that consumes it failed with
+        # "不支持此张量运算".
+        code = module_source(
+            "self.gate = nn.Linear(8, 4)\nself.positive = nn.Softplus()",
+            "w = self.positive(self.gate(x))\nreturn w / w.sum(dim=-1, keepdim=True)")
+        result, model = self.parsed(code, input_shapes={"x": [2, 5, 8]})
+        nodes = result["graph"]["nodes"]
+        self.assertEqual([n["op"] for n in nodes], ["Input", "Linear", "Softplus", "Reduce", "Divide", "Output"])
+        by_op = {n["op"]: n["id"] for n in nodes}
+        # Operand order is edge order, so the dividend has to be the first edge into the node.
+        self.assertEqual([e["source"] for e in result["graph"]["edges"] if e["target"] == by_op["Divide"]], [by_op["Softplus"], by_op["Reduce"]])
+        output = model(torch.randn(2, 5, 8))
+        self.assertEqual(list(output.shape), [2, 5, 4])
+        torch.testing.assert_close(output.sum(-1), torch.ones(2, 5))
+        output.square().sum().backward()
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
+    def test_divide_matches_torch_in_both_operand_orders(self):
+        # Shape cannot tell `x / y` from `y / x`; the values can. Each case is compared against the
+        # same line executed by real torch, including the keepdim divisors that broadcast.
+        tensors = {"x": torch.rand(2, 5, 8) + 0.5, "y": torch.rand(2, 5, 8) + 0.5}
+        cases = (("return x / x.sum(dim=-1, keepdim=True)", "x"), ("return x / x.amax(dim=(1, 2), keepdim=True)", "x"),
+                 ("return x / y", "x, y"), ("return y / x", "x, y"))
+        for forward, inputs in cases:
+            with self.subTest(forward=forward):
+                names = inputs.split(", ")
+                result, model = self.parsed(module_source("", forward, inputs=inputs), input_shapes={name: [2, 5, 8] for name in names})
+                got = model({i["id"]: tensors[i["name"]] for i in result["inputs"]})
+                want = reference_model(forward, inputs)(*(tensors[name] for name in names))
+                self.assertEqual(list(got.shape), list(want.shape))
+                torch.testing.assert_close(got, want)
+
+    def test_divide_rejects_broadcasts_it_cannot_represent(self):
+        # Only the divisor may be a singleton, and only at the dividend's rank. Each of these is
+        # valid torch, so the refusal has to name the node and point at the source line.
+        cases = (("", "return x.sum(dim=-1, keepdim=True) / x"),  # the dividend would have to expand
+                 ("", "return x / x.sum(dim=-1)"),                 # the divisor lost a rank
+                 ("self.wide = nn.Linear(8, 16)\nself.narrow = nn.Linear(8, 4)", "return self.wide(x) / self.narrow(x)"))
+        for init, forward in cases:
+            with self.subTest(forward=forward):
+                result = self.reject(module_source(init, forward), "STRUCTURE", input_shapes={"x": [2, 5, 8]})
+                self.assertIn("Divide", result["diagnostics"][0]["message"])
+                self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
     def test_matmul_lowers_to_einsum(self):
         # `a @ b` carries no new IR surface: it becomes an Einsum node with a synthesized
         # equation, so both analyzers keep using the contraction rule they already share.
@@ -480,7 +526,6 @@ model = Net(width=8)
 
     def test_errors_keep_source_location_and_no_partial_graph(self):
         for init, forward, expected in [
-            ("self.layer = nn.Linear(4, 4)", "x = self.layer(x)\nreturn self.layer(x)", "SHARED_WEIGHTS"),
             ("self.layer = nn.Linear(4, 4)", "if x.sum() > 0:\n    x = self.layer(x)\nreturn x", "UNSUPPORTED_STATEMENT"),
             ("self.layer = nn.MultiheadAttention(8, 2)", "return self.layer(x, x, x)[0]", "UNSUPPORTED"),
             ("self.layer = nn.MultiheadAttention(8, 2, batch_first=True)", "x, w = self.layer(x, x, x)\nreturn w", "UNSUPPORTED"),
@@ -488,6 +533,77 @@ model = Net(width=8)
             with self.subTest(init=init, forward=forward):
                 result = self.reject(module_source(init, forward), expected)
                 self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
+    def shared_reference(self, init, forward):
+        """The checked-in source itself, executed: this is test-authored text, never an upload."""
+        namespace = {}
+        exec(module_source(init, forward), namespace)
+        return namespace["Net"]()
+
+    def test_calling_one_layer_twice_imports_as_shared_weights(self):
+        # Before this the importer refused with SHARED_WEIGHTS; importing two independent layers
+        # instead would have been worse, because the graph would then train twice the weights.
+        init, forward = "self.fc = nn.Linear(8, 8)\nself.head = nn.Linear(8, 2)", "x = F.relu(self.fc(x))\nx = F.relu(self.fc(x))\nreturn self.head(x)"
+        result, model = self.parsed(module_source(init, forward), input_shapes={"x": [2, 8]})
+        nodes = result["graph"]["nodes"]
+        self.assertEqual([n["op"] for n in nodes], ["Input", "Linear", "ReLU", "Linear", "ReLU", "Linear", "Output"])
+        owner, sharer, head = (n for n in nodes if n["op"] == "Linear")
+        self.assertNotIn("shares", owner); self.assertEqual(sharer["shares"], owner["id"]); self.assertNotIn("shares", head)
+        # One set of weights: counted once by the analyzer and built once by the runtime.
+        reference = self.shared_reference(init, forward)
+        expected = sum(p.numel() for p in reference.parameters())
+        self.assertEqual(expected, 8 * 8 + 8 + 8 * 2 + 2)
+        self.assertEqual(result["analysis"]["totalParameters"], expected)
+        self.assertEqual(result["analysis"]["parameters"][sharer["id"]], 0)
+        self.assertEqual(sum(p.numel() for p in model.parameters()), expected)
+        self.assertNotIn(sharer["id"], model.layers)
+        self.assertEqual(sorted(model.state_dict()), sorted(f"layers.{n['id']}.{name}" for n in (owner, head) for name in ("weight", "bias")))
+        model.layers[owner["id"]].load_state_dict(reference.fc.state_dict()); model.layers[head["id"]].load_state_dict(reference.head.state_dict())
+        x = torch.randn(2, 8)
+        torch.testing.assert_close(model(x), reference(x))
+        # Both uses feed the one weight: its gradient is the sum over the two calls, as in torch.
+        model(x).square().sum().backward(); reference(x).square().sum().backward()
+        torch.testing.assert_close(model.layers[owner["id"]].weight.grad, reference.fc.weight.grad)
+        self.assertTrue(any(d["code"] == "SHARED_WEIGHTS" and d["level"] == "info" for d in result["diagnostics"]))
+
+    def test_an_index_free_loop_applies_the_same_weights_each_pass(self):
+        # `for _ in range(n): x = self.layer(x)` is the usual way to write a weight-tied stack.
+        init, forward = "self.cell = nn.Linear(8, 8)\nself.act = nn.Tanh()", "for _ in range(3):\n    x = self.act(self.cell(x))\nreturn x"
+        result, model = self.parsed(module_source(init, forward), input_shapes={"x": [2, 8]})
+        linears = [n for n in result["graph"]["nodes"] if n["op"] == "Linear"]
+        self.assertEqual(len(linears), 3)
+        self.assertEqual([n.get("shares") for n in linears], [None, linears[0]["id"], linears[0]["id"]])
+        self.assertEqual(result["analysis"]["totalParameters"], 72)
+        reference = self.shared_reference(init, forward)
+        model.layers[linears[0]["id"]].load_state_dict(reference.cell.state_dict())
+        x = torch.randn(2, 8)
+        torch.testing.assert_close(model(x), reference(x))
+
+    def test_a_reused_parameter_free_layer_is_just_two_layers(self):
+        # An affine-free norm owns nothing, so there is nothing to share; the two calls stay two
+        # plain nodes rather than failing with "no parameters to share".
+        init, forward = "self.norm = nn.LayerNorm(8, elementwise_affine=False)\nself.fc = nn.Linear(8, 8)", "return self.norm(self.fc(self.norm(x)))"
+        result, model = self.parsed(module_source(init, forward), input_shapes={"x": [2, 8]})
+        self.assertTrue(all("shares" not in n for n in result["graph"]["nodes"]))
+        self.assertFalse(any(d["code"] == "SHARED_WEIGHTS" for d in result["diagnostics"]))
+        reference = self.shared_reference(init, forward)
+        model.layers[next(n["id"] for n in result["graph"]["nodes"] if n["op"] == "Linear")].load_state_dict(reference.fc.state_dict())
+        x = torch.randn(2, 8)
+        torch.testing.assert_close(model(x), reference(x))
+
+    def test_shared_weights_need_matching_weight_shapes(self):
+        # torch itself fails this at run time: the second call hands a 16-wide tensor to a
+        # Linear built for 8. The import reports it against the source line instead.
+        result = self.reject(module_source("self.fc = nn.Linear(8, 16)", "return self.fc(self.fc(x))"), input_shapes={"x": [2, 8]})
+        self.assertIsInstance(result["diagnostics"][0].get("line"), int)
+
+    def test_sharing_through_a_folded_block_is_still_refused(self):
+        # Each instance of a folded block owns its weights, so running the same block list twice
+        # has no faithful form in the graph. It keeps the SHARED_WEIGHTS rejection.
+        init = "self.blocks = nn.ModuleList([nn.Sequential(nn.Linear(4, 4), nn.ReLU()) for _ in range(3)])\nself.head = nn.Linear(4, 2)"
+        forward = "for block in self.blocks:\n    x = block(x)\nfor block in self.blocks:\n    x = block(x)\nreturn self.head(x)"
+        result = self.reject(module_source(init, forward), "SHARED_WEIGHTS", input_shapes={"x": [2, 4]})
+        self.assertIsInstance(result["diagnostics"][0].get("line"), int)
 
     def test_shape_mismatch_limits_and_syntax(self):
         code = "from torch import nn\nmodel = nn.Sequential(nn.Linear(4, 2))"

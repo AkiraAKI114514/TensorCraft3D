@@ -5,6 +5,52 @@ import math
 import uuid
 from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
+# Each epoch reports every layer's weight distribution with the quantiles TensorBoard's
+# distribution view draws (the minimum, the normal distribution's -1.5/-1/-0.5 sigma points, the
+# median, +0.5/+1/+1.5 sigma and the maximum) and a histogram over the same range.
+DISTRIBUTION_QUANTILES = (0.0, 0.0668, 0.1587, 0.3085, 0.5, 0.6915, 0.8413, 0.9332, 1.0)
+DISTRIBUTION_BINS = 12
+# Above this many values a layer's inner quantiles and histogram read an even stride of its
+# weights; the minimum, maximum, mean and spread always cover all of them.
+MAX_DISTRIBUTION_VALUES = 1 << 20
+
+
+def weight_distributions(model):
+    """Every layer's weights as they stand: its matrices and kernels (parameters with two or more
+    axes), or its other non-bias parameters when it has none, such as a norm layer's scale.
+    Biases are left out. A folded layer pools its instances, like its gradient norm."""
+    import torch
+    result = {}
+    with torch.no_grad():
+        for key, layer in model.layers.items():
+            named = [parameter for name, parameter in layer.named_parameters() if "bias" not in name.rsplit(".", 1)[-1]]
+            chosen = [parameter for parameter in named if parameter.dim() >= 2] or named
+            if not chosen:
+                continue
+            values = torch.cat([parameter.detach().reshape(-1).float() for parameter in chosen])
+            finite = values[torch.isfinite(values)]
+            if finite.numel() == 0:
+                continue
+            low, high = finite.min(), finite.max()
+            read = finite[::-(-finite.numel() // MAX_DISTRIBUTION_VALUES)] if finite.numel() > MAX_DISTRIBUTION_VALUES else finite
+            quantiles = torch.quantile(read, torch.tensor(DISTRIBUTION_QUANTILES, dtype=read.dtype, device=read.device))
+            quantiles[0], quantiles[-1] = low, high
+            if high > low:
+                counts = torch.histc(read, bins=DISTRIBUTION_BINS, min=float(low), max=float(high))
+            else:
+                counts = torch.zeros(DISTRIBUTION_BINS, device=read.device)
+                counts[0] = read.numel()
+            exact = finite.double()
+            mean = exact.mean()
+            entry = {
+                "count": int(values.numel()), "mean": float(mean), "std": math.sqrt(float((exact - mean).square().mean())),
+                "quantiles": [float(value) for value in quantiles.tolist()], "counts": [int(value) for value in counts.tolist()],
+            }
+            if finite.numel() != values.numel():
+                entry["nonFinite"] = int(values.numel() - finite.numel())
+            result[key] = entry
+    return result
+
 
 def build_model(graph):
     import torch
@@ -21,8 +67,13 @@ def build_model(graph):
             super().__init__()
             self.layers = nn.ModuleDict()
             self.dead_relu = {}
+            # A node with `shares` calls its owner's module instead of owning one. It is
+            # deliberately not registered under a second name: the weights would then appear
+            # twice in the state dict and in the per-layer gradient record.
+            self.shared = {node["id"]: node["shares"] for node in graph["nodes"] if node.get("shares") is not None}
             for node in graph["nodes"]:
                 key, op, p = node["id"], node["op"], node["params"]
+                if key in self.shared: continue
                 repeat = int(node.get("repeat", 1) or 1)
                 edge = info["baseEdges"][key][0] if info["baseEdges"][key] else None
                 in_shape = (info["portShapes"][edge["source"]][edge["sourcePort"]] if edge.get("sourcePort") else info["shapes"][edge["source"]]) if edge else []
@@ -68,7 +119,7 @@ def build_model(graph):
                     elif op == "Softplus": return nn.Softplus(float(p.get("beta", 1.0)), float(p.get("threshold", 20.0)))
                     elif op in ("Softmax", "LogSoftmax"): return getattr(nn, op)(dim=int(p.get("dim", -1)))
                     elif op in ("MultiHeadAttention", "Transformer"):
-                        args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1))}
+                        args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1)), "causal": bool(p.get("causal", 0))}
                         return TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
                     else: return None
                 try:
@@ -93,6 +144,7 @@ def build_model(graph):
             by_id = {node["id"]: node for node in graph["nodes"]}
             for key in info["order"]:
                 node = by_id[key]; op = node["op"]; args = [edge_value(e) for e in info["baseEdges"][key]]
+                module_key = self.shared.get(key, key)
                 if op == "Input": values[key] = x[key] if isinstance(x, dict) else x
                 elif op == "Output": values[key] = args[0]
                 elif op == "Add": values[key] = sum(args)
@@ -100,6 +152,9 @@ def build_model(graph):
                     product = args[0]
                     for value in args[1:]: product = product * value
                     values[key] = product
+                # Edge order is operand order: the first input is the dividend. The analyzer has
+                # already limited the divisor to the dividend's shape or keepdim singletons.
+                elif op == "Divide": values[key] = args[0] / args[1]
                 elif op == "Concat": values[key] = torch.cat(args, dim=int(node["params"].get("dim", 1)))
                 elif op == "Einsum": values[key] = torch.einsum(node["params"]["equation"], *args)
                 elif op == "Scale": values[key] = args[0] * float(node["params"]["factor"])
@@ -123,14 +178,14 @@ def build_model(graph):
                     attention_callback = None
                     if attention_observer is not None:
                         attention_callback = lambda stage, branch, tensors, node_id=key: attention_observer(node_id, stage, branch, tensors)
-                    instances = self.layers[key]
+                    instances = self.layers[module_key]
                     query, context = args[0], (args[1] if len(args) > 1 else None)
                     for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
                         value, ports[key] = instance.forward_with_ports(query, context, overrides, observer=attention_callback)
                         query = value
                     values[key] = query
-                elif key in self.layers:
-                    instances = self.layers[key]
+                elif module_key in self.layers:
+                    instances = self.layers[module_key]
                     # Folded nodes run their independent instances in series; shapes are preserved.
                     dead = 0.0; value = None
                     for index, instance in enumerate(instances if isinstance(instances, nn.ModuleList) else (instances,)):
@@ -140,7 +195,9 @@ def build_model(graph):
                         value = instance(*args) if index == 0 else instance(value, *args[1:])
                         if op in ("ReLU", "LeakyReLU"): dead += float((value.detach() == 0).float().mean().item())
                     values[key] = value
-                    if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = dead
+                    # A folded node reports the mean over its instances, so the value stays a
+                    # fraction in [0, 1] whatever `repeat` is.
+                    if op in ("ReLU", "LeakyReLU"): self.dead_relu[key] = dead / (len(instances) if isinstance(instances, nn.ModuleList) else 1)
                 observe(key, values[key])
             return values[info["output"]]
     return GraphModel(), info
@@ -273,7 +330,12 @@ def train(graph, config, emit, stop, retain_model=None):
             if not torch.isfinite(loss): raise ValueError("Loss became NaN/Inf. Reduce learning rate and inspect inputs")
             loss.backward(); square = 0.0
             for key, layer in model.layers.items():
-                value = sum(float(p.grad.detach().square().sum().item()) for p in layer.parameters() if p.grad is not None)
+                parameters = list(layer.parameters())
+                # A layer that owns no parameters has no gradient norm. Reporting 0 for it would
+                # be indistinguishable from "no gradient reaches this layer", which is the reading
+                # a per-layer chart exists to surface.
+                if not parameters: continue
+                value = sum(float(p.grad.detach().square().sum().item()) for p in parameters if p.grad is not None)
                 norm = math.sqrt(value)
                 if not math.isfinite(norm): raise ValueError(f"Layer {key} gradient became NaN/Inf")
                 norms[key] = norms.get(key, 0) + norm; square += value
@@ -289,7 +351,7 @@ def train(graph, config, emit, stop, retain_model=None):
                 if not math.isfinite(value): raise ValueError("Validation loss became NaN/Inf")
                 val_loss += value * len(by); correct += int((logits.argmax(1) == by).sum().item())
         val_loss /= len(val_y)
-        emit({"type": "metric", "device": device.upper(), "metric": {"epoch": epoch, "trainLoss": total_loss / max(1, seen), "valLoss": val_loss, "accuracy": correct / len(val_y), "gradNorm": grad_total / max(1, norm_count), "layerGradients": {key: value / max(1, norm_count) for key, value in norms.items()}, "deadRelu": {key: value / max(1, norm_count) for key, value in dead_sums.items()}, "source": "training"}})
+        emit({"type": "metric", "device": device.upper(), "metric": {"epoch": epoch, "trainLoss": total_loss / max(1, seen), "valLoss": val_loss, "accuracy": correct / len(val_y), "gradNorm": grad_total / max(1, norm_count), "layerGradients": {key: value / max(1, norm_count) for key, value in norms.items()}, "deadRelu": {key: value / max(1, norm_count) for key, value in dead_sums.items()}, "weightDistributions": weight_distributions(model), "source": "training"}})
         if val_loss < best_loss - 1e-4:
             best_loss, stale, best_epoch = val_loss, 0, epoch
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}

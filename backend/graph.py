@@ -8,7 +8,7 @@ OPS = {
     "MaxPool1d", "MaxPool2d", "MaxPool3d", "AvgPool1d", "AvgPool2d", "AvgPool3d",
     "AdaptiveAvgPool1d", "AdaptiveAvgPool2d", "AdaptiveAvgPool3d", "AdaptiveMaxPool1d", "AdaptiveMaxPool2d", "AdaptiveMaxPool3d",
     "Flatten", "Unsqueeze", "Squeeze", "Slice", "Select", "ConstantAdd", "ConstantMul", "Dropout", "Dropout1d", "Dropout2d", "Dropout3d", "AlphaDropout", "Embedding", "Upsample",
-    "Add", "Multiply", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
+    "Add", "Multiply", "Divide", "Concat", "Einsum", "Scale", "Reduce", "GLU", "MultiHeadAttention", "Transformer", "Group"
 }
 
 _ACTIVATIONS = {"ReLU", "GELU", "Sigmoid", "Tanh", "SiLU", "LeakyReLU", "ELU", "SELU", "Softplus", "Softmax", "LogSoftmax", "PReLU", "Hardsigmoid", "Hardswish", "Mish", "Softsign", "Identity"}
@@ -261,7 +261,7 @@ def analyze_expanded_graph(graph):
             shape = list(shape)
         else:
             cross = op in ("Transformer", "MultiHeadAttention") and p.get("attention_type") == "cross"
-            required_inputs = 2 if cross or op == "Bilinear" else 1
+            required_inputs = 2 if cross or op in ("Bilinear", "Divide") else 1
             if not parents or (op not in ("Add", "Multiply", "Concat", "Einsum") and len(parents) != required_inputs): raise ValueError(f"{key}: invalid input count")
             shape = list(in_shapes[0])
             if op in _TRANSPOSE_CONVS:
@@ -419,6 +419,13 @@ def analyze_expanded_graph(graph):
                 for branch in range(branches):
                     lengths = {s[1] for port, s in sources.items() if port.startswith(f"b{branch}:") and ":q" not in port}
                     if len(lengths) != 1: raise ValueError("All K/V lengths within a branch must match")
+                # A causal mask lets position t attend to keys 0..t, which only means something
+                # when keys and queries are the same positions: self-attention, with every K/V
+                # the query's own length. Cross-attention and a K/V override of another length
+                # are refused rather than given a rectangular triangle. Must mirror src/analysis.ts.
+                if integer("causal", 0, 0, 1):
+                    if kind == "cross": raise ValueError(f"{key}: causal masking applies to self-attention only")
+                    if any(sources[f"b{b}:k0"][1] != shape[1] for b in range(branches)): raise ValueError(f"{key}: causal masking requires K/V length equal to the query length")
                 elements = shape[0] * heads * shape[1] * sum(sources[f"b{b}:k0"][1] for b in range(branches))
                 if elements > 16_000_000: raise ValueError("Attention matrix exceeds local limits")
                 activation += elements // shape[0] * 4
@@ -447,6 +454,14 @@ def analyze_expanded_graph(graph):
                 if len(parents) < 2 or any(s != shape for s in in_shapes): raise ValueError(f"{key}: Add input shapes must match")
             elif op == "Multiply":
                 if len(parents) < 2 or any(s != shape for s in in_shapes): raise ValueError(f"{key}: Multiply input shapes must match")
+            elif op == "Divide":
+                # `dividend / divisor` in edge order. The divisor either matches the dividend or is
+                # 1 on any non-batch axis -- the shape `x.sum(-1, keepdim=True)` leaves -- so the
+                # result always has the dividend's shape. The dividend itself is never broadcast,
+                # and neither operand may differ in rank. Must mirror src/analysis.ts.
+                divisor = in_shapes[1]
+                if len(divisor) != len(shape) or divisor[0] != shape[0] or any(size not in (1, full) for size, full in zip(divisor[1:], shape[1:])):
+                    raise ValueError(f"{key}: Divide divisor must match the dividend shape or be 1 on non-batch axes")
             elif op == "Concat":
                 dim = integer("dim", 1, maximum=len(shape) - 1)
                 if len(parents) < 2 or any(len(s) != len(shape) or any(v != shape[i] for i, v in enumerate(s) if i != dim) for s in in_shapes): raise ValueError(f"{key}: Concat dimensions must match")
@@ -513,6 +528,22 @@ def analyze_expanded_graph(graph):
         if prod(shape) > 16_000_000 or count * repeat > 50_000_000: raise ValueError(f"{key}: layer exceeds local memory limits")
         shapes[key] = shape; parameters[key] = count * repeat
         total += count * repeat; activation += prod(shape[1:]) * 4 * repeat
+    # Weight sharing: a node with `shares` reuses another node's module, so it owns no
+    # parameters itself. Both must be the same operator with identical parameters and the same
+    # standalone parameter count, which for these operators means the same weight shapes.
+    # Must mirror src/analysis.ts.
+    for node in nodes:
+        owner_id = node.get("shares")
+        if owner_id is None: continue
+        key = node["id"]
+        owner = by_id.get(owner_id) if isinstance(owner_id, str) else None
+        if owner is None or owner_id == key: raise ValueError(f"{key}: shares must name another layer")
+        if owner.get("shares") is not None: raise ValueError(f"{key}: shares must name a layer that owns its parameters")
+        if node["op"] != owner["op"] or node["params"] != owner["params"]: raise ValueError(f"{key}: a shared layer needs the same operator and parameters as {owner_id}")
+        if int(node.get("repeat", 1) or 1) != 1 or int(owner.get("repeat", 1) or 1) != 1: raise ValueError(f"{key}: shared layers cannot be folded with repeat")
+        if not parameters[owner_id]: raise ValueError(f"{key}: {owner_id} has no parameters to share")
+        if parameters[key] != parameters[owner_id]: raise ValueError(f"{key}: shared weights need the input shape {owner_id} has")
+        total -= parameters[key]; parameters[key] = 0
     if total > 50_000_000: raise ValueError("Model exceeds 50M parameters")
     if len({shapes[n["id"]][0] for n in inputs}) != 1: raise ValueError("All model inputs must have the same batch dimension")
     return {"order": order, "shapes": shapes, "portShapes": port_shapes, "baseEdges": base_edges, "overrideEdges": override_edges, "incoming": incoming, "parameters": parameters, "totalParameters": total, "activationBytesPerSample": activation, "input": inputs[0]["id"], "inputs": [n["id"] for n in inputs], "output": outputs[0]["id"], "nodes": nodes}
@@ -538,7 +569,15 @@ def analyze_graph(graph):
                 raise ValueError(f"{node['id']}: Group requires a subgraph name")
         elif node.get("subgraph") is not None:
             raise ValueError(f"{node['id']}: only Group nodes may declare a subgraph")
+        shares = node.get("shares")
+        if shares is not None and (not isinstance(shares, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]{0,63}", shares) or node["op"] == "Group"):
+            raise ValueError(f"{node['id']}: invalid shares reference")
         authored[node["id"]] = node
+    # Each instance of a block owns its weights, and expansion rewrites the ids inside it, so
+    # sharing is only ever expressed between top-level layers.
+    for name, definition in (graph.get("subgraphs") or {}).items():
+        if isinstance(definition, dict) and any(isinstance(inner, dict) and inner.get("shares") is not None for inner in definition.get("nodes") or []):
+            raise ValueError(f"Subgraph {name}: layers inside a block cannot share weights")
     for edge in authored_edges:
         if not isinstance(edge, dict) or edge.get("source") not in authored or edge.get("target") not in authored:
             raise ValueError("Invalid or duplicate edge")

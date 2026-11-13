@@ -11,15 +11,18 @@ export function flowCurve({ start, end, control1, control2, compact = false }: P
 }
 
 // Each instance follows its curve in the vertex shader, without CPU particle updates.
+// A few evenly spaced pulses close to the curve read as direction of travel; a dense cloud
+// scattered around it read as noise, and as a coil where it passed in front of a block.
 export function ParticleEdge({ start, end, control1, control2, active, direction, speed, color, intensity = 0, compact = false, opacity = 0.85 }: FlowProps) {
   const clock = useRef(0);
   const { geometry, material } = useMemo(() => {
-    const base = new THREE.SphereGeometry(compact ? 0.024 : 0.046, 6, 4);
+    const base = new THREE.SphereGeometry(compact ? 0.024 : 0.036, 8, 6);
     const geometry = new THREE.InstancedBufferGeometry(); geometry.index = base.index;
     geometry.setAttribute('position', base.getAttribute('position').clone());
-    const count = compact ? 8 : 28 + Math.min(40, Math.max(0, Math.floor(intensity)));
+    // Larger tensors still flow more densely, within a narrower range.
+    const count = compact ? 6 : 10 + Math.min(10, Math.max(0, Math.floor(intensity / 2)));
     geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(Float32Array.from({ length: count }, (_, i) => i / count), 1));
-    geometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(Float32Array.from({ length: count * 2 }, (_, i) => Math.sin(i * 9.13) * (compact ? 0.025 : 0.13)), 2));
+    geometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(Float32Array.from({ length: count * 2 }, (_, i) => Math.sin(i * 9.13) * (compact ? 0.006 : 0.03)), 2));
     geometry.instanceCount = count; base.dispose();
     const curve = flowCurve({ start, end, control1, control2, compact });
     const material = new THREE.ShaderMaterial({
@@ -36,10 +39,10 @@ export function ParticleEdge({ start, end, control1, control2, active, direction
   return <mesh raycast={() => {}} geometry={geometry} material={material} frustumCulled={false} />;
 }
 
-export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.65 : 0.45 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
+export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.75 : 0.6 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
   const geometry = useMemo(() => {
     const curve = flowCurve({ start, end, control1, control2, compact });
-    return new THREE.TubeGeometry(curve, 20, compact ? 0.009 : 0.013, 4, false);
+    return new THREE.TubeGeometry(curve, 32, compact ? 0.013 : 0.016, 6, false);
   }, [start, end, control1, control2, compact]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   const curve = flowCurve({ start, end, control1, control2, compact });

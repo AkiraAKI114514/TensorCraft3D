@@ -186,6 +186,37 @@ print("matched")
     expect(analyze(imported).layers[nodes[0].id].output).toEqual(original.layers.red.output);
   }, 30000);
 
+  it('round-trips an authored Divide with the dividend first', () => {
+    // A renormalisation: the input over its own keepdim sum. Operand order is nothing but edge
+    // order, so the export has to write the first edge on the left of `/` and the re-import has
+    // to hand the edges back in that order.
+    const graph = PRESETS.blank();
+    graph.nodes = [
+      { id: 'in', name: 'In', op: 'Input', params: { shape: [2, 5, 8] }, position: { x: 0, y: 100 } },
+      { id: 'total', name: 'Total', op: 'Reduce', params: { op: 'sum', dim: -1, keepdim: 1 }, position: { x: 150, y: 220 } },
+      { id: 'ratio', name: 'Ratio', op: 'Divide', params: {}, position: { x: 300, y: 100 } },
+      { id: 'out', name: 'Out', op: 'Output', params: {}, position: { x: 450, y: 100 } }
+    ];
+    graph.edges = [
+      { id: 'e0', source: 'in', target: 'total' }, { id: 'e1', source: 'in', target: 'ratio' },
+      { id: 'e2', source: 'total', target: 'ratio' }, { id: 'e3', source: 'ratio', target: 'out' }
+    ];
+    const original = analyze(graph);
+    expect(original.valid, JSON.stringify(original.diagnostics)).toBe(true);
+    expect(original.layers.ratio.output).toEqual([2, 5, 8]);
+    expect(original.parameters).toBe(0);
+    // roundtrip re-imports the generated source and asserts the two models compute equal values.
+    const imported = roundtrip(graph);
+    const divide = imported.nodes.find(n => n.op === 'Divide')!;
+    const operands = imported.edges.filter(e => e.target === divide.id).map(e => imported.nodes.find(n => n.id === e.source)!.op);
+    expect(operands).toEqual(['Input', 'Reduce']);
+    expect(analyze(imported).layers[divide.id].output).toEqual([2, 5, 8]);
+    // Swapping the two edges asks the dividend to broadcast instead, which is refused before export.
+    const swapped = { ...graph, edges: [graph.edges[0], graph.edges[2], graph.edges[1], graph.edges[3]] };
+    expect(analyze(swapped).valid).toBe(false);
+    expect(() => generatePython(swapped)).toThrow();
+  }, 30000);
+
   it.each([
     // Affinity is the whole point of these cases: an affine-free normalization is what the
     // functional F.layer_norm / F.rms_norm / F.group_norm forms produce, and `elementwise_affine: 0`

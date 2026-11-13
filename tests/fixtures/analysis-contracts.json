@@ -931,6 +931,450 @@
         ]
       },
       "expected": { "valid": false }
+    },
+    {
+      "id": "divide_keeps_the_dividend_shape",
+      "graph": {
+        "version": 1, "name": "divide_keeps_the_dividend_shape",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Top", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Bottom", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n3", "name": "Ratio", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n4", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n0", "target": "n2" },
+          { "id": "e2", "source": "n1", "target": "n3" },
+          { "id": "e3", "source": "n2", "target": "n3" },
+          { "id": "e4", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 8], "parameters": 144 }
+    },
+    {
+      "id": "divide_broadcasts_a_keepdim_divisor",
+      "graph": {
+        "version": 1, "name": "divide_broadcasts_a_keepdim_divisor",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Total", "op": "Reduce", "params": { "op": "sum", "dim": -1, "keepdim": 1 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n2", "name": "Renormalise", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n0", "target": "n2" },
+          { "id": "e2", "source": "n1", "target": "n2" },
+          { "id": "e3", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 5, 8], "parameters": 0 }
+    },
+    {
+      "id": "divide_broadcasts_several_singleton_axes",
+      "graph": {
+        "version": 1, "name": "divide_broadcasts_several_singleton_axes",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 3, 4, 4]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Peak", "op": "Reduce", "params": { "op": "amax", "dim": [2, 3], "keepdim": 1 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n2", "name": "Rescale", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n0", "target": "n2" },
+          { "id": "e2", "source": "n1", "target": "n2" },
+          { "id": "e3", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 3, 4, 4], "parameters": 0 }
+    },
+    {
+      "id": "divide_rejects_a_broadcast_dividend",
+      "graph": {
+        "version": 1, "name": "divide_rejects_a_broadcast_dividend",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Total", "op": "Reduce", "params": { "op": "sum", "dim": -1, "keepdim": 1 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n2", "name": "Reciprocal", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n0", "target": "n2" },
+          { "id": "e3", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "divide_rejects_a_mismatched_divisor",
+      "graph": {
+        "version": 1, "name": "divide_rejects_a_mismatched_divisor",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Narrow", "op": "Linear", "params": { "out_features": 4 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n2", "name": "Ratio", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n0", "target": "n2" },
+          { "id": "e2", "source": "n1", "target": "n2" },
+          { "id": "e3", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "divide_rejects_a_divisor_of_lower_rank",
+      "graph": {
+        "version": 1, "name": "divide_rejects_a_divisor_of_lower_rank",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Total", "op": "Reduce", "params": { "op": "sum", "dim": -1, "keepdim": 0 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n2", "name": "Ratio", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n0", "target": "n2" },
+          { "id": "e2", "source": "n1", "target": "n2" },
+          { "id": "e3", "source": "n2", "target": "n3" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "divide_rejects_a_single_input",
+      "graph": {
+        "version": 1, "name": "divide_rejects_a_single_input",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Ratio", "op": "Divide", "params": {}, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "divide_rejects_a_third_input",
+      "graph": {
+        "version": 1, "name": "divide_rejects_a_third_input",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 5, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Top", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Bottom", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 100 } },
+          { "id": "n3", "name": "Ratio", "op": "Divide", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n4", "name": "Out", "op": "Output", "params": {}, "position": { "x": 300, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n0", "target": "n2" },
+          { "id": "e2", "source": "n0", "target": "n3" },
+          { "id": "e3", "source": "n1", "target": "n3" },
+          { "id": "e4", "source": "n2", "target": "n3" },
+          { "id": "e5", "source": "n3", "target": "n4" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "attention_causal_keeps_shape_and_parameters",
+      "graph": {
+        "version": 1, "name": "attention_causal_keeps_shape_and_parameters",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 8], "parameters": 288 }
+    },
+    {
+      "id": "attention_causal_accepts_an_integral_float",
+      "graph": {
+        "version": 1, "name": "attention_causal_accepts_an_integral_float",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "Transformer", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 1, "attention_type": "multi_query", "branches": 1, "ff_dim": 16, "dropout": 0, "causal": 1.0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 8], "parameters": 528 }
+    },
+    {
+      "id": "attention_causal_rejects_cross_attention",
+      "graph": {
+        "version": 1, "name": "attention_causal_rejects_cross_attention",
+        "nodes": [
+          { "id": "n0", "name": "Query", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cross", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "cross", "branches": 1, "dropout": 0, "causal": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Context", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1", "targetPort": "query" },
+          { "id": "e1", "source": "n3", "target": "n1", "targetPort": "context" },
+          { "id": "e2", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "attention_causal_rejects_keys_of_another_length",
+      "graph": {
+        "version": 1, "name": "attention_causal_rejects_keys_of_another_length",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 1 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Memory", "op": "Input", "params": {"shape": [2, 9, 8]}, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n3", "target": "n1", "targetPort": "b0:k0" },
+          { "id": "e2", "source": "n3", "target": "n1", "targetPort": "b0:k1" },
+          { "id": "e3", "source": "n3", "target": "n1", "targetPort": "b0:v0" },
+          { "id": "e4", "source": "n3", "target": "n1", "targetPort": "b0:v1" },
+          { "id": "e5", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "attention_keys_of_another_length_are_fine_without_a_mask",
+      "graph": {
+        "version": 1, "name": "attention_keys_of_another_length_are_fine_without_a_mask",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Full", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 0 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Memory", "op": "Input", "params": {"shape": [2, 9, 8]}, "position": { "x": 0, "y": 100 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n3", "target": "n1", "targetPort": "b0:k0" },
+          { "id": "e2", "source": "n3", "target": "n1", "targetPort": "b0:k1" },
+          { "id": "e3", "source": "n3", "target": "n1", "targetPort": "b0:v0" },
+          { "id": "e4", "source": "n3", "target": "n1", "targetPort": "b0:v1" },
+          { "id": "e5", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 6, 8], "parameters": 288 }
+    },
+    {
+      "id": "attention_causal_rejects_a_value_that_is_not_a_flag",
+      "graph": {
+        "version": 1, "name": "attention_causal_rejects_a_value_that_is_not_a_flag",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 6, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Causal", "op": "MultiHeadAttention", "params": { "embed_dim": 8, "num_heads": 2, "kv_heads": 2, "attention_type": "self", "branches": 1, "dropout": 0, "causal": 2 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Out", "op": "Output", "params": {}, "position": { "x": 200, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_linear_counts_its_weights_once",
+      "graph": {
+        "version": 1, "name": "shared_linear_counts_its_weights_once",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": true, "outputShape": [2, 8], "parameters": 72 }
+    },
+    {
+      "id": "shared_layer_rejects_different_parameters",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_different_parameters",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8, "bias": 0 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_different_operator",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_different_operator",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "LayerNorm", "params": { "normalized_shape": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_different_input_width",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_different_input_width",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Wide", "op": "Linear", "params": { "out_features": 16 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 16 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_missing_owner",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_missing_owner",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "ghost" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_itself",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_itself",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n3" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_a_folded_instance",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_a_folded_instance",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "repeat": 2, "shares": "n1" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_an_owner_without_parameters",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_an_owner_without_parameters",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "ReLU", "params": {}, "position": { "x": 300, "y": 0 }, "shares": "n2" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
+    },
+    {
+      "id": "shared_layer_rejects_an_owner_that_shares",
+      "graph": {
+        "version": 1, "name": "shared_layer_rejects_an_owner_that_shares",
+        "nodes": [
+          { "id": "n0", "name": "In", "op": "Input", "params": {"shape": [2, 8]}, "position": { "x": 0, "y": 0 } },
+          { "id": "n1", "name": "Cell", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 100, "y": 0 } },
+          { "id": "n2", "name": "Act", "op": "ReLU", "params": {}, "position": { "x": 200, "y": 0 } },
+          { "id": "n3", "name": "Again", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 300, "y": 0 }, "shares": "n1" },
+          { "id": "n4", "name": "Third", "op": "Linear", "params": { "out_features": 8 }, "position": { "x": 400, "y": 0 }, "shares": "n3" },
+          { "id": "n9", "name": "Out", "op": "Output", "params": {}, "position": { "x": 500, "y": 0 } }
+        ],
+        "edges": [
+          { "id": "e0", "source": "n0", "target": "n1" },
+          { "id": "e1", "source": "n1", "target": "n2" },
+          { "id": "e2", "source": "n2", "target": "n3" },
+          { "id": "e3", "source": "n3", "target": "n4" },
+          { "id": "e4", "source": "n4", "target": "n9" }
+        ]
+      },
+      "expected": { "valid": false }
     }
   ]
 }

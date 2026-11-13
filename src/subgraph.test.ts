@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyze, validateGraph } from './analysis';
-import { breadcrumb, expandGraph, graphAt, replaceGraphAt, topLevelId, SubgraphError } from './subgraph';
+import { layerMetricKeys } from './layerMetricSeries';
+import { breadcrumb, expandGraph, expandedLayerAt, graphAt, replaceGraphAt, topLevelId, SubgraphError } from './subgraph';
 import type { Edge, Graph, Layer, SubgraphDef } from './types';
 
 const node = (id: string, op: Layer['op'], params: Layer['params'] = {}, extra: Partial<Layer> = {}): Layer =>
@@ -206,5 +207,78 @@ describe('drill-down addressing', () => {
 
   it('rejects a path that does not exist', () => {
     expect(() => graphAt(grouped(), ['ghost'])).toThrow(SubgraphError);
+  });
+});
+
+/** 外层块 ×2 里嵌着内层块 ×3，另一个实例节点也引用外层块（×1）。 */
+function nestedBlocks(): Graph {
+  return {
+    version: 1, name: 'nested',
+    nodes: [node('i', 'Input', { shape: [2, 4] }), node('outer', 'Group', {}, { subgraph: 'block', repeat: 2 }), node('again', 'Group', {}, { subgraph: 'block' }), node('head', 'Linear', { out_features: 2 }), node('o', 'Output')],
+    edges: [edge('i', 'outer'), edge('outer', 'again'), edge('again', 'head'), edge('head', 'o')],
+    subgraphs: {
+      block: { id: 'block', name: 'Block', origin: 'manual', nodes: [node('n0', 'Linear', { out_features: 4 }), node('n1', 'Group', {}, { subgraph: 'unit', repeat: 3 })], edges: [edge('n0', 'n1')] },
+      unit: { id: 'unit', name: 'Unit', origin: 'manual', nodes: [node('n0', 'Linear', { out_features: 4 }), node('n1', 'ReLU')], edges: [edge('n0', 'n1')] },
+    },
+  };
+}
+
+describe('expanded layer addressing', () => {
+  it('maps a top-level layer to itself', () => {
+    expect(expandedLayerAt(nestedBlocks(), [], 'head')).toEqual({ id: 'head', scopes: [] });
+    expect(expandedLayerAt(nestedBlocks(), [], 'ghost')).toBeNull();
+  });
+
+  it('observes a block node as its last instance\'s exit, the tensor that leaves the block', () => {
+    const graph = nestedBlocks(), expanded = expandGraph(graph);
+    const outer = expandedLayerAt(graph, [], 'outer')!, again = expandedLayerAt(graph, [], 'again')!;
+    expect(outer).toEqual({ id: 'outer/1/n1/2/n1', scopes: [] });
+    expect(again.id).toBe('again/0/n1/2/n1');
+    // The expanded edges leaving each block start at exactly that node.
+    expect(expanded.edges.find(e => e.target === 'again/0/n0')!.source).toBe(outer.id);
+    expect(expanded.edges.find(e => e.target === 'head')!.source).toBe(again.id);
+  });
+
+  it('picks the chosen instance at every level of the drill path, instance 0 by default', () => {
+    const graph = nestedBlocks(), ids = new Set(expandGraph(graph).nodes.map(n => n.id));
+    expect(expandedLayerAt(graph, ['block'], 'n0')).toEqual({ id: 'outer/0/n0', scopes: [{ key: 'block', label: 'Block', count: 3, index: 0 }] });
+    expect(expandedLayerAt(graph, ['block'], 'n0', { block: 1 })!.id).toBe('outer/1/n0');
+    // The occurrences run through every instance node that uses the block, in graph order.
+    expect(expandedLayerAt(graph, ['block'], 'n0', { block: 2 })!.id).toBe('again/0/n0');
+    expect(expandedLayerAt(graph, ['block', 'unit'], 'n1', { block: 1, 'block/unit': 2 })).toEqual({
+      id: 'outer/1/n1/2/n1',
+      scopes: [{ key: 'block', label: 'Block', count: 3, index: 1 }, { key: 'block/unit', label: 'Unit', count: 3, index: 2 }],
+    });
+    // A block inside the level is observed at its own last instance's exit.
+    expect(expandedLayerAt(graph, ['block'], 'n1', { block: 2 })!.id).toBe('again/0/n1/2/n1');
+    for (const [path, layer] of [[['block'], 'n0'], [['block'], 'n1'], [['block', 'unit'], 'n0'], [['block', 'unit'], 'n1']] as const) {
+      for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) {
+        const id = expandedLayerAt(graph, [...path], layer, { block: a, 'block/unit': b })!.id;
+        expect(ids.has(id), id).toBe(true);
+      }
+    }
+  });
+
+  it('numbers the instances in the order the per-layer training metrics list them', () => {
+    const graph = nestedBlocks();
+    const walked = [0, 1, 2].flatMap(a => [0, 1, 2].map(b => expandedLayerAt(graph, ['block', 'unit'], 'n0', { block: a, 'block/unit': b })!.id));
+    expect(walked).toEqual(layerMetricKeys(graph, ['block', 'unit'], 'n0'));
+  });
+
+  it('keeps an out-of-range or malformed choice inside the block', () => {
+    const at = (value: number) => expandedLayerAt(nestedBlocks(), ['block'], 'n0', { block: value })!.scopes[0].index;
+    expect([at(-4), at(1.8), at(99), at(Number.NaN)]).toEqual([0, 1, 2, 0]);
+  });
+
+  it('returns null when the drill path or the layer no longer resolves', () => {
+    const graph = nestedBlocks();
+    // No instance node of `unit` sits at the root, so the path cannot start there.
+    expect(expandedLayerAt(graph, ['unit'], 'n0')).toBeNull();
+    expect(expandedLayerAt(graph, ['ghost'], 'n0')).toBeNull();
+    expect(expandedLayerAt(graph, ['block'], 'ghost')).toBeNull();
+    // Without a unique exit a block has no tensor that leaves it.
+    graph.subgraphs!.unit.edges = [];
+    expect(expandedLayerAt(graph, ['block'], 'n1')).toBeNull();
+    expect(expandedLayerAt(graph, ['block'], 'n0')!.id).toBe('outer/0/n0');
   });
 });

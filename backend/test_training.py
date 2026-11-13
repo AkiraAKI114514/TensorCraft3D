@@ -1,3 +1,4 @@
+import math
 import unittest
 import threading
 from .graph import analyze_graph
@@ -117,6 +118,87 @@ class TrainingTests(unittest.TestCase):
         self.assertTrue(metrics[0]["layerGradients"])
         self.assertEqual(metrics[0]["source"], "training")
         self.assertEqual(messages[-1], {"type": "done", "reason": "completed"})
+
+    def test_layer_metrics_name_only_the_layers_that_can_have_them(self):
+        # The per-layer panel reads these records by layer id. A parameter-free layer must be
+        # absent rather than reported as 0, which would read as "no gradient reaches it"; and a
+        # zero-activation value must stay a fraction however many instances a node folds.
+        messages = []
+        graph = mlp_graph(); graph["nodes"][2]["repeat"] = 3
+        config = {"epochs": 2, "learningRate": 0.01, "batchSize": 16, "samples": 64, "device": "cpu", "dataset": "synthetic", "validationFraction": 0.2, "earlyStopping": False, "patience": 5}
+        train(graph, config, messages.append, threading.Event())
+        metrics = [m["metric"] for m in messages if m["type"] == "metric"]
+        self.assertEqual(len(metrics), 2)
+        for metric in metrics:
+            self.assertEqual(set(metric["layerGradients"]), {"layer_1", "layer_3"})
+            self.assertTrue(all(value > 0 for value in metric["layerGradients"].values()))
+            self.assertEqual(set(metric["deadRelu"]), {"layer_2"})
+            self.assertTrue(0 <= metric["deadRelu"]["layer_2"] <= 1)
+
+    def test_each_epoch_reports_every_layer_s_weight_distribution(self):
+        messages = []
+        graph = mlp_graph(); graph["nodes"][2]["repeat"] = 3
+        config = {"epochs": 2, "learningRate": 0.05, "batchSize": 16, "samples": 64, "device": "cpu", "dataset": "synthetic", "validationFraction": 0.2, "earlyStopping": False, "patience": 5}
+        train(graph, config, messages.append, threading.Event())
+        metrics = [m["metric"] for m in messages if m["type"] == "metric"]
+        # The layers that own weights, the same ones that report a gradient norm.
+        self.assertEqual([set(metric["weightDistributions"]) for metric in metrics], [{"layer_1", "layer_3"}] * 2)
+        first, second = (metric["weightDistributions"]["layer_1"] for metric in metrics)
+        model, _ = build_model(graph)
+        # Weights only: the Linear's 8 x 4 matrix, not its bias.
+        self.assertEqual(first["count"], model.layers["layer_1"].weight.numel())
+        for entry in (first, second):
+            quantiles = entry["quantiles"]
+            self.assertEqual(len(quantiles), 9)
+            self.assertEqual(quantiles, sorted(quantiles))
+            self.assertLessEqual(quantiles[0], entry["mean"]); self.assertLessEqual(entry["mean"], quantiles[-1])
+            self.assertGreater(entry["std"], 0)
+            self.assertEqual((len(entry["counts"]), sum(entry["counts"])), (12, entry["count"]))
+            self.assertNotIn("nonFinite", entry)
+        # Training moved the weights, so two epochs describe two different distributions.
+        self.assertNotEqual(first["quantiles"], second["quantiles"])
+
+    def test_weight_distributions_read_matrices_scales_and_large_layers_at_a_stride(self):
+        import torch
+        from torch import nn
+        from unittest.mock import patch
+        from .training import weight_distributions
+
+        class Layers(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleDict({"norm": nn.LayerNorm(6), "dense": nn.Linear(50, 4), "flat": nn.Flatten()})
+        model = Layers()
+        with torch.no_grad():
+            model.layers["dense"].weight.copy_(torch.arange(200, dtype=torch.float32).reshape(4, 50))
+            model.layers["norm"].weight.fill_(2.0)
+        result = weight_distributions(model)
+        self.assertEqual(set(result), {"norm", "dense"})
+        # A norm layer has no matrix, so its scale stands for it; every value is the same.
+        self.assertEqual(result["norm"]["quantiles"], [2.0] * 9)
+        self.assertEqual(result["norm"]["counts"], [6] + [0] * 11)
+        dense = result["dense"]
+        self.assertEqual((dense["quantiles"][0], dense["quantiles"][4], dense["quantiles"][-1]), (0.0, 99.5, 199.0))
+        self.assertAlmostEqual(dense["mean"], 99.5)
+        self.assertAlmostEqual(dense["std"], math.sqrt((200 ** 2 - 1) / 12))
+        # More values than the reading limit: the ends, mean and spread still cover all of them.
+        with patch("backend.training.MAX_DISTRIBUTION_VALUES", 64):
+            strided = weight_distributions(model)["dense"]
+        self.assertEqual((strided["quantiles"][0], strided["quantiles"][-1], strided["mean"], strided["count"]), (0.0, 199.0, dense["mean"], 200))
+        self.assertEqual(sum(strided["counts"]), 50)
+
+    def test_folded_relu_reports_the_mean_zero_fraction_of_its_instances(self):
+        import torch
+        graph = mlp_graph(); graph["nodes"][2]["repeat"] = 3
+        model, _ = build_model(graph)
+        captured = {}
+        model(torch.randn(64, 4), observer=captured.__setitem__)
+        # Chained ReLUs are idempotent, so every instance zeroes the same elements and the mean
+        # over instances equals the zero fraction of the node's output. Summing them, as the
+        # runtime once did, would report three times this.
+        expected = float((captured["layer_2"] == 0).float().mean())
+        self.assertGreater(expected, 0)
+        self.assertAlmostEqual(model.dead_relu["layer_2"], expected, places=6)
 
     def test_folded_repeat_instantiates_independent_layers_that_match_the_analyzer(self):
         import torch
@@ -255,6 +337,66 @@ class TrainingTests(unittest.TestCase):
         self.assertEqual(len(metrics), 2)
         self.assertGreater(metrics[0]["layerGradients"]["layer_1"], 0)
         self.assertEqual(messages[-1]["reason"], "completed")
+
+    def test_causal_attention_cannot_see_later_positions_and_matches_a_hand_built_mask(self):
+        import math
+        import torch
+        from .attention import TensorLabAttention
+        torch.manual_seed(0)
+        for kind, heads, kv_heads in (("self", 2, 2), ("multi_query", 4, 1), ("grouped_query", 4, 2)):
+            with self.subTest(kind=kind):
+                layer = TensorLabAttention(8, heads, kv_heads, 0.0, kind, causal=True).eval()
+                x = torch.randn(2, 5, 8)
+                later = x.clone(); later[:, 3:] += torch.randn(2, 2, 8)
+                base, moved = layer(x), layer(later)
+                # Positions 0..2 cannot attend to positions 3..4, so changing those leaves the
+                # earlier outputs exactly where they were.
+                torch.testing.assert_close(moved[:, :3], base[:, :3], atol=1e-6, rtol=0)
+                self.assertFalse(torch.allclose(moved[:, 3:], base[:, 3:]))
+                # The same weights without the mask do see them, so the check above is not vacuous.
+                full = TensorLabAttention(8, heads, kv_heads, 0.0, kind).eval(); full.load_state_dict(layer.state_dict())
+                self.assertFalse(torch.allclose(full(later)[:, :3], full(x)[:, :3]))
+                # And the result is the textbook computation, written out without `is_causal`.
+                branch = layer.branches[0]; head_dim = 8 // heads
+                q = branch.q_proj(x).view(2, 5, heads, head_dim).transpose(1, 2)
+                k = branch.k_proj(x).view(2, 5, kv_heads, head_dim).transpose(1, 2).repeat_interleave(heads // kv_heads, dim=1)
+                v = branch.v_proj(x).view(2, 5, kv_heads, head_dim).transpose(1, 2).repeat_interleave(heads // kv_heads, dim=1)
+                scores = (q @ k.transpose(-2, -1)) / math.sqrt(head_dim)
+                weights = scores.masked_fill(torch.ones(5, 5, dtype=torch.bool).triu(1), float("-inf")).softmax(-1)
+                expected = branch.out_proj((weights @ v).transpose(1, 2).reshape(2, 5, 8))
+                torch.testing.assert_close(base, expected, atol=1e-5, rtol=1e-5)
+
+    def test_causal_flag_reaches_the_built_model_and_is_refused_where_it_means_nothing(self):
+        import torch
+        from .attention import TensorLabAttention
+        for op in ("MultiHeadAttention", "Transformer"):
+            with self.subTest(op=op):
+                graph = transformer_graph(op); graph["nodes"][1]["params"]["causal"] = 1
+                model, info = build_model(graph)
+                layer = model.layers["layer_1"]
+                self.assertTrue((layer.attention if op == "Transformer" else layer).causal)
+                # The flag owns no parameters.
+                plain = transformer_graph(op)
+                self.assertEqual(info["totalParameters"], analyze_graph(plain)["totalParameters"])
+                self.assertFalse((build_model(plain)[0].layers["layer_1"].attention if op == "Transformer" else build_model(plain)[0].layers["layer_1"]).causal)
+                # Through LayerNorm, the residual and the position-wise FFN the layer stays causal.
+                model.eval(); x = torch.randn(1, 4, 8); later = x.clone(); later[:, 2:] += 1.0
+                captured = {}
+                model(x, observer=captured.__setitem__); first = captured["layer_1"]
+                model(later, observer=captured.__setitem__)
+                torch.testing.assert_close(captured["layer_1"][:, :2], first[:, :2], atol=1e-6, rtol=0)
+        # Cross-attention has no "later" key positions, and a K/V of another length has no square mask.
+        cross = cross_graph(); cross["nodes"][1]["params"]["causal"] = 1
+        with self.assertRaisesRegex(ValueError, "causal"): analyze_graph(cross)
+        with self.assertRaisesRegex(ValueError, "self-attention"): TensorLabAttention(8, 2, 1, 0.0, "cross", causal=True)
+        with self.assertRaisesRegex(ValueError, "boolean"): TensorLabAttention(8, 2, 2, 0.0, "self", causal=1)
+        longer = transformer_graph("MultiHeadAttention"); longer["nodes"][1]["params"]["causal"] = 1
+        longer["nodes"].append({"id": "memory", "op": "Input", "params": {"shape": [1, 6, 8]}})
+        longer["edges"].extend({"source": "memory", "target": "layer_1", "targetPort": f"b0:{role}{index}"} for role in ("k", "v") for index in range(2))
+        with self.assertRaisesRegex(ValueError, "causal"): analyze_graph(longer)
+        for value in (2, -1, 0.5, "1"):
+            invalid = transformer_graph(); invalid["nodes"][1]["params"]["causal"] = value
+            with self.assertRaises(ValueError): analyze_graph(invalid)
 
     def test_architectures_forward_backward_and_exact_parameters(self):
         import torch

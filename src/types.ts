@@ -8,7 +8,7 @@ export const OPS = [
   'MaxPool1d', 'MaxPool2d', 'MaxPool3d', 'AvgPool1d', 'AvgPool2d', 'AvgPool3d',
   'AdaptiveAvgPool1d', 'AdaptiveAvgPool2d', 'AdaptiveAvgPool3d', 'AdaptiveMaxPool1d', 'AdaptiveMaxPool2d', 'AdaptiveMaxPool3d',
   'Flatten', 'Unsqueeze', 'Squeeze', 'Slice', 'Select', 'ConstantAdd', 'ConstantMul', 'Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout', 'Embedding', 'Upsample',
-  'MultiHeadAttention', 'Transformer', 'Add', 'Multiply', 'Concat', 'Einsum', 'Scale', 'Reduce', 'GLU', 'Group'
+  'MultiHeadAttention', 'Transformer', 'Add', 'Multiply', 'Divide', 'Concat', 'Einsum', 'Scale', 'Reduce', 'GLU', 'Group'
 ] as const;
 export type Op = typeof OPS[number];
 export type Params = Record<string, number | string | number[]>;
@@ -18,7 +18,11 @@ export const repeatOf = (layer: { repeat?: number }) => layer.repeat ?? 1;
 /** 子图实例的哨兵算子。它是节点，但没有自己的 params：结构来自 Graph.subgraphs。 */
 export const GROUP_OP = 'Group';
 export const MAX_SUBGRAPH_DEPTH = 16;
-export interface Layer { id: string; name: string; op: Op; params: Params; position: { x: number; y: number }; repeat?: number; subgraph?: string; }
+/**
+ * `shares` 让这一层复用另一层的模块：同一份权重在图里被调用两次。它只出现在顶层图里，
+ * 指向一个自己拥有参数、算子与参数完全相同的层；共享层自己的参数计为 0。旧项目没有这个字段。
+ */
+export interface Layer { id: string; name: string; op: Op; params: Params; position: { x: number; y: number }; repeat?: number; subgraph?: string; shares?: string; }
 /** 子图定义。origin 只影响能否被自动解散：手动分组永不被自动识别撤销。 */
 export interface SubgraphDef { id: string; name: string; nodes: Layer[]; edges: Edge[]; origin: 'auto' | 'manual'; }
 export const isGroup = (layer: { op: Op }): boolean => layer.op === GROUP_OP;
@@ -27,7 +31,13 @@ export interface Graph { version: 1; name: string; nodes: Layer[]; edges: Edge[]
 export interface Diagnostic { id: string; level: 'error' | 'warning' | 'info'; code: string; message: string; nodeId?: string; }
 export interface LayerInfo { input: number[][]; output: number[]; parameters: number; repeat: number; }
 export interface Analysis { layers: Record<string, LayerInfo>; order: string[]; diagnostics: Diagnostic[]; parameters: number; activationBytes: number; valid: boolean; }
-export interface Metric { epoch: number; trainLoss: number; valLoss: number; accuracy: number; gradNorm: number; layerGradients?: Record<string, number>; deadRelu?: Record<string, number>; source: 'demo' | 'training' | 'import'; }
+/**
+ * One layer's weights at the end of an epoch (biases left out): nine ascending `quantiles` (the
+ * minimum, the normal distribution's -1.5/-1/-0.5 sigma points, the median, +0.5/+1/+1.5 sigma and
+ * the maximum) and a histogram whose `counts` fill equal bins from the minimum to the maximum.
+ */
+export interface WeightDistribution { count: number; mean: number; std: number; quantiles: number[]; counts: number[]; nonFinite?: number; }
+export interface Metric { epoch: number; trainLoss: number; valLoss: number; accuracy: number; gradNorm: number; layerGradients?: Record<string, number>; deadRelu?: Record<string, number>; weightDistributions?: Record<string, WeightDistribution>; source: 'demo' | 'training' | 'import'; }
 export interface TrainingConfig { epochs: number; learningRate: number; batchSize: number; samples: number; device: 'auto' | 'cpu' | 'cuda'; dataset: 'synthetic' | 'csv'; csv?: string; validationFraction: number; earlyStopping: boolean; patience: number; }
 const shape1d = { kernel_size: 3, stride: 1, padding: 1 };
 const pool1d = { kernel_size: 2, stride: 2, padding: 0 };
@@ -37,7 +47,7 @@ export const COLORS: Record<Op, string> = {
   ReLU: '#e8b84b', GELU: '#e8b84b', Sigmoid: '#e8b84b', Tanh: '#e8b84b', SiLU: '#e8b84b', LeakyReLU: '#e8b84b', ELU: '#e8b84b', SELU: '#e8b84b', Softplus: '#e8b84b', Softmax: '#e8b84b', LogSoftmax: '#e8b84b', PReLU: '#e8b84b', Hardsigmoid: '#e8b84b', Hardswish: '#e8b84b', Mish: '#e8b84b', Softsign: '#e8b84b', Identity: '#8e97a7',
   MaxPool1d: '#5299cf', MaxPool2d: '#5299cf', MaxPool3d: '#5299cf', AvgPool1d: '#5299cf', AvgPool2d: '#5299cf', AvgPool3d: '#5299cf', AdaptiveAvgPool1d: '#5299cf', AdaptiveAvgPool2d: '#5299cf', AdaptiveAvgPool3d: '#5299cf', AdaptiveMaxPool1d: '#5299cf', AdaptiveMaxPool2d: '#5299cf', AdaptiveMaxPool3d: '#5299cf',
   Flatten: '#8e97a7', Unsqueeze: '#8e97a7', Squeeze: '#8e97a7', Slice: '#8e97a7', Select: '#8e97a7', ConstantAdd: '#5299cf', ConstantMul: '#5299cf', Dropout: '#bc8cc8', Dropout1d: '#bc8cc8', Dropout2d: '#bc8cc8', Dropout3d: '#bc8cc8', AlphaDropout: '#bc8cc8', Embedding: '#d073a8', Upsample: '#5299cf',
-  MultiHeadAttention: '#3c9bb4', Transformer: '#477eae', Add: RESIDUAL_COLOR, Multiply: '#c98b3f', Concat: '#d073a8', Einsum: '#7a6bb5', Scale: '#879a3f', Reduce: '#4f8f7a', GLU: '#c98b3f', Group: '#6b8cae'
+  MultiHeadAttention: '#3c9bb4', Transformer: '#477eae', Add: RESIDUAL_COLOR, Multiply: '#c98b3f', Divide: '#c98b3f', Concat: '#d073a8', Einsum: '#7a6bb5', Scale: '#879a3f', Reduce: '#4f8f7a', GLU: '#c98b3f', Group: '#6b8cae'
 };
 export const DEFAULTS: Record<Op, Params> = {
   Input: { shape: [1, 3, 32, 32] }, Output: {},
@@ -48,5 +58,5 @@ export const DEFAULTS: Record<Op, Params> = {
   MaxPool1d: pool1d, MaxPool2d: { ...pool1d }, MaxPool3d: { ...pool1d }, AvgPool1d: pool1d, AvgPool2d: { ...pool1d }, AvgPool3d: { ...pool1d },
   AdaptiveAvgPool1d: { output_size: 1 }, AdaptiveAvgPool2d: { output_size: 1 }, AdaptiveAvgPool3d: { output_size: 1 }, AdaptiveMaxPool1d: { output_size: 1 }, AdaptiveMaxPool2d: { output_size: 1 }, AdaptiveMaxPool3d: { output_size: 1 },
   Flatten: {}, Unsqueeze: { dim: 0 }, Squeeze: { dim: 'all' }, Slice: { dim: 1, start: 'none', end: 'none', step: 1 }, Select: { dim: 1, index: -1 }, ConstantAdd: { shape: [1], values: [0] }, ConstantMul: { shape: [1], values: [1] }, Dropout: { p: 0.3 }, Dropout1d: { p: 0.3 }, Dropout2d: { p: 0.3 }, Dropout3d: { p: 0.3 }, AlphaDropout: { p: 0.3 }, Embedding: { num_embeddings: 100, embedding_dim: 32 }, Upsample: { scale_factor: 2, mode: 'nearest' },
-  MultiHeadAttention: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, dropout: 0.1 }, Transformer: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, ff_dim: 128, dropout: 0.1 }, Add: {}, Multiply: {}, Concat: { dim: 1 }, Einsum: { equation: 'bshd,bthd->bsht' }, Scale: { factor: 0.25 }, Reduce: { op: 'mean', dim: -1, keepdim: 0 }, GLU: { dim: -1 }, Group: {}
+  MultiHeadAttention: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, dropout: 0.1 }, Transformer: { attention_type: 'self', embed_dim: 64, num_heads: 1, kv_heads: 1, branches: 1, ff_dim: 128, dropout: 0.1 }, Add: {}, Multiply: {}, Divide: {}, Concat: { dim: 1 }, Einsum: { equation: 'bshd,bthd->bsht' }, Scale: { factor: 0.25 }, Reduce: { op: 'mean', dim: -1, keepdim: 0 }, GLU: { dim: -1 }, Group: {}
 };

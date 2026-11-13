@@ -40,6 +40,7 @@ export function validateGraph(value: unknown): Graph {
     if (n.repeat !== undefined && (!Number.isInteger(n.repeat) || n.repeat < 1 || n.repeat > MAX_REPEAT)) throw new Error(`节点 repeat 必须是 1–${MAX_REPEAT} 的整数`);
     if (n.op === GROUP_OP) { if (typeof n.subgraph !== 'string' || !n.subgraph) throw new Error('结构块实例必须指定 subgraph'); }
     else if (n.subgraph !== undefined) throw new Error('只有结构块实例可以指定 subgraph');
+    if (n.shares !== undefined && (typeof n.shares !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.shares) || n.op === GROUP_OP)) throw new Error('共享权重引用无效');
     for (const [key, v] of Object.entries(n.params)) if (!(typeof v === 'number' && Number.isFinite(v)) && !(typeof v === 'string' && v.length < 200) && !(Array.isArray(v) && v.length <= ((n.op === 'ConstantAdd' || n.op === 'ConstantMul') && key === 'values' ? 65536 : 8) && v.every(x => typeof x === 'number' && Number.isFinite(x)))) throw new Error('节点参数无效');
     ids.add(n.id);
   });
@@ -54,6 +55,8 @@ export function validateGraph(value: unknown): Graph {
   for (const [name, def] of Object.entries(subgraphs)) {
     if (!def || typeof def.name !== 'string' || !Array.isArray(def.nodes) || !Array.isArray(def.edges) || !['auto', 'manual'].includes(def.origin)) throw new Error(`子图 ${name} 定义无效`);
     if (def.nodes.length > 128 || def.edges.length > 512) throw new Error(`子图 ${name} 超过限制（128 层 / 512 连线）`);
+    // 块的每个实例各有一份权重，块内的层 id 在展开时还会被改写，所以共享只允许出现在顶层。
+    if (def.nodes.some(inner => inner?.shares !== undefined)) throw new Error(`子图 ${name} 内的层不能共享权重`);
     let depth = 0;
     const probe = new Set<string>([name]);
     const walk = (key: string) => { if (depth > MAX_SUBGRAPH_DEPTH) throw new Error(`子图嵌套超过 ${MAX_SUBGRAPH_DEPTH} 层`); const target = subgraphs[key]; if (!target) return; depth += 1; for (const inner of target.nodes) if (inner.op === GROUP_OP && inner.subgraph) { if (probe.has(inner.subgraph)) throw new Error(`子图 ${inner.subgraph} 形成循环引用`); probe.add(inner.subgraph); walk(inner.subgraph); probe.delete(inner.subgraph); } depth -= 1; };
@@ -144,8 +147,9 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (parents.length !== 2 || new Set(inputEdges.map(e => crossInputRole(graph, n, e.id))).size !== 2) throw new Error('Cross-Attention 需要两个输入：一个 Query 和一个 Context');
       } else {
         if (inputEdges.some(e => e.targetPort)) throw new Error('Query / Context 端口只适用于 Cross-Attention');
-        if (!['Input', 'Add', 'Multiply', 'Concat', 'Einsum', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply、Concat 或 Einsum');
+        if (!['Input', 'Add', 'Multiply', 'Divide', 'Concat', 'Einsum', 'Bilinear'].includes(n.op) && parents.length !== 1) throw new Error('该层只能接受一个输入；多分支请使用 Add、Multiply、Concat 或 Einsum');
         if (n.op === 'Bilinear' && parents.length !== 2) throw new Error('Bilinear 需要两个输入');
+        if (n.op === 'Divide' && parents.length !== 2) throw new Error('Divide 需要两个输入：先连接被除数，再连接除数');
       }
       let output = [...(input[0] || [])], count = 0;
       if (n.op === 'Input') {
@@ -258,6 +262,14 @@ function analyzeExpanded(graph: Graph): Analysis {
           const lengths = projectionPorts(n).filter(p => p.branch === b && p.role !== 'Q').map(p => portShapes[p.id][1]);
           if (new Set(lengths).size !== 1) throw new Error('同一分支 K/V 的序列长度必须一致');
         }
+        // A causal mask lets position t attend to keys 0..t, which only means something when
+        // keys and queries are the same positions: self-attention, with every K/V the query's
+        // own length. Cross-attention and a K/V override of another length are refused rather
+        // than given a rectangular triangle. backend/graph.py makes the same call.
+        if (integer('causal', 0, 0, 1)) {
+          if (type === 'cross') throw new Error('causal 掩码只适用于自注意力，Cross-Attention 不支持');
+          if (Array.from({ length: branches }, (_, b) => portShapes[`b${b}:k0`][1]).some(length => length !== output[1])) throw new Error('causal 掩码要求 K/V 序列长度与 Query 一致');
+        }
         const dropout = n.params.dropout ?? 0.1;
         if (typeof dropout !== 'number' || !Number.isFinite(dropout) || dropout < 0 || dropout >= 1) throw new Error('dropout 需要在 [0,1) 范围内');
         const attentionElements = output[0] * heads * output[1] * Array.from({ length: branches }, (_, b) => portShapes[`b${b}:k0`][1]).reduce((a, b) => a + b, 0);
@@ -284,6 +296,13 @@ function analyzeExpanded(graph: Graph): Analysis {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Add 至少需要两个完全相同形状的输入');
       } else if (n.op === 'Multiply') {
         if (input.length < 2 || input.some(s => s.join(',') !== output.join(','))) throw new Error('Multiply 至少需要两个完全相同形状的输入');
+      } else if (n.op === 'Divide') {
+        // `dividend / divisor` in edge order. The divisor either matches the dividend or is 1 on
+        // any non-batch axis -- the shape `x.sum(-1, keepdim=True)` leaves -- so the result always
+        // has the dividend's shape. The dividend itself is never broadcast, and neither operand
+        // may differ in rank: that is the whole of the broadcasting this graph admits.
+        const divisor = input[1];
+        if (divisor.length !== output.length || divisor[0] !== output[0] || divisor.some((size, axis) => axis > 0 && size !== 1 && size !== output[axis])) throw new Error('Divide 的除数形状须与被除数一致，或在非 batch 维度上为 1');
       } else if (n.op === 'Scale') {
         // Shape-preserving elementwise scale; the factor is the attention `1/sqrt(d)` or similar.
         const factor = n.params.factor;
@@ -352,6 +371,23 @@ function analyzeExpanded(graph: Graph): Analysis {
   }
   const batches = graph.nodes.filter(n => n.op === 'Input' && layers[n.id]).map(n => layers[n.id].output[0]);
   if (new Set(batches).size > 1) add('INPUT_BATCH', '所有模型输入的 batch 维度必须一致');
+  // 权重共享：带 `shares` 的层复用另一层的模块，所以它自己不拥有参数。两层必须是同一个算子、
+  // 参数逐项相同，并且各自算出的参数量相同——对这里的算子来说，这等价于权重形状相同。
+  // backend/graph.py 给出同样的判断。
+  const canonical = (params: Record<string, unknown>) => JSON.stringify(Object.keys(params).sort().map(key => [key, params[key]]));
+  for (const n of graph.nodes) {
+    if (n.shares === undefined) continue;
+    const info = layers[n.id], owner = graph.nodes.find(other => other.id === n.shares), ownerInfo = owner ? layers[owner.id] : undefined;
+    const fail = (message: string) => add('SHARED_WEIGHTS', message, n.id);
+    if (!owner || owner.id === n.id) fail('共享权重需要指向另一层');
+    else if (owner.shares !== undefined) fail('共享权重只能指向拥有参数的层，不能指向另一个共享层');
+    else if (owner.op !== n.op || canonical(owner.params) !== canonical(n.params)) fail('共享权重的两层必须是相同算子且参数一致');
+    else if (repeatOf(n) !== 1 || repeatOf(owner) !== 1) fail('共享权重的层不能使用 repeat 折叠');
+    else if (!info || !ownerInfo) continue;
+    else if (!ownerInfo.parameters) fail('被共享的层没有可共享的参数');
+    else if (info.parameters !== ownerInfo.parameters) fail('共享权重的两层输入形状不同，权重形状不一致');
+    else { parameters -= info.parameters; layers[n.id] = { ...info, parameters: 0 }; }
+  }
   if (parameters > 50e6) add('PARAMETER_LIMIT', '模型总参数超过 5000 万，请减少头维度或分支数');
   if (parameters > 0) Object.entries(layers).forEach(([id, info]) => { if (info.parameters > 1e4 && info.parameters / parameters > 0.7) add('PARAMETER_HOG', `该层占总参数 ${(info.parameters / parameters * 100).toFixed(0)}%，考虑池化或降维`, id, 'warning'); });
   return { layers, order, diagnostics, parameters, activationBytes, valid: !diagnostics.some(d => d.level === 'error') };

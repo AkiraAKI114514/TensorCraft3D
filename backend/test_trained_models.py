@@ -1,5 +1,6 @@
 """Regression tests for retained training snapshots and trained inference."""
 import copy
+import hashlib
 import json
 import threading
 import unittest
@@ -281,6 +282,50 @@ class TrainedModelRuntimeTests(unittest.TestCase):
         for variant in mutations:
             with self.subTest(variant=variant):
                 self.assertNotEqual(baseline, graph_fingerprint(variant))
+
+    def test_graph_fingerprint_covers_folded_repeats_and_block_contents(self):
+        def layer(node_id, op, params=None, **extra):
+            return {"id": node_id, "name": node_id, "op": op, "params": params or {}, "position": {"x": 0, "y": 0}, **extra}
+
+        graph = {
+            "version": 1, "name": "Blocks",
+            "nodes": [layer("in", "Input", {"shape": [2, 8]}), layer("stack", "Group", subgraph="cell", repeat=2), layer("head", "Linear", {"out_features": 2}), layer("out", "Output")],
+            "edges": [{"id": "e0", "source": "in", "target": "stack"}, {"id": "e1", "source": "stack", "target": "head"}, {"id": "e2", "source": "head", "target": "out"}],
+            "subgraphs": {
+                "cell": {"id": "cell", "name": "Cell", "origin": "manual", "nodes": [layer("fc", "Linear", {"out_features": 8}), layer("tail", "Group", subgraph="deep")], "edges": [{"id": "c0", "source": "fc", "target": "tail"}]},
+                "deep": {"id": "deep", "name": "Deep", "origin": "manual", "nodes": [layer("act", "Tanh")], "edges": []},
+                "unused": {"id": "unused", "name": "Unused", "origin": "manual", "nodes": [layer("x", "ReLU")], "edges": []},
+            },
+        }
+        baseline = graph_fingerprint(graph)
+        # Names and positions inside a block, an explicit repeat of 1 and a definition nothing
+        # runs do not change what the graph computes.
+        same = copy.deepcopy(graph)
+        same["subgraphs"]["cell"]["name"] = "Renamed"
+        for node in same["subgraphs"]["cell"]["nodes"]:
+            node["name"], node["position"] = "shown", {"x": 9, "y": 9}
+        same["nodes"][2]["repeat"] = 1
+        del same["subgraphs"]["unused"]
+        self.assertEqual(baseline, graph_fingerprint(same))
+        edits = [
+            lambda g: g["nodes"][1].update(repeat=3),
+            lambda g: g["nodes"][2].update(repeat=2),
+            lambda g: g["subgraphs"]["cell"]["nodes"][0]["params"].update(out_features=4),
+            lambda g: g["subgraphs"]["cell"]["nodes"][1].update(repeat=2),
+            lambda g: g["subgraphs"]["deep"]["nodes"][0].update(op="ReLU"),
+        ]
+        for index, edit in enumerate(edits):
+            changed = copy.deepcopy(graph)
+            edit(changed)
+            with self.subTest(edit=index):
+                self.assertNotEqual(baseline, graph_fingerprint(changed))
+        # A graph without repeats or blocks keeps the fingerprint it always had.
+        plain = self.linear_graph()
+        legacy = {
+            "nodes": [{"id": node["id"], "op": node["op"], "params": node["params"]} for node in plain["nodes"]],
+            "edges": [{key: edge[key] for key in ("source", "target") if key in edge} for edge in plain["edges"]],
+        }
+        self.assertEqual(graph_fingerprint(plain), hashlib.sha256(json.dumps(legacy, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest())
 
     def test_csv_normalization_is_training_split_only_and_replayed_for_raw_inference(self):
         graph = self.linear_graph()

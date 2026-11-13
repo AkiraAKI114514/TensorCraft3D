@@ -203,11 +203,14 @@ export function generatePython(graph: Graph) {
         case 'MultiHeadAttention':
         case 'Transformer': {
           const cfg = attentionConfig(p);
-          expr = `${node.op === 'Transformer' ? 'TensorLabTransformer' : 'TensorLabAttention'}(embed_dim=${p.embed_dim ?? 64}, num_heads=${cfg.heads}, kv_heads=${cfg.kvHeads}, dropout=${p.dropout ?? 0.1}, attention_type=${JSON.stringify(cfg.type)}, branches=${cfg.branches}${node.op === 'Transformer' ? `, ff_dim=${p.ff_dim ?? 128}, norm_first=${Number(p.norm_first ?? 1) ? 'True' : 'False'}, activation=${JSON.stringify(p.activation ?? 'gelu')}` : ''})`;
+          expr = `${node.op === 'Transformer' ? 'TensorLabTransformer' : 'TensorLabAttention'}(embed_dim=${p.embed_dim ?? 64}, num_heads=${cfg.heads}, kv_heads=${cfg.kvHeads}, dropout=${p.dropout ?? 0.1}, attention_type=${JSON.stringify(cfg.type)}, branches=${cfg.branches}${node.op === 'Transformer' ? `, ff_dim=${p.ff_dim ?? 128}, norm_first=${Number(p.norm_first ?? 1) ? 'True' : 'False'}, activation=${JSON.stringify(p.activation ?? 'gelu')}` : ''}${Number(p.causal ?? 0) ? ', causal=True' : ''})`;
           break;
         }
         case 'Add': forward.push(`        values[${key}] = ${inputs.join(' + ')}`); continue;
         case 'Multiply': forward.push(`        values[${key}] = ${inputs.join(' * ')}`); continue;
+        // Operand order is edge order: the first input is the dividend. `/` broadcasts a keepdim
+        // divisor natively, so this needs no embedded helper.
+        case 'Divide': forward.push(`        values[${key}] = ${inputs[0]} / ${inputs[1]}`); continue;
         case 'Concat': forward.push(`        values[${key}] = torch.cat([${inputs.join(', ')}], dim=${p.dim ?? 1})`); continue;
         // `torch.einsum` is native, so unlike ConstantAdd this needs no embedded runtime helper.
         case 'Einsum': forward.push(`        values[${key}] = torch.einsum(${JSON.stringify(p.equation)}, ${inputs.join(', ')})`); continue;
@@ -256,8 +259,12 @@ export function generatePython(graph: Graph) {
         }
         declared = `${className}()`;
       }
-      declare(node.id, declared, repeat);
-      const accessor = attr(node.id);
+      // A layer that shares weights declares nothing: it calls its owner's module, which is what
+      // makes the two calls one set of weights in the generated code and on re-import. The
+      // analyzers only admit sharing between unfolded top-level layers, so the owner is always
+      // an entry of this same `self.layers`.
+      if (node.shares === undefined) declare(node.id, declared, repeat);
+      const accessor = attr(node.shares ?? node.id);
       if (isAttention(node.op)) {
         const overrideMap = `{${overrides.map(e => `${JSON.stringify(e.targetPort)}: ${value(e)}`).join(', ')}}`;
         if (repeat === 1) forward.push(`        values[${key}], ports[${key}] = ${accessor}.forward_with_ports(${inputs[0]}, ${inputs[1] ?? 'None'}, overrides=${overrideMap})`);

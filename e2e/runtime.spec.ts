@@ -1,4 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { test, expect } from '@playwright/test';
+import type { InferenceReport, TensorSnapshot } from '../src/inferenceTypes';
+import type { Graph, Layer } from '../src/types';
 
 const source = `import math
 import torch
@@ -150,5 +153,256 @@ test('shows CUDA diagnostics and setup without automatically running GPU tests',
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('cuda-mobile.png') });
+  expect(errors).toEqual([]);
+});
+
+test('the getting-started guide follows what the user does and never runs anything itself', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const inferCalls: string[] = []; page.on('request', request => { if (request.url().endsWith('/api/infer')) inferCalls.push(request.url()); });
+  let sockets = 0; page.on('websocket', () => { sockets++; });
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '上手引导', exact: true }).click();
+  const guide = page.getByRole('region', { name: '上手引导', exact: true });
+  await expect(guide).toContainText('已完成 0 / 5 步');
+  // Each button only navigates: here it moves focus to the template picker.
+  await guide.getByRole('button', { name: '去选模板', exact: true }).click();
+  await expect(page.getByLabel('模型模板')).toBeFocused();
+  await page.getByLabel('模型模板').selectOption('mlp');
+  await expect(guide).toContainText('已完成 1 / 5 步');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node').first().click();
+  await expect(guide).toContainText('已完成 2 / 5 步');
+  // Opening the inspector is not an observation; only the user's own run completes the step.
+  await guide.getByRole('button', { name: '打开张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  const run = panel.getByRole('button', { name: '运行单样本推理', exact: true });
+  await expect(run).toBeEnabled();
+  await expect(guide).toContainText('已完成 2 / 5 步');
+  expect(inferCalls).toHaveLength(0);
+  const response = page.waitForResponse('**/api/infer');
+  await run.click();
+  expect((await response).ok()).toBe(true);
+  await expect(guide).toContainText('已完成 3 / 5 步');
+  // The training step opens the dialog and stops there: no socket, no progress.
+  await guide.getByRole('button', { name: '打开训练设置', exact: true }).click();
+  await expect(page.getByRole('button', { name: '开始真实训练', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
+  expect(sockets).toBe(0);
+  await expect(guide).toContainText('已完成 3 / 5 步');
+  await guide.getByRole('button', { name: '打开代码导出', exact: true }).click();
+  await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
+  await expect(guide).toContainText('已完成 4 / 5 步');
+  // Progress is the user's, so it survives a reload and can be started over.
+  await page.reload();
+  await page.getByRole('button', { name: '上手引导', exact: true }).click();
+  await expect(guide).toContainText('已完成 4 / 5 步');
+  await guide.getByRole('button', { name: '重新开始', exact: true }).click();
+  await expect(guide).toContainText('已完成 0 / 5 步');
+  expect(errors).toEqual([]);
+});
+
+test('imports a layer called twice as shared weights and lets the panel untie and retie it', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const tied = `from torch import nn
+import torch.nn.functional as F
+
+class TiedNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cell = nn.Linear(8, 8)
+        self.head = nn.Linear(8, 2)
+    def forward(self, x):
+        x = F.relu(self.cell(x))
+        x = F.relu(self.cell(x))
+        return self.head(x)
+`;
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '导入 PyTorch 代码', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '导入 PyTorch 代码', exact: true });
+  await dialog.getByRole('textbox', { name: 'PyTorch 源代码', exact: true }).fill(tied);
+  await dialog.getByRole('button', { name: '解析代码', exact: true }).click();
+  await dialog.getByLabel('导入输入形状 x').fill('2, 8');
+  await dialog.getByRole('button', { name: '解析代码', exact: true }).click();
+  await expect(dialog.locator('.diagnostic-item.info', { hasText: 'SHARED_WEIGHTS' })).toContainText('已导入为权重共享');
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('button', { name: '导入模型', exact: true }).click();
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  // 8*8+8 for the cell, counted once, plus 8*2+2 for the head.
+  const total = page.locator('.model-summary strong').first();
+  await expect(total).toHaveText('90');
+  const graph = await page.evaluate(() => JSON.parse(localStorage.getItem('tensorlab-project')!) as Graph);
+  const sharing = graph.nodes.filter(node => node.shares !== undefined);
+  expect(sharing).toHaveLength(1);
+  const [{ id, shares: owner }] = sharing;
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator(`.react-flow__node[data-id="${id}"]`).click();
+  const share = page.getByLabel('共享权重自', { exact: true });
+  await expect(share).toHaveValue(owner!);
+  await share.selectOption('');
+  await expect(total).toHaveText('162');
+  await share.selectOption(owner!);
+  await expect(total).toHaveText('90');
+  await page.getByRole('button', { name: '导出代码', exact: true }).click();
+  await expect(page.locator('.code-preview')).toContainText(`values["${id}"] = self.layers["${owner}"](`);
+  expect(errors).toEqual([]);
+});
+
+test('opens an observation snapshot written by an outside Python process, read-only and bound to its graph', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const inferences: string[] = []; page.on('request', request => { if (request.url().includes('/api/infer')) inferences.push(request.url()); });
+  const layer = (id: string, op: Layer['op'], params: Layer['params'], x: number): Layer => ({ id, name: id, op, params, position: { x, y: 160 } });
+  const nodes = [layer('image', 'Input', { shape: [2, 1, 6, 6] }, 0), layer('conv', 'Conv2d', { out_channels: 4, kernel_size: 3, stride: 1, padding: 1, bias: 1 }, 180), layer('relu', 'ReLU', {}, 360), layer('flat', 'Flatten', {}, 540), layer('head', 'Linear', { out_features: 2 }, 720), layer('out', 'Output', {}, 900)];
+  const graph: Graph = { version: 1, name: 'Observed CNN', nodes, edges: nodes.slice(1).map((node, index) => ({ id: `e${index}`, source: nodes[index].id, target: node.id })) };
+  // The outside process: weights it trained (here: seeded) and one real sample, written by the
+  // snapshot writer. The browser receives only the file.
+  const snapshot = execFileSync('.venv/Scripts/python.exe', ['-c', `import json, sys, torch
+from backend.observation_snapshot import capture_snapshot, snapshot_json
+from backend.training import build_model
+graph = json.load(sys.stdin)
+torch.manual_seed(5)
+model, _ = build_model(graph)
+print(snapshot_json(capture_snapshot(graph, model.state_dict(), torch.randn(1, 1, 6, 6), label="one sample from the outside run")))
+`], { input: JSON.stringify(graph), encoding: 'utf8', timeout: 60000 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const inspector = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  await inspector.getByLabel('观测来源', { exact: true }).selectOption('offline');
+  await inspector.getByLabel('观测快照文件', { exact: true }).setInputFiles({ name: 'sample.observation.json', mimeType: 'application/json', buffer: Buffer.from(snapshot) });
+  await expect(inspector.locator('.tensor-offline')).toContainText('离线快照 · CPU · eval');
+  await expect(inspector.locator('.tensor-offline')).toContainText('one sample from the outside run');
+  await expect(inspector.locator('.tensor-offline')).toContainText('外部进程加载的权重');
+  // The starting project is another graph, so nothing is shown until its own graph is opened.
+  const unbound = inspector.locator('.tensor-stale');
+  await expect(unbound).toContainText('快照测量的是另一张计算图');
+  await inspector.getByRole('button', { name: '打开快照中的模型', exact: true }).click();
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await expect(unbound).toHaveCount(0);
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="conv"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  await expect(inspector).toContainText('conv · 实测输出');
+  await expect(inspector.locator('.tensor-activation .tensor-stats')).toContainText('[1, 4, 6, 6]');
+  // All four captured channels are in the grid; choosing one moves the window without a run.
+  const channels = inspector.locator('.tensor-activation .channel-grid-items button');
+  await expect(channels).toHaveCount(4);
+  await expect(inspector.locator('.tensor-activation .channel-grid')).toContainText('点选通道直接查看它的窗口');
+  await channels.nth(2).click();
+  await expect(inspector.locator('.tensor-activation .tensor-semantic')).toContainText('特征图 · 通道 2');
+  await expect(inspector.getByRole('region', { name: '实测张量切片', exact: true }).locator('td').first()).toHaveAttribute('title', /^\[0, 2, 0, 0\] = /);
+  // Undo returns to the earlier project, which the snapshot does not describe; redo binds it again.
+  await page.keyboard.press('Control+z');
+  await expect(unbound).toContainText('快照测量的是另一张计算图');
+  await expect(inspector.locator('.tensor-stats')).toHaveCount(0);
+  await page.keyboard.press('Control+y');
+  await expect(unbound).toHaveCount(0);
+  await inspector.getByRole('button', { name: '关闭快照', exact: true }).click();
+  await expect(inspector.locator('.tensor-offline')).toHaveCount(0);
+  expect(inferences).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('observes a layer inside a repeated block live and from a snapshot, at the same chosen instance', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  const inferences: string[][] = []; page.on('request', request => { if (request.url().endsWith('/api/infer')) inferences.push(request.postDataJSON().nodeIds); });
+  const layer = (id: string, op: Layer['op'], params: Layer['params'], x: number, extra: Partial<Layer> = {}): Layer => ({ id, name: id, op, params, position: { x, y: 160 }, ...extra });
+  const nodes = [layer('features', 'Input', { shape: [2, 8] }, 0), layer('stack', 'Group', {}, 220, { name: 'Cell ×3', subgraph: 'cell', repeat: 3 }), layer('head', 'Linear', { out_features: 2 }, 440), layer('out', 'Output', {}, 660)];
+  const graph: Graph = {
+    version: 1, name: 'Folded cells', nodes, edges: nodes.slice(1).map((node, index) => ({ id: `e${index}`, source: nodes[index].id, target: node.id })),
+    subgraphs: { cell: { id: 'cell', name: 'Cell', origin: 'manual', nodes: [layer('fc', 'Linear', { out_features: 8 }, 0), layer('act', 'Tanh', {}, 220)], edges: [{ id: 'c0', source: 'fc', target: 'act' }] } },
+  };
+  // The outside writer with the inspector's own defaults (seed 42, seeded weights, synthetic
+  // sample), so the snapshot holds the numbers a live run measures.
+  const file = execFileSync('.venv/Scripts/python.exe', ['-c', `import json, sys
+from backend.observation_snapshot import capture_snapshot, snapshot_json
+print(snapshot_json(capture_snapshot(json.load(sys.stdin), seed=42)))
+`], { input: JSON.stringify(graph), encoding: 'utf8', timeout: 60000 });
+  const written = JSON.parse(file) as { tensors: TensorSnapshot[] };
+  const offlineTensor = (nodeId: string) => written.tensors.find(tensor => tensor.nodeId === nodeId)!;
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), graph);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="stack"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true });
+  const run = panel.getByRole('button', { name: '运行单样本推理', exact: true });
+  // The block itself is what leaves it: its last instance's exit layer.
+  await expect(panel).toContainText('结构块的输出来自最后一个实例的出口层 stack/2/act。');
+  const blockRun = page.waitForResponse('**/api/infer');
+  await run.click();
+  const blockReport = await (await blockRun).json() as InferenceReport;
+  expect(blockReport.tensors.find(tensor => tensor.nodeId === 'stack/2/act')).toEqual(offlineTensor('stack/2/act'));
+  await expect(panel).toContainText('Cell ×3 · 实测输出');
+  const liveBlock = await panel.locator('.tensor-activation .tensor-stats').innerText();
+  // The snapshot is looked up through the same mapping, so it shows the same layer.
+  const source = panel.getByLabel('观测来源', { exact: true });
+  await source.selectOption('offline');
+  await panel.getByLabel('观测快照文件', { exact: true }).setInputFiles({ name: 'cells.observation.json', mimeType: 'application/json', buffer: Buffer.from(file) });
+  await expect(panel.locator('.tensor-offline')).toContainText('离线快照 · CPU · eval');
+  await expect(panel.locator('.tensor-stale')).toHaveCount(0);
+  await expect(panel.locator('.tensor-activation .tensor-stats')).toHaveText(liveBlock, { useInnerText: true });
+  await source.selectOption('live');
+
+  // Inside the block a layer runs once per instance; instance 0 is observed until another is chosen.
+  await page.getByRole('button', { name: '层属性', exact: true }).click();
+  await page.getByRole('button', { name: '进入结构块', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="fc"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const instance = panel.getByLabel('观测实例 · Cell', { exact: true });
+  await expect(instance).toHaveValue('0');
+  await expect(instance).toHaveAttribute('max', '2');
+  await expect(panel).toContainText('观测展开后的层 stack/0/fc。');
+  await expect(panel).toContainText('当前层未包含在本次采样中');
+  await instance.fill('1');
+  await expect(panel).toContainText('观测展开后的层 stack/1/fc。');
+  const layerRun = page.waitForResponse('**/api/infer');
+  await run.click();
+  const layerReport = await (await layerRun).json() as InferenceReport;
+  expect(layerReport.tensors.find(tensor => tensor.nodeId === 'stack/1/fc')).toEqual(offlineTensor('stack/1/fc'));
+  await expect(panel).toContainText('fc · 实测输出');
+  await expect(panel.locator('.tensor-activation .tensor-stats')).toContainText('[1, 8]');
+  const liveLayer = await panel.locator('.tensor-activation .tensor-stats').innerText();
+  expect(inferences).toEqual([['stack/2/act', 'out'], ['stack/1/fc', 'out']]);
+
+  // The snapshot, still open, shows the same chosen instance.
+  await source.selectOption('offline');
+  await expect(instance).toHaveValue('1');
+  await expect(panel.locator('.tensor-activation .tensor-stats')).toHaveText(liveLayer, { useInnerText: true });
+  // Another instance needs no run offline: the snapshot holds every expanded layer.
+  await instance.fill('2');
+  await expect(panel).toContainText('观测展开后的层 stack/2/fc。');
+  const cell = panel.getByRole('region', { name: '实测张量切片', exact: true }).locator('td').first();
+  await expect(cell).toHaveAttribute('title', `[0, 0] = ${offlineTensor('stack/2/fc').slice.values[0][0]}`);
+  expect(inferences).toHaveLength(2);
+  expect(errors).toEqual([]);
+});
+
+test('shows one kernel window per convolution and pooling layer, with its measured output value', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/');
+  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  // Paused, so only the toggle can change the frame.
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  const checksum = () => page.locator('canvas').evaluate(canvas => new Promise<number>(resolve => requestAnimationFrame(() => {
+    const c = canvas as HTMLCanvasElement, gl = c.getContext('webgl2')!, buffer = new Uint8Array(c.width * c.height * 4);
+    gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+    let sum = 0; for (let i = 0; i < buffer.length; i += 4) sum = (sum + buffer[i] * (1 + i % 31) + buffer[i + 2]) >>> 0;
+    resolve(sum);
+  })));
+  const shown = await checksum();
+  await page.getByRole('button', { name: '隐藏卷积窗口', exact: true }).click();
+  await expect.poll(checksum).not.toBe(shown);
+  const hidden = await checksum();
+  await page.getByRole('button', { name: '显示卷积窗口', exact: true }).click();
+  await expect.poll(checksum).not.toBe(hidden);
+  // With every layer measured, an output element inside the painted window shows its value.
+  await expect(page.locator('.kernel-value')).toHaveCount(0);
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  await page.getByRole('button', { name: '观测全部层，画到三维视图', exact: true }).click();
+  await expect(page.locator('.scene-observation')).toContainText('实测值 · 单样本');
+  await expect(page.locator('.kernel-value').first()).toHaveText(/^= -?\d/);
   expect(errors).toEqual([]);
 });
