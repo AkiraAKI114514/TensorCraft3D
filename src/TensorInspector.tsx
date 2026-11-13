@@ -10,7 +10,7 @@ import { observationFromReport, observationFromSnapshot, type SceneObservation }
 import AttentionInspector from './AttentionInspector';
 import ValueExplanationView, { EXPLAINED_OPS, defaultExplainIndex, explainAxes } from './ValueExplanation';
 import { analyze } from './analysis';
-import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
+import { attentionConfig, edgeOutputShape, incomingEdges, inspectsAttention, isProjectionPort } from './attentionConfig';
 import { expandGraph, expandedLayerAt, graphAt } from './subgraph';
 import './TensorInspector.css';
 
@@ -55,7 +55,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const [attentionSelections, setAttentionSelections] = useState<Record<string, AttentionSelection>>({});
   // Shapes of what actually runs, keyed by the expanded IDs that inference and snapshots use.
   const layers = useMemo(() => runtime ? analyze(runtime).layers : {}, [runtime]);
-  const attentionNode = observed && isAttention(observed.op) ? observed : undefined;
+  const attentionNode = observed && inspectsAttention(observed.op) ? observed : undefined;
   const attentionConfigValue = attentionNode ? attentionConfig(attentionNode.params) : null;
   const attentionSelection = observedId ? attentionSelections[observedId] ?? NO_ATTENTION : NO_ATTENTION;
   const queryLength = attentionNode ? layers[attentionNode.id]?.output[1] ?? 1 : 1;

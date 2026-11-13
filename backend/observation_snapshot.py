@@ -27,16 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .inference import AttentionSelection, InferenceError, _device_name, _execute, _input_tensors, _prepare_graph, _resolve_slices, _validate_attention, describe_parameters
+from .inference import ATTENTION_OPS, AttentionSelection, InferenceError, _device_name, _execute, _input_tensors, _prepare_graph, _resolve_slices, _validate_attention, describe_parameters
 
 FORMAT = "tensorcraft-observation"
 VERSION = 1
 # The workbench refuses a larger file before parsing it.
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 MAX_LABEL_LENGTH = 120
-ATTENTION_OPS = ("Transformer", "MultiHeadAttention")
-
-
 def _flatten_inputs(inputs: Any, info: dict[str, Any], torch: Any) -> dict[str, list[Any]]:
     """One sample per Input node, flattened the way the inspector's custom sample is.
 

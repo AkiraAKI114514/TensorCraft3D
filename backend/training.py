@@ -60,7 +60,8 @@ def build_model(graph):
     # what the forward loop below iterates.
     graph = expand_subgraphs(graph)
     info = analyze_expanded_graph(graph)
-    from .attention import TensorLabAttention, TensorLabTransformer
+    from .attention import TensorLabAttention, TensorLabLatentAttention, TensorLabTransformer
+    from .moe import TensorLabMoE
     from .tensor_ops import TensorLabConstantAdd, TensorLabConstantMul
     class GraphModel(nn.Module):
         def __init__(self):
@@ -121,6 +122,10 @@ def build_model(graph):
                     elif op in ("MultiHeadAttention", "Transformer"):
                         args = {"embed_dim": int(p.get("embed_dim", 64)), "num_heads": int(p.get("num_heads", 1)), "kv_heads": int(p["kv_heads"]) if "kv_heads" in p else None, "dropout": float(p.get("dropout", 0.1)), "attention_type": p.get("attention_type", "self"), "branches": int(p.get("branches", 1)), "causal": bool(p.get("causal", 0))}
                         return TensorLabTransformer(**args, ff_dim=int(p.get("ff_dim", 128)), norm_first=bool(p.get("norm_first", 1)), activation=p.get("activation", "gelu")) if op == "Transformer" else TensorLabAttention(**args)
+                    elif op == "LatentAttention":
+                        return TensorLabLatentAttention(int(p.get("embed_dim", 64)), num_heads=int(p.get("num_heads", 4)), q_lora_rank=int(p.get("q_lora_rank", 32)), kv_lora_rank=int(p.get("kv_lora_rank", 32)), qk_nope_head_dim=int(p.get("qk_nope_head_dim", 16)), qk_rope_head_dim=int(p.get("qk_rope_head_dim", 8)), v_head_dim=int(p.get("v_head_dim", 16)), rope_theta=float(p.get("rope_theta", 10000.0)), causal=bool(int(p.get("causal", 1))), eps=float(p.get("eps", 1e-6)))
+                    elif op == "MoE":
+                        return TensorLabMoE(in_shape[-1], experts=int(p.get("experts", 8)), top_k=int(p.get("top_k", 2)), shared_experts=int(p.get("shared_experts", 1)), expert_dim=int(p.get("expert_dim", 64)), score_func=str(p.get("score_func", "sigmoid")), route_scale=float(p.get("route_scale", 1.0)), groups=int(p.get("groups", 1)), topk_groups=int(p.get("topk_groups", 1)), gate_bias=bool(int(p.get("gate_bias", 1))))
                     else: return None
                 try:
                     module = build()
@@ -184,6 +189,17 @@ def build_model(graph):
                         value, ports[key] = instance.forward_with_ports(query, context, overrides, observer=attention_callback)
                         query = value
                     values[key] = query
+                elif op == "LatentAttention":
+                    # Its own operator with no ports, but it reports Q/K/V, scores and outputs through
+                    # the same attention observer, so the Attention Inspector reads it like any head.
+                    callback = None
+                    if attention_observer is not None:
+                        callback = lambda stage, branch, tensors, node_id=key: attention_observer(node_id, stage, branch, tensors)
+                    instances = self.layers[module_key]
+                    value = args[0]
+                    for instance in (instances if isinstance(instances, nn.ModuleList) else (instances,)):
+                        value = instance(value, observer=callback)
+                    values[key] = value
                 elif module_key in self.layers:
                     instances = self.layers[module_key]
                     # Folded nodes run their independent instances in series; shapes are preserved.
@@ -300,6 +316,8 @@ def train(graph, config, emit, stop, retain_model=None):
             preprocessing[key] = {"mean": mean, "scale": scale}
             train_x[key], val_x[key] = (train_x[key] - mean) / scale, (val_x[key] - mean) / scale
     criterion = nn.CrossEntropyLoss(); optimizer = torch.optim.Adam(model.parameters(), lr=config["learningRate"])
+    from .moe import TensorLabMoE
+    balanced = [module for module in model.modules() if isinstance(module, TensorLabMoE)]
     best_loss, stale, best_state, best_epoch = float("inf"), 0, None, 0
     training_run_id = str(uuid.uuid4())
     def finish(reason, epoch):
@@ -343,6 +361,10 @@ def train(graph, config, emit, stop, retain_model=None):
             for key, value in model.dead_relu.items(): dead_sums[key] = dead_sums.get(key, 0) + value
             torch.nn.utils.clip_grad_norm_(model.parameters(), 100.0)
             optimizer.step(); total_loss += loss.item() * len(indices); seen += len(indices)
+            # DeepSeek-V3's auxiliary-loss-free balancing: after each step, nudge every MoE gate's
+            # selection bias towards an even load. Off unless asked for; no loss term is added.
+            if config.get("moeBalancing"):
+                for module in balanced: module.balance()
         model.eval(); val_loss = 0.0; correct = 0
         with torch.no_grad():
             for start in range(0, len(val_y), batch):

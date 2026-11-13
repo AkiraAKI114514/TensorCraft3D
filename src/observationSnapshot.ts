@@ -1,4 +1,5 @@
 import { validateGraph } from './analysis';
+import { inspectsAttention } from './attentionConfig';
 import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type HeadSummary, type ParameterSnapshot, type TensorSnapshot } from './inferenceTypes';
 import { expandGraph } from './subgraph';
 import { computationKey } from './trainedModel';
@@ -140,7 +141,7 @@ export function parseObservationSnapshot(source: string): ObservationSnapshot {
   const seen = new Set<string>();
   tensors.forEach((item, index) => { if (!nodes.has(item.nodeId) || seen.has(item.nodeId)) invalid(`tensors[${index}].nodeId`); seen.add(item.nodeId); });
   const attended = new Set<string>();
-  attentions.forEach((item, index) => { const op = nodes.get(item.nodeId); if ((op !== 'MultiHeadAttention' && op !== 'Transformer') || attended.has(item.nodeId)) invalid(`attentions[${index}].nodeId`); attended.add(item.nodeId); });
+  attentions.forEach((item, index) => { const op = nodes.get(item.nodeId); if (!op || !inspectsAttention(op) || attended.has(item.nodeId)) invalid(`attentions[${index}].nodeId`); attended.add(item.nodeId); });
   // Weights and biases are optional: a file from before they were written simply has none.
   const parameterFile = file.parameters === undefined ? {} : record(file.parameters, 'parameters');
   if (Object.keys(parameterFile).length > MAX_ENTRIES) invalid('parameters');
