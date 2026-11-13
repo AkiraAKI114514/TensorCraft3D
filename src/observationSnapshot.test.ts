@@ -100,6 +100,18 @@ describe('offline observation snapshots', () => {
     expect(snapshotMatches(changed, snapshot)).toBe(false);
   });
 
+  it('carries each layer\'s weights and checks them like any other tensor', () => {
+    const snapshot = parseObservationSnapshot(plain.snapshot);
+    expect(Object.keys(snapshot.parameters).sort()).toEqual(['conv', 'head']);
+    expect(snapshot.parameters.conv.map(entry => [entry.name, entry.shape])).toEqual([['weight', [3, 1, 3, 3]], ['bias', [3]]]);
+    const edit = (change: (value: Record<string, any>) => void) => { const value = JSON.parse(plain.snapshot) as Record<string, any>; change(value); return () => parseObservationSnapshot(JSON.stringify(value)); };
+    expect(edit(value => { value.parameters.ghost = value.parameters.conv; })).toThrow('观测快照内容无效：parameters.ghost');
+    expect(edit(value => { value.parameters.conv[0].nodeId = 'head'; })).toThrow('观测快照内容无效：parameters.conv[0].nodeId');
+    expect(edit(value => { value.parameters.conv[0].owner = 'ghost'; })).toThrow('观测快照内容无效：parameters.conv[0].owner');
+    // A file from before weights were written has none, and is still read.
+    expect(parseObservationSnapshot(JSON.stringify({ ...JSON.parse(plain.snapshot), parameters: undefined })).parameters).toEqual({});
+  });
+
   it('moves the main window only between channels it captured', () => {
     const conv = parseObservationSnapshot(plain.snapshot).tensors.find(tensor => tensor.nodeId === 'conv')!;
     expect(conv.channels).toMatchObject({ start: 0, count: 3, total: 3, selected: 0 });

@@ -64,6 +64,9 @@ class ObservationSnapshotTests(unittest.TestCase):
             torch.testing.assert_close(torch.tensor(page["maps"][channel]), conv[0, channel])
         self.assertIsNone(by_id["n4"]["channels"])
         self.assertEqual(snapshot["attentions"], [])
+        # The trained weights travel with it, for the layers that have any.
+        self.assertEqual(sorted(snapshot["parameters"]), ["n1", "n4"])
+        self.assertEqual(snapshot["parameters"]["n1"][0]["slice"]["values"], model.layers["n1"].weight[0, 0].detach().tolist())
 
     def test_holds_the_numbers_the_inspector_measures_for_the_same_weights_and_sample(self):
         graph = cnn()

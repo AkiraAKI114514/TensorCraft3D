@@ -2,13 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, Box, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
 import { isGroup, type Graph } from './types';
 import { useI18n } from './i18n';
-import type { AttentionSelection, InferenceReport } from './inferenceTypes';
-import { tensorNumber } from './inferenceTypes';
+import type { AttentionSelection, InferenceReport, ParameterSnapshot } from './inferenceTypes';
+import TensorReadout from './TensorReadout';
 import { MAX_OBSERVATION_BYTES, ObservationSnapshotError, parseObservationSnapshot, snapshotMatches, withChannel, type ObservationSnapshot } from './observationSnapshot';
 import type { TrainedModelMetadata } from './trainedModel';
 import { observationFromReport, observationFromSnapshot, type SceneObservation } from './sceneObservation';
-import TensorHistogram from './TensorHistogram';
-import TensorSemanticView from './TensorSemanticView';
 import AttentionInspector from './AttentionInspector';
 import { analyze } from './analysis';
 import { attentionConfig, edgeOutputShape, incomingEdges, isAttention, isProjectionPort } from './attentionConfig';
@@ -48,6 +46,11 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const [seed, setSeed] = useState(42), [device, setDevice] = useState<'cpu' | 'cuda'>('cpu');
   const [inputMode, setInputMode] = useState<'synthetic' | 'provided'>('synthetic'), [inputText, setInputText] = useState('');
   const [indices, setIndices] = useState<Record<string, number[]>>({});
+  // Weights and biases of the observed layer: which tensor is shown, and its leading indices
+  // (filter, input channel), keyed by `${layer}::${tensor}`.
+  const [parameterChoice, setParameterChoice] = useState<Record<string, string>>({});
+  const [parameterIndices, setParameterIndices] = useState<Record<string, number[]>>({});
+  const [offlineParameterChannels, setOfflineParameterChannels] = useState<Record<string, number>>({});
   const [attentionSelections, setAttentionSelections] = useState<Record<string, AttentionSelection>>({});
   // Shapes of what actually runs, keyed by the expanded IDs that inference and snapshots use.
   const layers = useMemo(() => runtime ? analyze(runtime).layers : {}, [runtime]);
@@ -63,8 +66,8 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const requesting = useRef(false), controller = useRef<AbortController | null>(null), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; controller.current?.abort(); }; }, []);
-  useEffect(() => { setIndices({}); setAttentionSelections({}); setError(''); }, [graph]);
-  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections });
+  useEffect(() => { setIndices({}); setAttentionSelections({}); setParameterIndices({}); setError(''); }, [graph]);
+  const settings = JSON.stringify({ seed, device, weightMode, modelId, inputMode, inputText: inputMode === 'provided' ? inputText : '', indices, attentionSelections, parameterIndices });
   const current = result?.graph === graph && result.settings === settings && weightsAvailable;
   const previousSnapshot = result?.graph === graph && observedId ? result.report.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
   const offlineTensor = offlineBound && offline && observedId ? offline.tensors.find(tensor => tensor.nodeId === observedId) : undefined;
@@ -73,6 +76,22 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   const attentionSnapshot = !observedId ? undefined : live ? (current ? result.report.attentions?.find(value => value.nodeId === observedId) : undefined) : offlineBound && offline ? offline.attentions.find(value => value.nodeId === observedId) : undefined;
   // What the views below show comes from one run or one file; a new one remounts them.
   const viewKey = live ? result?.report.runId ?? '' : offline?.snapshotId ?? '';
+  // The observed layer's weights and biases: shown from a current run or a bound snapshot; the
+  // last run's list also drives the controls, so they stay while a changed index awaits a rerun.
+  const lastParameters: ParameterSnapshot[] = observedId && result?.graph === graph ? (result.report.parameters ?? []).filter(entry => entry.nodeId === observedId) : [];
+  const parameterList: ParameterSnapshot[] = !observedId ? [] : live ? (current ? lastParameters : []) : offlineBound && offline ? offline.parameters[observedId] ?? [] : [];
+  const parameterOptions = live ? lastParameters : parameterList;
+  const parameterName = observedId && parameterOptions.some(entry => entry.name === parameterChoice[observedId]) ? parameterChoice[observedId] : parameterOptions[0]?.name;
+  const parameterControl = parameterOptions.find(entry => entry.name === parameterName);
+  const parameterKey = observedId && parameterName ? `${observedId}::${parameterName}` : '';
+  const parameterShown = parameterList.find(entry => entry.name === parameterName);
+  const parameter = parameterShown && !live && offlineParameterChannels[parameterKey] !== undefined ? withChannel(parameterShown, offlineParameterChannels[parameterKey]) : parameterShown;
+  const parameterOwner = parameter?.owner ? runtime?.nodes.find(layer => layer.id === parameter.owner)?.name ?? parameter.owner : null;
+  const changeParameterIndex = (axis: number, value: number) => {
+    if (!parameterControl || !parameterKey) return;
+    const next = [...(parameterIndices[parameterKey] ?? parameterControl.slice.indices)]; next[axis] = value;
+    setParameterIndices(previous => ({ ...previous, [parameterKey]: next }));
+  };
   const openSnapshot = async (file: File) => {
     setOfflineError('');
     try {
@@ -105,11 +124,14 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
       // The runtime expands folded blocks, so the request names the expanded layer.
       const nodeIds = everyLayer ? [] : Array.from(new Set([observedId!, output]));
       const sliced = everyLayer ? Object.entries(indices).slice(0, 8) : nodeIds.filter(id => indices[id]).map(id => [id, indices[id]] as const);
+      // The observed layer's weights come along: the same model, so the same weights the values used.
+      const ownParameters = observedId ? Object.entries(parameterIndices).filter(([key]) => key.startsWith(`${observedId}::`)).slice(0, 8).map(([key, value]) => [key.slice(observedId.length + 2), value] as const) : [];
+      const weights = observedId ? { parameters: observedId, parameterSlices: Object.fromEntries(ownParameters) } : {};
       const response = await fetch('/api/infer', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.current.signal,
         body: JSON.stringify(everyLayer
-          ? { graph, allNodes: true, seed, device, modelId, inputs, slices: Object.fromEntries(sliced) }
-          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced) })
+          ? { graph, allNodes: true, seed, device, modelId, inputs, slices: Object.fromEntries(sliced), ...weights }
+          : { graph, nodeIds, seed, device, modelId, inputs, attention: attentionNode && attentionReady ? { [attentionNode.id]: attentionSelection } : undefined, slices: Object.fromEntries(sliced), ...weights })
       });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : `单样本推理失败 (${response.status})`);
@@ -206,24 +228,15 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
     {attentionSnapshot && <AttentionInspector key={viewKey + attentionSnapshot.nodeId} snapshot={attentionSnapshot} transformer={observed?.op === 'Transformer'} />}
     {live && current && !snapshot && <p className="tensor-note">{t('当前层未包含在本次采样中，选择该层后重新运行。')}</p>}
     {!live && offlineBound && node && !snapshot && <p className="tensor-note">{t('快照里没有这一层的观测。')}</p>}
-    {snapshot && <>
-      <div className="inspector-section"><h3>{node?.name} · {t('实测输出')}</h3>
-        <dl className="tensor-stats">
-          <div><dt>Shape</dt><dd>{`[${snapshot.shape.join(', ')}]`}</dd></div><div><dt>Dtype</dt><dd>{snapshot.dtype}</dd></div>
-          <div><dt>{t('元素数')}</dt><dd>{snapshot.elements}</dd></div><div><dt>{t('非有限元素')}</dt><dd>{snapshot.nonFiniteCount}</dd></div>
-          <div><dt>Min</dt><dd>{t(tensorNumber(snapshot.stats.min))}</dd></div><div><dt>Max</dt><dd>{t(tensorNumber(snapshot.stats.max))}</dd></div>
-          <div><dt>Mean</dt><dd>{t(tensorNumber(snapshot.stats.mean))}</dd></div><div><dt>{t('Std · 总体')}</dt><dd>{t(tensorNumber(snapshot.stats.std))}</dd></div>
-        </dl>
-        {snapshot.nonFiniteCount > 0 && <p className="tensor-stale">{t('存在 NaN/Inf；统计和分布只包含有限元素，切片中以“非有限值”标注。')}</p>}
+    {snapshot && <div className="tensor-activation"><TensorReadout title={`${node?.name} · ${t('实测输出')}`} snapshot={snapshot} viewKey={viewKey + snapshot.nodeId} tableLabel={t('实测张量切片')} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeIndex(1, channel) : setOfflineChannels(previous => ({ ...previous, [snapshot.nodeId]: channel }))} /></div>}
+    {parameterOptions.length > 0 && <div className="tensor-parameters">
+      <div className="inspector-section"><h3>{t('权重与偏置')}<span>{live ? (result?.report.weights === 'trained' ? t('本地训练') : t('随机初始化（不是已训练模型）')) : offline?.weights === 'external' ? t('外部进程加载的权重') : t('随机初始化（不是已训练模型）')}</span></h3>
+        <label className="field-label">{t('参数张量')}<select aria-label={t('查看的参数张量')} value={parameterName} disabled={busy} onChange={e => { if (observedId) setParameterChoice(previous => ({ ...previous, [observedId]: e.target.value })); }}>{parameterOptions.map(entry => <option key={entry.name} value={entry.name}>{`${entry.name} · [${entry.shape.join(', ')}]`}</option>)}</select></label>
+        {parameterOwner && <p className="tensor-note">{t('这一层共享 {owner} 的权重，显示的是同一组参数。', { owner: parameterOwner })}</p>}
+        {live && parameterControl && parameterControl.slice.indices.length > 0 && <div className="tensor-prefix-controls">{parameterControl.slice.indices.map((value, axis) => <label className="field-label" key={axis}>{t(['滤波器', '输入通道', '深度'][axis])}<input aria-label={t('参数切片轴 {axis}', { axis })} type="number" min={0} max={parameterControl.shape[axis] - 1} value={parameterIndices[parameterKey]?.[axis] ?? value} disabled={busy} onChange={e => changeParameterIndex(axis, Number(e.target.value))} /></label>)}</div>}
+        <p className="tensor-note">{t('来自这次运行所用的同一个模型。修改滤波器或输入通道后需重新运行。')}</p>
       </div>
-      <TensorHistogram key={viewKey + snapshot.nodeId} histogram={snapshot.histogram} />
-      <TensorSemanticView key={`${viewKey}${snapshot.nodeId}semantic`} snapshot={snapshot} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeIndex(1, channel) : setOfflineChannels(previous => ({ ...previous, [snapshot.nodeId]: channel }))} />
-      <div className="inspector-section"><h3>{t('张量切片')}<span>{t('最多 16 × 16')}</span></h3>
-        <p className="tensor-note">{t('固定前置轴，显示末尾{count}维 {shape} 的左上区域。', { count: snapshot.slice.shape.length, shape: `[${snapshot.slice.shape.join(', ')}]` })}{snapshot.slice.truncated ? t('已截断，表格不是完整张量。') : t('该切片已完整显示。')}</p>
-        <div className="tensor-table-scroll" tabIndex={0} role="region" aria-label={t('实测张量切片')}>
-          <table className="tensor-slice"><thead><tr><th>{t('索引')}</th>{Array.from({ length: snapshot.slice.columns }, (_, column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{snapshot.slice.values.map((row, i) => <tr key={i}><th>{i}</th>{row.map((value, j) => <td key={j} title={`[${[...snapshot.slice.indices, ...(snapshot.slice.shape.length > 1 ? [i] : []), j].join(', ')}] = ${value === null ? t('非有限值') : value}`}>{t(tensorNumber(value))}</td>)}</tr>)}</tbody></table>
-        </div>
-      </div>
-    </>}
+      {parameter && <TensorReadout title={t('{name} · 参数', { name: parameter.name })} snapshot={parameter} subject="parameter" viewKey={`${viewKey}${parameterKey}`} tableLabel={t('参数切片')} disabled={live && busy} rerun={live} onSelectChannel={channel => live ? changeParameterIndex(1, channel) : setOfflineParameterChannels(previous => ({ ...previous, [parameterKey]: channel }))} />}
+    </div>}
   </section>;
 }

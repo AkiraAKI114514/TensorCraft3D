@@ -65,6 +65,44 @@ class InferenceRuntimeTests(unittest.TestCase):
         with patch("backend.inference.MAX_ALL_NODES", 3), self.assertRaisesRegex(InferenceError, "at most 3"):
             run_inference(TensorInferenceRequest(graph=graph, allNodes=True))
 
+    def test_parameters_are_the_weights_the_forward_pass_used(self):
+        graph = self.mlp_graph()
+        report = run_inference(self.request(graph, ["n1"], parameters="n1", seed=9))
+        self.assertEqual([entry["name"] for entry in report["parameters"]], ["weight", "bias"])
+        # Same seed, same initialization: the window is the weight the forward pass ran with.
+        torch.manual_seed(9)
+        model, _ = build_model(graph)
+        self.assertEqual(report["parameters"][0]["slice"]["values"], model.layers["n1"].weight.detach().tolist())
+        self.assertEqual(report["parameters"][1]["shape"], [3])
+        self.assertEqual(run_inference(self.request(graph, ["n1"], parameters="n2"))["parameters"], [])
+        self.assertEqual(run_inference(self.request(graph, ["n1"]))["parameters"], [])
+        with self.assertRaisesRegex(InferenceError, "must name a graph node"):
+            run_inference(self.request(graph, ["n1"], parameters="ghost"))
+
+    def test_a_convolution_weight_reads_as_one_filter_s_kernels_across_input_channels(self):
+        specs = [("Input", {"shape": [1, 2, 6, 6]}), ("Conv2d", {"out_channels": 3, "kernel_size": 3, "stride": 1, "padding": 1}), ("Flatten", {}), ("Linear", {"out_features": 2}), ("Output", {})]
+        graph = {"version": 1, "nodes": [{"id": f"n{i}", "op": op, "params": params} for i, (op, params) in enumerate(specs)], "edges": [{"source": f"n{i}", "target": f"n{i + 1}"} for i in range(4)]}
+        weight = run_inference(self.request(graph, ["n1"], parameters="n1", parameterSlices={"weight": [2, 1]}, seed=4))["parameters"][0]
+        torch.manual_seed(4)
+        model, _ = build_model(graph)
+        kernels = model.layers["n1"].weight.detach()
+        self.assertEqual((weight["shape"], weight["slice"]["indices"]), ([3, 2, 3, 3], [2, 1]))
+        self.assertEqual(weight["slice"]["values"], kernels[2, 1].tolist())
+        self.assertEqual((weight["channels"]["count"], weight["channels"]["selected"]), (2, 1))
+        self.assertEqual(weight["channels"]["maps"][0], kernels[2, 0].tolist())
+        with self.assertRaisesRegex(InferenceError, "leading indices"):
+            run_inference(self.request(graph, ["n1"], parameters="n1", parameterSlices={"weight": [3, 0]}))
+
+    def test_a_layer_that_shares_weights_shows_its_owner_s(self):
+        specs = [("Input", {"shape": [1, 4]}), ("Linear", {"out_features": 4}), ("Tanh", {}), ("Linear", {"out_features": 4}), ("Output", {})]
+        graph = {"version": 1, "nodes": [{"id": f"n{i}", "op": op, "params": params} for i, (op, params) in enumerate(specs)], "edges": [{"source": f"n{i}", "target": f"n{i + 1}"} for i in range(4)]}
+        graph["nodes"][3]["shares"] = "n1"
+        report = run_inference(self.request(graph, ["n3"], parameters="n3"))
+        own = run_inference(self.request(graph, ["n1"], parameters="n1"))
+        self.assertEqual(report["parameters"][0]["owner"], "n1")
+        self.assertEqual(report["parameters"][0]["slice"], own["parameters"][0]["slice"])
+        self.assertNotIn("owner", own["parameters"][0])
+
     def test_deterministic_seed_and_batch_reduction(self):
         graph = self.mlp_graph(); original = copy.deepcopy(graph)
         first = run_inference(self.request(graph))

@@ -187,3 +187,35 @@ test('paints every layer\'s measured values on the 3D blocks and pauses them aft
   await expect(legend).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('shows the weights and biases the observed layer ran with, one filter at a time', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const nodes = [
+    { id: 'layer_0', name: 'Input image', op: 'Input', params: { shape: [2, 2, 6, 6] }, position: { x: 0, y: 100 } },
+    { id: 'layer_1', name: 'Conv', op: 'Conv2d', params: { out_channels: 3, kernel_size: 3, stride: 1, padding: 1, bias: 1 }, position: { x: 210, y: 100 } },
+    { id: 'layer_2', name: 'Flatten', op: 'Flatten', params: {}, position: { x: 420, y: 100 } },
+    { id: 'layer_3', name: 'Head', op: 'Linear', params: { out_features: 2 }, position: { x: 630, y: 100 } },
+    { id: 'layer_4', name: 'Output', op: 'Output', params: {}, position: { x: 840, y: 100 } },
+  ] as Graph['nodes'];
+  const convolution: Graph = { version: 1, name: 'Kernel fixture', nodes, edges: [0, 1, 2, 3].map(i => ({ id: `e${i}`, source: `layer_${i}`, target: `layer_${i + 1}` })) };
+  await page.addInitScript(value => localStorage.setItem('tensorlab-project', JSON.stringify(value)), convolution);
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  await page.getByRole('button', { name: '拓扑图', exact: true }).click();
+  await page.locator('.react-flow__node[data-id="layer_1"]').click();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  const panel = page.getByRole('region', { name: 'Tensor Inspector', exact: true }), weights = panel.locator('.tensor-parameters');
+  await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
+  const tensors = panel.getByLabel('查看的参数张量', { exact: true });
+  await expect(tensors.locator('option')).toHaveText(['weight · [3, 2, 3, 3]', 'bias · [3]']);
+  await expect(weights).toContainText('卷积核 · 滤波器 0 · 输入通道 0');
+  await expect(weights.locator('.channel-grid-items button')).toHaveCount(2);
+  // Another filter is another slice: it needs a rerun, like the activation's.
+  await panel.getByLabel('参数切片轴 0', { exact: true }).fill('2');
+  await expect(weights).not.toContainText('卷积核');
+  await panel.getByRole('button', { name: '运行单样本推理', exact: true }).click();
+  await expect(weights).toContainText('卷积核 · 滤波器 2 · 输入通道 0');
+  await tensors.selectOption({ label: 'bias · [3]' });
+  await expect(panel.getByRole('region', { name: '参数切片', exact: true }).locator('td')).toHaveCount(3);
+  expect(errors).toEqual([]);
+});

@@ -22,6 +22,9 @@ MAX_CHANNEL_MAPS = 16
 # `allNodes` observes every executed layer at once, for the 3D view. Each layer is described as
 # boundedly as a selected one; this caps how many layers one response can carry.
 MAX_ALL_NODES = 256
+# A layer's weights and biases, each described like an activation; an attention module or a
+# Transformer layer has the most, about twenty.
+MAX_PARAMETER_TENSORS = 32
 HISTOGRAM_BINS = 12
 
 
@@ -40,6 +43,9 @@ class TensorInferenceRequest(BaseModel):
     graph: dict[str, Any]
     nodeIds: list[StrictStr] = Field(default_factory=list, max_length=8)
     allNodes: StrictBool = False
+    # One layer whose weights and biases to describe, from the model this request runs.
+    parameters: StrictStr | None = Field(default=None, min_length=1, max_length=512)
+    parameterSlices: dict[StrictStr, list[StrictInt]] = Field(default_factory=dict, max_length=8)
     seed: StrictInt = Field(42, ge=0, le=2_147_483_647)
     device: Literal["cpu", "cuda", "auto"] = "cpu"
     modelId: StrictStr | None = Field(default=None, min_length=1, max_length=128)
@@ -487,6 +493,36 @@ def _device_name(requested: str, torch: Any) -> str:
     return "cuda" if requested == "cuda" or (requested == "auto" and torch.cuda.is_available()) else "cpu"
 
 
+def describe_parameters(model: Any, node_id: str, slices: dict[str, list[int]], torch: Any) -> list[dict[str, Any]]:
+    """The weights and biases a layer runs with, each described like an activation.
+
+    They come from the very module the forward pass used, so they are the weights behind the
+    measured values. A layer that shares weights shows its owner's (`owner` names it), and a
+    folded layer its first instance. A rank-4 convolution weight `[out, in, kh, kw]` is read like a
+    feature map: the window is one filter's kernel for one input channel (leading indices, zeros
+    by default) and the channel page shows that filter's kernels across input channels.
+    """
+    from torch import nn
+    owner = getattr(model, "shared", {}).get(node_id, node_id)
+    module = model.layers[owner] if owner in model.layers else None
+    if module is None:
+        return []
+    if isinstance(module, nn.ModuleList):
+        module = module[0]
+    described = []
+    for name, value in list(module.named_parameters())[:MAX_PARAMETER_TENSORS]:
+        prefix_rank = max(0, value.dim() - 2)
+        indices = list(slices.get(name, [0] * prefix_rank))
+        if len(indices) != prefix_rank or prefix_rank > 3 or any(index < 0 or index >= size for index, size in zip(indices, value.shape)):
+            raise InferenceError(f"Parameter {name} of {node_id} needs {prefix_rank} leading indices inside its shape")
+        entry = _describe(node_id, value.detach(), indices, torch)
+        entry["name"] = name
+        if owner != node_id:
+            entry["owner"] = owner
+        described.append(entry)
+    return described
+
+
 def _execute(model: Any, info: dict[str, Any], by_id: dict[str, Any], inputs: dict[str, Any], device_name: str, selected: list[str], slices: dict[str, list[int]], attention: dict[str, AttentionSelection], torch: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run one eval forward pass and describe the selected nodes and attention windows.
 
@@ -562,6 +598,9 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
             model.load_state_dict(snapshot.state, strict=True)
             inputs = {key: (value - snapshot.preprocessing[key]["mean"]) / snapshot.preprocessing[key]["scale"] if key in snapshot.preprocessing else value for key, value in inputs.items()}
         tensors, attentions = _execute(model, info, by_id, inputs, device_name, selected, slices, request.attention, torch)
+        if request.parameters is not None and request.parameters not in by_id:
+            raise InferenceError("parameters must name a graph node")
+        parameters = describe_parameters(model, request.parameters, request.parameterSlices, torch) if request.parameters is not None else []
     return {
         "runId": str(uuid.uuid4()),
         "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -575,4 +614,5 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         "mode": "eval",
         "tensors": tensors,
         "attentions": attentions,
+        "parameters": parameters,
     }

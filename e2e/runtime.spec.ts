@@ -283,13 +283,13 @@ print(snapshot_json(capture_snapshot(graph, model.state_dict(), torch.randn(1, 1
   await page.locator('.react-flow__node[data-id="conv"]').click();
   await page.getByRole('button', { name: '张量观测', exact: true }).click();
   await expect(inspector).toContainText('conv · 实测输出');
-  await expect(inspector.locator('.tensor-stats')).toContainText('[1, 4, 6, 6]');
+  await expect(inspector.locator('.tensor-activation .tensor-stats')).toContainText('[1, 4, 6, 6]');
   // All four captured channels are in the grid; choosing one moves the window without a run.
-  const channels = inspector.locator('.channel-grid-items button');
+  const channels = inspector.locator('.tensor-activation .channel-grid-items button');
   await expect(channels).toHaveCount(4);
-  await expect(inspector.locator('.channel-grid')).toContainText('点选通道直接查看它的窗口');
+  await expect(inspector.locator('.tensor-activation .channel-grid')).toContainText('点选通道直接查看它的窗口');
   await channels.nth(2).click();
-  await expect(inspector.locator('.tensor-semantic')).toContainText('特征图 · 通道 2');
+  await expect(inspector.locator('.tensor-activation .tensor-semantic')).toContainText('特征图 · 通道 2');
   await expect(inspector.getByRole('region', { name: '实测张量切片', exact: true }).locator('td').first()).toHaveAttribute('title', /^\[0, 2, 0, 0\] = /);
   // Undo returns to the earlier project, which the snapshot does not describe; redo binds it again.
   await page.keyboard.press('Control+z');
@@ -335,14 +335,14 @@ print(snapshot_json(capture_snapshot(json.load(sys.stdin), seed=42)))
   const blockReport = await (await blockRun).json() as InferenceReport;
   expect(blockReport.tensors.find(tensor => tensor.nodeId === 'stack/2/act')).toEqual(offlineTensor('stack/2/act'));
   await expect(panel).toContainText('Cell ×3 · 实测输出');
-  const liveBlock = await panel.locator('.tensor-stats').innerText();
+  const liveBlock = await panel.locator('.tensor-activation .tensor-stats').innerText();
   // The snapshot is looked up through the same mapping, so it shows the same layer.
   const source = panel.getByLabel('观测来源', { exact: true });
   await source.selectOption('offline');
   await panel.getByLabel('观测快照文件', { exact: true }).setInputFiles({ name: 'cells.observation.json', mimeType: 'application/json', buffer: Buffer.from(file) });
   await expect(panel.locator('.tensor-offline')).toContainText('离线快照 · CPU · eval');
   await expect(panel.locator('.tensor-stale')).toHaveCount(0);
-  await expect(panel.locator('.tensor-stats')).toHaveText(liveBlock, { useInnerText: true });
+  await expect(panel.locator('.tensor-activation .tensor-stats')).toHaveText(liveBlock, { useInnerText: true });
   await source.selectOption('live');
 
   // Inside the block a layer runs once per instance; instance 0 is observed until another is chosen.
@@ -362,14 +362,14 @@ print(snapshot_json(capture_snapshot(json.load(sys.stdin), seed=42)))
   const layerReport = await (await layerRun).json() as InferenceReport;
   expect(layerReport.tensors.find(tensor => tensor.nodeId === 'stack/1/fc')).toEqual(offlineTensor('stack/1/fc'));
   await expect(panel).toContainText('fc · 实测输出');
-  await expect(panel.locator('.tensor-stats')).toContainText('[1, 8]');
-  const liveLayer = await panel.locator('.tensor-stats').innerText();
+  await expect(panel.locator('.tensor-activation .tensor-stats')).toContainText('[1, 8]');
+  const liveLayer = await panel.locator('.tensor-activation .tensor-stats').innerText();
   expect(inferences).toEqual([['stack/2/act', 'out'], ['stack/1/fc', 'out']]);
 
   // The snapshot, still open, shows the same chosen instance.
   await source.selectOption('offline');
   await expect(instance).toHaveValue('1');
-  await expect(panel.locator('.tensor-stats')).toHaveText(liveLayer, { useInnerText: true });
+  await expect(panel.locator('.tensor-activation .tensor-stats')).toHaveText(liveLayer, { useInnerText: true });
   // Another instance needs no run offline: the snapshot holds every expanded layer.
   await instance.fill('2');
   await expect(panel).toContainText('观测展开后的层 stack/2/fc。');

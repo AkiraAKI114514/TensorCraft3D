@@ -17,13 +17,16 @@ export function semanticKind(snapshot: TensorSnapshot): SemanticKind | null {
   return rank === 4 ? 'feature-map' : rank === 5 ? 'volume' : rank === 3 ? 'sequence' : rank === 2 ? 'vector' : null;
 }
 
-function ChannelGrid({ page, limit, disabled, rerun, onSelect }: { page: ChannelPage; limit: number; disabled: boolean; rerun: boolean; onSelect: (channel: number) => void }) {
+function ChannelGrid({ page, limit, disabled, rerun, kernels, onSelect }: { page: ChannelPage; limit: number; disabled: boolean; rerun: boolean; kernels: boolean; onSelect: (channel: number) => void }) {
   const { t } = useI18n();
   const [active, setActive] = useState<number | null>(null);
   const describe = (index: number) => t('通道 {channel}：均值 {mean}，范围 {min} – {max}', { channel: page.start + index, mean: t(tensorNumber(page.stats[index].mean)), min: t(tensorNumber(page.stats[index].min)), max: t(tensorNumber(page.stats[index].max)) });
+  const caption = kernels
+    ? rerun ? t('每格是这个滤波器在一个输入通道上的卷积核，与上方共用色阶；统计覆盖那个卷积核。点选会改动切片，需要重新运行。') : t('每格是这个滤波器在一个输入通道上的卷积核，与上方共用色阶；统计覆盖那个卷积核。点选直接查看它。')
+    : rerun ? t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道会改动切片，需要重新运行。') : t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道直接查看它的窗口。');
   return <figure className="attention-matrix channel-grid">
     <figcaption>{t('通道网格 · 通道 {start}–{end} / 共 {total}', { start: page.start, end: page.start + page.count - 1, total: page.total })}</figcaption>
-    <p className="attention-caption">{rerun ? t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道会改动切片，需要重新运行。') : t('每格是该通道同一窗口的实测值，与上方特征图共用色阶；统计覆盖整个通道。点选通道直接查看它的窗口。')}</p>
+    <p className="attention-caption">{caption}</p>
     <div className="channel-grid-items" role="group" aria-label={t('通道网格')}>{page.maps.map((map, index) => {
       const channel = page.start + index, selected = channel === page.selected;
       // 选中的通道再点一次不应让快照失效，所以它只是一个只读的当前项。
@@ -45,22 +48,34 @@ function ChannelGrid({ page, limit, disabled, rerun, onSelect }: { page: Channel
  * 它不请求任何额外数据——热力图就是已经返回的那个 16 × 16 窗口，通道网格是后端随快照
  * 一起返回的同一窗口在相邻通道上的取值。
  */
-/** `rerun` is false when the channel grid only switches between maps already in hand (an offline snapshot). */
-export default function TensorSemanticView({ snapshot, disabled, rerun = true, onSelectChannel }: { snapshot: TensorSnapshot; disabled: boolean; rerun?: boolean; onSelectChannel: (channel: number) => void }) {
+/**
+ * `rerun` is false when the channel grid only switches between maps already in hand (an offline
+ * snapshot). A `parameter` is read by its role instead of as data: a convolution weight
+ * `[out, in, kh, kw]` as one filter's kernel for one input channel, its channel grid as that
+ * filter's kernels across input channels, and a rank-2 weight as a matrix.
+ */
+export default function TensorSemanticView({ snapshot, disabled, rerun = true, subject = 'activation', onSelectChannel }: { snapshot: TensorSnapshot; disabled: boolean; rerun?: boolean; subject?: 'activation' | 'parameter'; onSelectChannel: (channel: number) => void }) {
   const { t } = useI18n();
   const kind = semanticKind(snapshot);
   if (!kind) return null;
-  const [, channel, depth] = snapshot.slice.indices;
+  const [filter, channel, depth] = snapshot.slice.indices;
   const spatial = kind === 'feature-map' || kind === 'volume';
-  const title = kind === 'feature-map' ? t('特征图 · 通道 {channel}', { channel }) : kind === 'volume' ? t('特征图 · 通道 {channel} · 深度 {depth}', { channel, depth }) : kind === 'sequence' ? t('序列 · 位置 × 特征') : t('特征向量');
-  const note = spatial ? t('固定前置轴后，行、列对应特征图的高和宽；色阶取整个张量的对称范围，所以不同通道可以直接比较。') : kind === 'sequence' ? t('行是序列位置，列是特征维度。位置只是序号，不带分词信息。') : t('单个样本的特征向量，列是特征维度。');
+  const parameter = subject === 'parameter';
+  const title = parameter
+    ? kind === 'feature-map' ? t('卷积核 · 滤波器 {filter} · 输入通道 {channel}', { filter, channel }) : kind === 'volume' ? t('卷积核 · 滤波器 {filter} · 输入通道 {channel} · 深度 {depth}', { filter, channel, depth }) : kind === 'sequence' ? t('卷积核 · 滤波器 {filter}', { filter }) : t('参数矩阵')
+    : kind === 'feature-map' ? t('特征图 · 通道 {channel}', { channel }) : kind === 'volume' ? t('特征图 · 通道 {channel} · 深度 {depth}', { channel, depth }) : kind === 'sequence' ? t('序列 · 位置 × 特征') : t('特征向量');
+  const note = parameter
+    ? spatial ? t('一个滤波器在一个输入通道上的卷积核，行、列是核的高和宽；色阶取整个参数张量的对称范围。') : kind === 'sequence' ? t('一个滤波器的卷积核，行是输入通道，列是核的位置；色阶取整个参数张量的对称范围。') : t('参数张量的前两维：Linear 的行是输出单元、列是输入单元，Embedding 的行是词表 ID；色阶取整个参数张量的对称范围。')
+    : spatial ? t('固定前置轴后，行、列对应特征图的高和宽；色阶取整个张量的对称范围，所以不同通道可以直接比较。') : kind === 'sequence' ? t('行是序列位置，列是特征维度。位置只是序号，不带分词信息。') : t('单个样本的特征向量，列是特征维度。');
+  const rows = parameter ? (spatial ? '核行' : kind === 'sequence' ? '输入通道' : '行') : kind === 'sequence' ? '位置' : '行';
+  const columns = parameter ? (spatial ? '核列' : kind === 'sequence' ? '核' : '列') : spatial ? '列' : '特征';
   // 热力图组件按「完整矩阵 + 窗口」描述数据；切片的完整矩阵就是末尾两维。
   const shape = snapshot.slice.shape.length === 2 ? snapshot.slice.shape : [1, snapshot.slice.shape[0] ?? snapshot.slice.columns];
   const matrix: Matrix = { ...snapshot, shape, rowStart: 0, columnStart: 0 };
   const limit = Math.max(Math.abs(snapshot.stats.min ?? 0), Math.abs(snapshot.stats.max ?? 0));
   return <div className="inspector-section tensor-semantic"><h3>{t('语义视图')}<span>{t('最多 16 × 16')}</span></h3>
     <p className="tensor-note">{note}</p>
-    <AttentionMatrix matrix={matrix} title={title} rows={kind === 'sequence' ? '位置' : '行'} columns={spatial ? '列' : '特征'} />
-    {spatial && snapshot.channels && <ChannelGrid page={snapshot.channels} limit={limit} disabled={disabled} rerun={rerun} onSelect={onSelectChannel} />}
+    <AttentionMatrix matrix={matrix} title={title} rows={rows} columns={columns} />
+    {spatial && snapshot.channels && <ChannelGrid page={snapshot.channels} limit={limit} disabled={disabled} rerun={rerun} kernels={parameter} onSelect={onSelectChannel} />}
   </div>;
 }

@@ -23,6 +23,17 @@ const render = (value: TensorSnapshot, english = false) => renderToStaticMarkup(
   : <TensorSemanticView snapshot={value} disabled={false} onSelectChannel={() => {}} />);
 
 describe('tensor semantic views', () => {
+  it('reads a weight by its role: a filter\'s kernels across input channels, or a matrix', () => {
+    const kernel = snapshot([20, 19, 2, 2], [2, 17], [[1, -1], [0, 2]], { channels: page });
+    const markup = renderToStaticMarkup(<TensorSemanticView snapshot={kernel} subject="parameter" disabled={false} onSelectChannel={() => {}} />);
+    expect(markup).toContain('卷积核 · 滤波器 2 · 输入通道 17');
+    expect(markup).toContain('每格是这个滤波器在一个输入通道上的卷积核');
+    expect(markup).not.toContain('特征图');
+    const matrix = renderToStaticMarkup(<I18nProvider initialLanguage="en"><TensorSemanticView snapshot={snapshot([10, 64], [], [[1, 2]])} subject="parameter" disabled={false} onSelectChannel={() => {}} /></I18nProvider>);
+    expect(matrix).toContain('Parameter matrix');
+    expect(matrix).not.toContain('Feature vector');
+  });
+
   it('reads the rank as feature map, volume, sequence or vector, and skips integer ids', () => {
     expect(semanticKind(snapshot([1, 8, 4, 4], [0, 0], [[1]]))).toBe('feature-map');
     expect(semanticKind(snapshot([1, 8, 2, 4, 4], [0, 0, 0], [[1]]))).toBe('volume');

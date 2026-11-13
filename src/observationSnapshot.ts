@@ -1,5 +1,5 @@
 import { validateGraph } from './analysis';
-import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type TensorSnapshot } from './inferenceTypes';
+import { ATTENTION_TENSORS, type AttentionMatrix, type AttentionSnapshot, type ChannelPage, type ParameterSnapshot, type TensorSnapshot } from './inferenceTypes';
 import { expandGraph } from './subgraph';
 import { computationKey } from './trainedModel';
 import type { Graph } from './types';
@@ -26,6 +26,8 @@ export interface ObservationSnapshot {
   mode: 'eval';
   tensors: TensorSnapshot[];
   attentions: AttentionSnapshot[];
+  /** Each layer's weights and biases, by layer; empty for a file written before they were added. */
+  parameters: Record<string, ParameterSnapshot[]>;
 }
 
 export const OBSERVATION_FORMAT = 'tensorcraft-observation';
@@ -129,12 +131,26 @@ export function parseObservationSnapshot(source: string): ObservationSnapshot {
   tensors.forEach((item, index) => { if (!nodes.has(item.nodeId) || seen.has(item.nodeId)) invalid(`tensors[${index}].nodeId`); seen.add(item.nodeId); });
   const attended = new Set<string>();
   attentions.forEach((item, index) => { const op = nodes.get(item.nodeId); if ((op !== 'MultiHeadAttention' && op !== 'Transformer') || attended.has(item.nodeId)) invalid(`attentions[${index}].nodeId`); attended.add(item.nodeId); });
+  // Weights and biases are optional: a file from before they were written simply has none.
+  const parameterFile = file.parameters === undefined ? {} : record(file.parameters, 'parameters');
+  if (Object.keys(parameterFile).length > MAX_ENTRIES) invalid('parameters');
+  const parameters = Object.fromEntries(Object.entries(parameterFile).map(([nodeId, items]) => {
+    if (!nodes.has(nodeId)) invalid(`parameters.${nodeId}`);
+    const field = `parameters.${nodeId}`;
+    return [nodeId, list(items, field, 32).map((item, index): ParameterSnapshot => {
+      const raw = record(item, `${field}[${index}]`), described = tensor(raw, `${field}[${index}]`);
+      if (described.nodeId !== nodeId) invalid(`${field}[${index}].nodeId`);
+      const owner = raw.owner === undefined ? undefined : text(raw.owner, `${field}[${index}].owner`, 512);
+      if (owner !== undefined && !nodes.has(owner)) invalid(`${field}[${index}].owner`);
+      return { ...described, name: text(raw.name, `${field}[${index}].name`, 128), ...(owner === undefined ? {} : { owner }) };
+    })];
+  }));
   return {
     format: OBSERVATION_FORMAT, version: 1, snapshotId: text(file.snapshotId, 'snapshotId', 128), createdAt: text(file.createdAt, 'createdAt', 64),
     label: file.label === null || file.label === undefined ? null : text(file.label, 'label', 120), graph,
     device: oneOf(file.device, ['CPU', 'CUDA'] as const, 'device'), seed: integer(file.seed, 'seed'), sampleIndex: oneOf(file.sampleIndex, [0] as const, 'sampleIndex'),
     inputSource: oneOf(file.inputSource, ['synthetic', 'provided'] as const, 'inputSource'), weights: oneOf(file.weights, ['external', 'random-initialized'] as const, 'weights'),
-    mode: oneOf(file.mode, ['eval'] as const, 'mode'), tensors, attentions,
+    mode: oneOf(file.mode, ['eval'] as const, 'mode'), tensors, attentions, parameters,
   };
 }
 
@@ -144,7 +160,7 @@ export function snapshotMatches(graph: Graph, snapshot: ObservationSnapshot) {
 }
 
 /** The same observation with its main window moved to another channel of the captured page. */
-export function withChannel(snapshot: TensorSnapshot, channel: number): TensorSnapshot {
+export function withChannel<T extends TensorSnapshot>(snapshot: T, channel: number): T {
   const page = snapshot.channels;
   if (!page || channel < page.start || channel >= page.start + page.count || channel === page.selected) return snapshot;
   const indices = [...snapshot.slice.indices]; indices[1] = channel;

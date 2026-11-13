@@ -28,6 +28,15 @@ export interface ChannelPage {
   stats: { min: number | null; max: number | null; mean: number | null }[];
 }
 
+/**
+ * One weight or bias tensor of a layer, from the model the observation ran (`nodeId` is that
+ * layer). A layer that shares weights reports its owner's, and says so in `owner`.
+ */
+export interface ParameterSnapshot extends TensorSnapshot {
+  name: string;
+  owner?: string;
+}
+
 export interface AttentionSelection {
   branch: number;
   head: number;
@@ -78,6 +87,8 @@ export interface InferenceReport {
   mode: 'eval';
   tensors: TensorSnapshot[];
   attentions: AttentionSnapshot[];
+  /** The requested layer's weights and biases; an older backend sends none. */
+  parameters?: ParameterSnapshot[];
 }
 
 export function tensorNumber(value: number | null) {
