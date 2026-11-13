@@ -76,6 +76,8 @@ In **张量观测**, set **观测来源** to **外部 Python 观测快照 · 只
 
 The numbers are bound to the computation the snapshot measured, the same way trained weights are. Names, layout and the project title do not matter. Operators, parameters, input shapes, wiring, weight sharing, repeat counts and the contents of folded blocks do. If the current project computes something else, the panel says so and offers to open the snapshot's own graph. Opening it replaces the project the way importing one does, and undo brings the previous project back. A later edit hides the numbers again until the graph matches.
 
+While the snapshot matches the current graph, **把快照画到三维视图** paints every layer's values on the 3D blocks, the same way the inspector's all-layer run does (see the workbench guide).
+
 Read-only means:
 
 - No inference runs, and nothing is sent to the Python service, which may be offline.

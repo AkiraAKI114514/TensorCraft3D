@@ -3,7 +3,7 @@ import copy
 import unittest
 from unittest.mock import patch
 
-from .inference import TensorInferenceRequest, _describe, run_inference
+from .inference import InferenceError, TensorInferenceRequest, _describe, run_inference
 from .training import build_model
 
 try:
@@ -52,6 +52,18 @@ class InferenceRuntimeTests(unittest.TestCase):
             # 末层的祖先锥覆盖整条链，仍然必须被拒绝。
             with self.assertRaisesRegex(ValueError, "64 MB"):
                 run_inference(self.request(graph, nodes=["n20"]))
+
+    def test_all_nodes_observes_every_layer_with_the_numbers_a_selection_gets(self):
+        graph = self.mlp_graph()
+        everything = run_inference(TensorInferenceRequest(graph=graph, allNodes=True, seed=5))
+        self.assertEqual([tensor["nodeId"] for tensor in everything["tensors"]], ["n0", "n1", "n2", "n3"])
+        self.assertEqual(everything["tensors"][1], run_inference(self.request(graph, ["n1"], seed=5))["tensors"][0])
+        # Every layer and nothing else, or named layers: never both, never neither.
+        for payload in ({"allNodes": True, "nodeIds": ["n1"]}, {"allNodes": True, "attention": {"n1": {}}}, {}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                TensorInferenceRequest(graph=graph, **payload)
+        with patch("backend.inference.MAX_ALL_NODES", 3), self.assertRaisesRegex(InferenceError, "at most 3"):
+            run_inference(TensorInferenceRequest(graph=graph, allNodes=True))
 
     def test_deterministic_seed_and_batch_reduction(self):
         graph = self.mlp_graph(); original = copy.deepcopy(graph)

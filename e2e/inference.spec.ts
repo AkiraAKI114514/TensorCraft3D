@@ -151,3 +151,39 @@ test('reports inference errors and recovers while preserving Python and JSON exp
   await expect(panel.locator('.tensor-provenance')).toBeVisible();
   await expect(panel.getByRole('alert')).toHaveCount(0);
 });
+
+test('paints every layer\'s measured values on the 3D blocks and pauses them after an edit', async ({ page }) => {
+  const errors: string[] = [], requests: Record<string, unknown>[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => { if (request.url().endsWith('/api/infer')) requests.push(request.postDataJSON()); });
+  await page.goto('/');
+  await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  // Paused, so the only thing that can change the frame is the paint.
+  await page.getByRole('button', { name: '暂停数据流', exact: true }).click();
+  const checksum = () => page.locator('canvas').evaluate(canvas => new Promise<number>(resolve => requestAnimationFrame(() => {
+    const c = canvas as HTMLCanvasElement, gl = c.getContext('webgl2')!, buffer = new Uint8Array(c.width * c.height * 4);
+    gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+    let sum = 0; for (let i = 0; i < buffer.length; i += 4) sum = (sum + buffer[i] * (1 + i % 31) + buffer[i + 2]) >>> 0;
+    resolve(sum);
+  })));
+  const plain = await checksum();
+  await page.getByRole('button', { name: '张量观测', exact: true }).click();
+  await page.getByRole('button', { name: '观测全部层，画到三维视图', exact: true }).click();
+  const legend = page.locator('.scene-observation');
+  await expect(legend).toContainText('实测值 · 单样本');
+  await expect(legend).toContainText('工作台推理 · 随机初始化');
+  // One request for every layer, naming none of them.
+  expect(requests.at(-1)).toMatchObject({ allNodes: true });
+  expect(requests.at(-1)).not.toHaveProperty('nodeIds');
+  await expect.poll(checksum).not.toBe(plain);
+  // Another graph pauses the paint; undo brings back the graph that was measured.
+  await page.getByLabel('模型模板').selectOption('mlp');
+  await expect(legend).toContainText('模型已修改，实测着色已暂停');
+  await legend.locator('strong').click();
+  await page.keyboard.press('Control+z');
+  await expect(legend).not.toContainText('模型已修改');
+  await expect(legend.locator('.scene-observation-scale')).toBeVisible();
+  await legend.getByRole('button', { name: '关闭实测着色', exact: true }).click();
+  await expect(legend).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

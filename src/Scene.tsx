@@ -10,12 +10,15 @@ import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
 import { outerResidualCurve, residualEdges } from './graphRoutes';
 import { crossInputRole, isCrossAttention, isProjectionPort } from './attentionConfig';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
-import { createTensorMaterial, majorGroup, tensorCells } from './tensorBlock';
+import { blank, createTensorMaterial, floatTexture, majorGroup, tensorCells, type TensorUniforms } from './tensorBlock';
+import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
 import type { ImageExportOptions } from './imageLayout';
 import { useI18n } from './i18n';
 
 export interface SceneHandle { capture: (size: number, transparent: boolean, options?: ImageExportOptions) => Promise<Blob>; svg: (options?: ImageExportOptions, width?: number) => string; reset: () => void; focus: (nodeId: string) => void; focusHead: (nodeId: string, index: number) => void; }
-interface Props { graph: Graph; analysis: Analysis; selected: string | null; onSelect: (id: string | null) => void; selectedHead: number | null; selectedProjection: string | null; onSelectProjection: (id: string, port: string) => void; onSelectHead: (id: string, index: number) => void; rotating: boolean; playing: boolean; direction: 'forward' | 'backward'; speed: number; expanded: boolean; diagnostics: Diagnostic[]; onReady: (handle: SceneHandle) => void; onGpu: (name: string) => void; }
+interface Props { graph: Graph; analysis: Analysis; selected: string | null; onSelect: (id: string | null) => void; selectedHead: number | null; selectedProjection: string | null; onSelectProjection: (id: string, port: string) => void; onSelectHead: (id: string, index: number) => void; rotating: boolean; playing: boolean; direction: 'forward' | 'backward'; speed: number; expanded: boolean; diagnostics: Diagnostic[]; onReady: (handle: SceneHandle) => void; onGpu: (name: string) => void;
+  /** Measured values for this level's layers, keyed by their IDs here; painted while present. */
+  observation?: SceneObservation | null; }
 interface SceneRoute extends Edge { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; residual: boolean; }
 
 function layout(graph: Graph, analysis: Analysis, expanded: boolean) {
@@ -110,13 +113,32 @@ const edgeTone = (color: string) => `#${new THREE.Color(color).multiplyScalar(0.
  * grid, so channels, rows and columns are counted on the block instead of implied by its size.
  * The footprint is unchanged, which keeps the layout, routes and image export where they were.
  */
-function TensorBlock({ dims, color, glow, cells }: { dims: [number, number, number]; color: string; glow: number; cells: [number, number, number] }) {
+function TensorBlock({ dims, color, glow, cells, paint }: { dims: [number, number, number]; color: string; glow: number; cells: [number, number, number]; paint: BlockPaint | null }) {
   const block = useMemo(createTensorMaterial, []);
-  useEffect(() => () => block.material.dispose(), [block]);
+  useEffect(() => { paintedBlocks.add(block.uniforms); return () => { paintedBlocks.delete(block.uniforms); block.material.dispose(); }; }, [block]);
+  const textures = useMemo(() => ({ map: paint?.map ? floatTexture(paint.map.values, paint.map.columns, paint.map.rows) : null, strip: paint?.strip ? floatTexture(paint.strip.values, paint.strip.count, 1) : null }), [paint]);
+  useEffect(() => () => { textures.map?.dispose(); textures.strip?.dispose(); }, [textures]);
   block.material.color.set(color); block.material.emissive.set(color); block.material.emissiveIntensity = glow;
-  block.uniforms.uCells.value.set(...cells); block.uniforms.uGroups.value.set(...cells.map(majorGroup) as [number, number, number]);
-  block.uniforms.uHalf.value.set(dims[0] / 2, dims[1] / 2, dims[2] / 2); block.uniforms.uLine.value.set(edgeTone(color));
+  const u = block.uniforms;
+  u.uCells.value.set(...cells); u.uGroups.value.set(...cells.map(majorGroup) as [number, number, number]);
+  u.uHalf.value.set(dims[0] / 2, dims[1] / 2, dims[2] / 2); u.uLine.value.set(edgeTone(color));
+  u.uObserve.value = paint ? 1 : 0; u.uLimit.value = paint?.limit ?? 1;
+  u.uMap.value = textures.map ?? blank(); u.uStrip.value = textures.strip ?? blank();
+  if (paint?.map) { u.uMapSize.value.set(paint.map.columns, paint.map.rows); u.uMapTotal.value.set(paint.map.uTotal, paint.map.vTotal); u.uMapU.value.copy(AXES[paint.map.u]); u.uMapV.value.copy(AXES[paint.map.v]); }
+  else u.uMapSize.value.set(0, 0);
+  if (paint?.strip) { u.uStripAxis.value.copy(AXES[paint.strip.axis]); u.uStripRange.value.set(paint.strip.total, paint.strip.start, paint.strip.count); }
+  else u.uStripRange.value.set(1, 0, 0);
   return <mesh userData={{ exportMesh: true, exportShade: true, exportCells: cells }} material={block.material}><boxGeometry args={dims} /></mesh>;
+}
+
+const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
+// Every mounted block, so an image export can leave out measured values: an exported diagram
+// shows the architecture, not one sample's activations.
+const paintedBlocks = new Set<TensorUniforms>();
+function withoutPaint<T>(work: () => T): T {
+  const saved = [...paintedBlocks].map(uniforms => [uniforms, uniforms.uObserve.value] as const);
+  saved.forEach(([uniforms]) => { uniforms.uObserve.value = 0; });
+  try { return work(); } finally { saved.forEach(([uniforms, value]) => { uniforms.uObserve.value = value; }); }
 }
 
 const GROUND_Y = -0.09;
@@ -242,6 +264,12 @@ function World(props: Props) {
   }, [props.graph, props.analysis, props.expanded, positions, routes]);
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
+  // One paint per observed layer, kept stable per observation so block textures are built once.
+  const paints = useMemo(() => {
+    const observation = props.observation;
+    if (!observation) return {} as Record<string, BlockPaint | null>;
+    return Object.fromEntries(props.graph.nodes.map(node => [node.id, observation.tensors[node.id] ? blockPaint(observation.tensors[node.id]) : null]));
+  }, [props.observation, props.graph]);
   // Selected first, then hovered, then the skeleton (inputs, outputs, blocks), then graph order.
   const labelElements = useRef(new Map<string, HTMLDivElement>());
   const labelOrder = useMemo(() => new Map(props.graph.nodes.map((node, index) => [node.id, { index, skeleton: node.op === 'Input' || node.op === 'Output' || node.op === 'Group' }])), [props.graph]);
@@ -289,7 +317,8 @@ function World(props: Props) {
       reset,
       focus: id => focus(id),
       focusHead: (id, index) => focus(id, index),
-      capture: (width, transparent, options) => captureSceneImage(gl, exportSource, width, transparent, options),
+      // The render happens before captureSceneImage first awaits, so the paint is back right after.
+      capture: (width, transparent, options) => withoutPaint(() => captureSceneImage(gl, exportSource, width, transparent, options)),
       svg: (options, exportWidth = 1920) => exportSceneSvg(exportSource, exportWidth, options)
     });
   }, [camera, gl, scene, positions, routes, size, bounds, attentionView, props.expanded, props.graph, props.analysis, props.onReady]);
@@ -315,7 +344,7 @@ function World(props: Props) {
         {/* Solid, matte blocks: a translucent block blended with whatever stood behind it, which
             muddied both colours wherever neighbours overlapped. A merge node's small cube stands
             for the operation, not for a tensor, so it has no grid. */}
-        <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} />
+        <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} paint={paints[n.id] ?? null} />
         <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} />{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}
         {!isAttention(n.op) && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}

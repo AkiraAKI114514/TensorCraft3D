@@ -34,6 +34,7 @@ describe('tensor blocks', () => {
     expect(shader.fragmentShader).toContain('uniform vec3 uCells;');
     expect(shader.fragmentShader).toContain('diffuseColor.rgb = mix(diffuseColor.rgb, uLine');
     expect(shader.uniforms.uCells).toBe(uniforms.uCells);
-    expect(material.customProgramCacheKey()).toBe('tensor-block-1');
+    expect(shader.fragmentShader).toContain('texelFetch(uMap');
+    expect(material.customProgramCacheKey()).toBe('tensor-block-2');
   });
 });

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
 from .graph import analyze_expanded_graph, analyze_graph, expand_subgraphs
 
@@ -19,6 +19,9 @@ MAX_SLICE_SIDE = 16
 # A channel-first tensor is also shown as a page of feature maps. Each map is one bounded
 # MAX_SLICE_SIDE window, so a page is at most 16 windows of 16 x 16 values.
 MAX_CHANNEL_MAPS = 16
+# `allNodes` observes every executed layer at once, for the 3D view. Each layer is described as
+# boundedly as a selected one; this caps how many layers one response can carry.
+MAX_ALL_NODES = 256
 HISTOGRAM_BINS = 12
 
 
@@ -35,7 +38,8 @@ class TensorInferenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     graph: dict[str, Any]
-    nodeIds: list[StrictStr] = Field(min_length=1, max_length=8)
+    nodeIds: list[StrictStr] = Field(default_factory=list, max_length=8)
+    allNodes: StrictBool = False
     seed: StrictInt = Field(42, ge=0, le=2_147_483_647)
     device: Literal["cpu", "cuda", "auto"] = "cpu"
     modelId: StrictStr | None = Field(default=None, min_length=1, max_length=128)
@@ -56,6 +60,16 @@ class TensorInferenceRequest(BaseModel):
         if any(len(indices) > 3 for indices in value.values()):
             raise ValueError("Each slice may contain at most 3 prefix indices")
         return value
+
+    @model_validator(mode="after")
+    def one_kind_of_selection(self) -> "TensorInferenceRequest":
+        # Either named layers (with optional attention windows), or every layer and nothing else.
+        if self.allNodes:
+            if self.nodeIds or self.attention:
+                raise ValueError("allNodes observes every layer; leave nodeIds and attention empty")
+        elif not self.nodeIds:
+            raise ValueError("nodeIds must name at least one node")
+        return self
 
 
 class InferenceError(ValueError):
@@ -519,8 +533,13 @@ def run_inference(request: TensorInferenceRequest) -> dict[str, Any]:
         import torch
     except ImportError as exc:
         raise RuntimeError("PyTorch is not installed") from exc
-    selected = list(dict.fromkeys(request.nodeIds))
+    selected = None if request.allNodes else list(dict.fromkeys(request.nodeIds))
+    # Without a selection the activation budget covers the whole model, which every layer needs.
     copied, info, embedding = _prepare_graph(request.graph, selected)
+    if selected is None:
+        if len(info["order"]) > MAX_ALL_NODES:
+            raise InferenceError(f"allNodes observes at most {MAX_ALL_NODES} executed layers; select layers instead")
+        selected = list(info["order"])
     from .trained_models import trained_models
     snapshot = trained_models.get(request.modelId, request.graph) if request.modelId is not None else None
     by_id = {node["id"]: node for node in copied["nodes"]}

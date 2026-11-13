@@ -139,7 +139,14 @@ The inspector shows measured shape/dtype, finite/non-finite element counts, full
 
 `POST /api/infer` accepts `graph`, `nodeIds`, optional `seed`, `device` (`cpu` by default, `cuda` or `auto`), optional `modelId` (a retained trained model; omitted/null means random weights), optional flat `inputs`, and optional leading-axis `slices` keyed by captured node ID. The report includes `weights`, `model` metadata (null for random weights) and `inputTransform`. Inference shares the training/diagnostics lock: concurrent work returns HTTP 409, invalid graphs/inputs or resource limits return HTTP 422. Opening the tab never starts inference, installs dependencies or probes CUDA. The existing particle animation and attention weight colours remain illustrative; attention internals are shown only in the separately labelled, explicit inference observation.
 
-It accepts at most 8 captured nodes, 5 million parameters / 20 MiB parameter-storage cap, 4 million elements per input, 64 MiB of summed single-sample activation estimates, and 1 million attention-score elements per attention layer. These limits are checked before model allocation; displayed slices are capped at 16 × 16, a channel grid at 16 such windows, and leading-axis indices at 3.
+It accepts at most 8 captured nodes, 5 million parameters / 20 MiB parameter-storage cap, 4 million elements per input, 64 MiB of summed single-sample activation estimates, and 1 million attention-score elements per attention layer. These limits are checked before model allocation; displayed slices are capped at 16 × 16, a channel grid at 16 such windows, and leading-axis indices at 3. Instead of `nodeIds`, `allNodes: true` observes every executed layer, at most 256 of them, under the whole-model activation budget, and takes no attention selection.
+
+**Measured values in the 3D view.** **观测全部层，画到三维视图** runs one sample through every layer with the panel's weights, seed, device and input, and paints the result on the 3D blocks:
+
+- A feature map shows the measured window of the selected channel (at most 16 × 16, from the top front corner) on its large face, and every captured channel's mean along its thickness on the other faces.
+- A sequence or vector shows its window on its faces.
+
+Colours use the inspector's scale, symmetric around the whole tensor's largest magnitude, and faces without data are muted. A legend names the source and the weights. The paint lives in page memory only. It pauses as soon as the graph computes something else and comes back with the matching graph, and image exports never include it. A bound offline snapshot can be painted the same way.
 
 ### Attention Inspector
 
