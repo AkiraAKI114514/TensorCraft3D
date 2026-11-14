@@ -118,6 +118,9 @@ const FRAGMENT_GRID = `{
   vec3 observed = mix(mix(diffuseColor.rgb, vec3(${rgb(SCALE.neutral)}), 0.72), tensorHeat(stripValue), inStrip);
   observed = mix(observed, tensorHeat(mapValue), inMap);
   diffuseColor.rgb = mix(diffuseColor.rgb, observed, step(0.5, uObserve));
+  // Studio shading: a face darkens a little toward the block's foot, as under soft overhead
+  // light, which gives the block weight. Measured values keep their exact colours.
+  diffuseColor.rgb *= mix(mix(0.8, 1.0, smoothstep(0.0, 0.85, tensorCoord.y)), 1.0, step(0.5, uObserve));
   vec3 tensorAxes = (1.0 - tensorFace) * step(1.5, uCells);
   vec3 tensorCell = tensorCoord * uCells;
   vec3 tensorRate = max(fwidth(tensorCell), vec3(1e-5));
@@ -166,7 +169,8 @@ export function createTensorMaterial() {
     uGroups: { value: new THREE.Vector3(1, 1, 1) },
     uHalf: { value: new THREE.Vector3(0.5, 0.5, 0.5) },
     uLine: { value: new THREE.Color() },
-    uLineStrength: { value: 0.55 },
+    // Cell lines strong enough to count, light enough that a block reads as a solid, not as voxels.
+    uLineStrength: { value: 0.3 },
     uObserve: { value: 0 },
     uMap: { value: blank() },
     uMapSize: { value: new THREE.Vector2(0, 0) },
@@ -178,7 +182,8 @@ export function createTensorMaterial() {
     uStripRange: { value: new THREE.Vector3(1, 0, 0) },
     uLimit: { value: 1 },
   };
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0.04 });
+  // Matte, with a soft sheen from the studio environment (Scene.tsx) on the faces turned to it.
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.52, metalness: 0, envMapIntensity: 0.9 });
   material.onBeforeCompile = shader => {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = shader.vertexShader
@@ -188,6 +193,6 @@ export function createTensorMaterial() {
       .replace('#include <common>', `#include <common>\n${FRAGMENT_HEAD}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${FRAGMENT_GRID}`);
   };
-  material.customProgramCacheKey = () => 'tensor-block-2';
+  material.customProgramCacheKey = () => 'tensor-block-3';
   return { material, uniforms };
 }

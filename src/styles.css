@@ -39,3 +39,12 @@
 .monitor-toggle:focus-visible{outline:2px solid #2f8f9d;outline-offset:1px}
 .monitor.collapsed .monitor-toggle{transform:rotate(-90deg)}
 .monitor-summary{font-size:10px;color:#6f838b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* 3D scene art direction: a soft studio backdrop behind the transparent canvas, and labels set as
+   quiet type with a dot in the layer's own colour instead of bordered pills. */
+.scene-workspace{background:radial-gradient(120% 95% at 50% 36%,#fdfefe 0%,#f3f6f8 56%,#e7edf0 100%)}
+.scene-label{min-width:0;max-width:156px;padding:3px 8px 3px 16px;border:0;border-radius:6px;background:#ffffffdb;box-shadow:0 0 0 1px #1f3a4512,0 1px 3px #0f2a3514;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);text-align:left;position:relative;color:#4c6470}
+.scene-label::before{content:'';position:absolute;left:7px;top:8px;width:5px;height:5px;border-radius:50%;background:var(--accent,#8a9aa2);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#8a9aa2) 22%,transparent)}
+.scene-label strong{display:block;font-size:10px;line-height:15px;font-weight:600;color:#1c2e36;letter-spacing:.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:132px}
+.scene-label span{display:block;font-size:8.5px;line-height:12px;color:#6d818a;font-variant-numeric:tabular-nums;white-space:nowrap}
+.scene-label.selected{background:#fff;box-shadow:0 0 0 1.5px #1d3943,0 6px 16px #0f2a3524}
+@media(max-width:700px){.scene-label{max-width:104px;padding:2px 6px 2px 13px}.scene-label::before{left:5px;top:7px;width:4px;height:4px}.scene-label strong{font-size:8.5px;line-height:13px;max-width:86px}.scene-label span{font-size:7px;line-height:10px}}

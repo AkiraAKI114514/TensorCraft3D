@@ -1,7 +1,8 @@
-import { Component, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer } from './types';
 import { product, shapeText } from './analysis';
 import { EdgeLine, ParticleEdge, ResidualFlow } from './Flow';
@@ -72,10 +73,13 @@ function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: 
 
 // 盒子轮廓的边几何体必须缓存：写在 JSX 里的 new THREE.BoxGeometry(...dims) 会在每次渲染时
 // 重新分配并重算 EdgesGeometry，节点一多就是每帧的分配风暴。
+/** The outline of the selected layer; any other outline is a faint darker tone of its own block. */
+const SELECTED_OUTLINE = '#1d3943';
 function NodeOutline({ dims, color }: { dims: [number, number, number]; color: string }) {
   const geometry = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(dims[0], dims[1], dims[2])), [dims[0], dims[1], dims[2]]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={0.9} /></lineSegments>;
+  // Dark, opaque edges on every block drew the model like a cartoon; shading separates the faces now.
+  return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={color === SELECTED_OUTLINE ? 0.95 : 0.38} /></lineSegments>;
 }
 
 /** The block's own hue, darker: edges that read as the block's, not as a second colour. */
@@ -185,6 +189,8 @@ function withoutPaint<T>(work: () => T): T {
 }
 
 const GROUND_Y = -0.09;
+/** Edges between layers: a calm slate that reads on the floor without competing with the blocks. */
+const EDGE_COLOR = '#5f7c89';
 let shadowTexture: THREE.CanvasTexture | null = null;
 /** One soft radial falloff shared by every shadow; its green channel is read as alpha. */
 function groundShadowTexture() {
@@ -204,12 +210,30 @@ function groundShadowTexture() {
  */
 function GroundShadow({ width, depth, lift }: { width: number; depth: number; lift: number }) {
   const texture = useMemo(groundShadowTexture, []);
-  // Higher above the ground, wider and fainter, the way a contact shadow behaves.
-  const spread = 1.3 + Math.min(lift, 6) * 0.08, opacity = Math.max(0.1, 0.26 - Math.min(lift, 6) * 0.025);
+  // Higher above the ground, wider and fainter, the way a contact shadow behaves; a block well
+  // above the floor (a row raised for an attention module) casts none, rather than a stray smudge.
+  const spread = 1.4 + Math.min(lift, 6) * 0.1, opacity = 0.22 * (1 - THREE.MathUtils.smoothstep(lift, 1.9, 2.8));
+  if (opacity <= 0.005) return null;
   return <mesh raycast={() => {}} rotation={[-Math.PI / 2, 0, 0]} position={[0, -lift, 0]} renderOrder={-1}>
-    <planeGeometry args={[width * spread + 0.4, depth * spread + 0.4]} />
-    <meshBasicMaterial color="#3f5c67" alphaMap={texture} transparent opacity={opacity} depthWrite={false} />
+    <planeGeometry args={[width * spread + 0.5, depth * spread + 0.5]} />
+    <meshBasicMaterial color="#1c2d35" alphaMap={texture} transparent opacity={opacity} depthWrite={false} />
   </mesh>;
+}
+
+/**
+ * Soft studio light: a room environment, prefiltered once, lights every lit material from all
+ * sides, so a block's faces shade smoothly instead of as three flat tones under bare lamps. It is
+ * built locally from three.js's own room model; nothing is downloaded.
+ */
+function StudioEnvironment() {
+  const gl = useThree(state => state.gl), scene = useThree(state => state.scene);
+  useEffect(() => {
+    const generator = new THREE.PMREMGenerator(gl), room = new RoomEnvironment();
+    const texture = generator.fromScene(room, 0.04).texture;
+    scene.environment = texture; scene.environmentIntensity = 0.38;
+    return () => { scene.environment = null; texture.dispose(); generator.dispose(); room.dispose(); };
+  }, [gl, scene]);
+  return null;
 }
 
 // 每节点一个 <Html> 标签是最重的成本：它们不受 three.js 视锥剔除约束，节点一多就
@@ -415,14 +439,16 @@ function World(props: Props) {
   useEffect(() => { if (props.selected && props.selectedHead !== null && model.nodes[props.selected]?.attention) focus(props.selected, props.selectedHead); }, [camera, props.selected, props.selectedHead, props.expanded, model, size]);
   return <>
     {/* No scene background: the canvas is transparent over the workspace's soft gradient. */}
-    {/* Sky/ground fill plus a key light from the upper right and a weak rim from behind, so a
-        block's top, front and side read as three distinct tones of its one colour. */}
-    <hemisphereLight args={['#ffffff', '#b9c8cf', 1.7]} /><directionalLight position={[9, 16, 11]} intensity={1.9} /><directionalLight position={[-10, 5, -8]} intensity={0.55} />
-    <Grid name="export_grid" position={[0, -0.1, 0]} args={[80, 40]} cellSize={1} cellThickness={0.5} cellColor="#e0e8eb" sectionSize={5} sectionThickness={0.85} sectionColor="#cad6db" fadeDistance={55} fadeStrength={1.6} infiniteGrid />
+    {/* The studio environment fills from every side; a key light from the upper right and a weak
+        rim from behind keep a block's top, front and side distinct tones of its one colour. */}
+    <StudioEnvironment />
+    <hemisphereLight args={['#ffffff', '#c3d0d6', 0.85]} /><directionalLight position={[9, 16, 11]} intensity={1.55} /><directionalLight position={[-10, 5, -8]} intensity={0.4} />
+    {/* A quiet floor: fine lines that fade out close to the model, not engineering paper to the horizon. */}
+    <Grid name="export_grid" position={[0, -0.1, 0]} args={[80, 40]} cellSize={1} cellThickness={0.4} cellColor="#e7edf0" sectionSize={5} sectionThickness={0.7} sectionColor="#d6e0e4" fadeDistance={40} fadeStrength={2.2} infiniteGrid />
     <OrbitControls ref={controls} makeDefault enableDamping={false} minZoom={1.5} maxZoom={180} />
     {routes.map(route => {
       const flow = { start: route.start, end: route.end, control1: route.control1, control2: route.control2 };
-      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? '#7095a6' : '#e26969'} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
+      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? EDGE_COLOR : '#e26969'} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
     })}
     {kernels.map(kernel => <KernelWindow key={kernel.node.id} {...kernel} playing={props.playing} speed={props.speed} measured={measuredAt(kernel.node.id)} />)}
     {props.graph.nodes.map(n => {
@@ -432,13 +458,13 @@ function World(props: Props) {
       const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
-          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? '#1d3943' : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
+          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? SELECTED_OUTLINE : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint
             read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow
             cast that far down would land on the band below, so only the lowest band casts them. */}
         {!isAttention(n.op) && entry.grounded && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
-        {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color="#1d3943" transparent opacity={0.75} /></mesh>}
-        {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div ref={element => { if (element) labelElements.current.set(n.id, element); else labelElements.current.delete(n.id); }} className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
+        {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color={SELECTED_OUTLINE} transparent opacity={0.75} /></mesh>}
+        {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div ref={element => { if (element) labelElements.current.set(n.id, element); else labelElements.current.delete(n.id); }} className={`scene-label ${selected ? 'selected' : ''}`} style={{ '--accent': color } as CSSProperties}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
       </group>;
     })}
   </>;

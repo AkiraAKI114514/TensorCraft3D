@@ -13,7 +13,7 @@ export interface FlowProps { start: THREE.Vector3; end: THREE.Vector3; control1?
 export function ParticleEdge({ start, end, control1, control2, active, direction, speed, color, intensity = 0, compact = false, opacity = 0.85 }: FlowProps) {
   const clock = useRef(0);
   const { geometry, material } = useMemo(() => {
-    const base = new THREE.SphereGeometry(compact ? 0.024 : 0.036, 8, 6);
+    const base = new THREE.SphereGeometry(compact ? 0.024 : 0.034, 10, 8);
     const geometry = new THREE.InstancedBufferGeometry(); geometry.index = base.index;
     geometry.setAttribute('position', base.getAttribute('position').clone());
     // Larger tensors still flow more densely, within a narrower range.
@@ -36,10 +36,11 @@ export function ParticleEdge({ start, end, control1, control2, active, direction
   return <mesh raycast={() => {}} geometry={geometry} material={material} frustumCulled={false} />;
 }
 
-export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.75 : 0.6 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
+export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.75 : 0.72 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
   const { geometry, curve } = useMemo(() => {
     const curve = flowCurve({ start, end, control1, control2, compact });
-    return { geometry: new THREE.TubeGeometry(curve, 32, compact ? 0.013 : 0.016, 6, false), curve };
+    // A main edge a touch heavier than a shortcut, round enough to read as a line rather than a seam.
+    return { geometry: new THREE.TubeGeometry(curve, 48, compact ? 0.013 : 0.021, 8, false), curve };
   }, [start, end, control1, control2, compact]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   return <mesh raycast={() => {}} geometry={geometry} userData={{ exportCurve: { start: start.toArray(), end: end.toArray(), control1: curve.v1.toArray(), control2: curve.v2.toArray(), color, opacity } }}><meshBasicMaterial color={color} transparent opacity={opacity} /></mesh>;
