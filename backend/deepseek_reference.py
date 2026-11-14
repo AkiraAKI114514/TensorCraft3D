@@ -10,6 +10,10 @@ SwiGLU MLP as Linear, SiLU and Multiply layers.
 What this reproduces is the single-device bf16 forward from position 0. Its KV cache then holds just
 the current sequence, so it equals the cache-free computation the graph runs, in float32. Both of
 the reference's attention implementations ("naive" and "absorb") compute the same function.
+
+A configuration past the workbench's local limits (the full 671B model, say) is imported for its
+structure alone: its dense and MoE layers become two repeated blocks, the graph is marked
+`structureOnly`, and FP8 weights or YaRN, which only a run would need, are noted rather than refused.
 """
 import ast
 import copy
@@ -42,6 +46,14 @@ DIGESTS = {
 # difference in DIGESTS is reported instead of falling through to the line-by-line importer.
 _MARKERS = ("ModelArgs", "ParallelEmbedding", "ColumnParallelLinear", "RowParallelLinear", "MLA", "Gate", "Transformer")
 _MAX_NODES, _MAX_PARAMETERS = 128, 50_000_000
+# What a configuration must stay within to be built as a runnable graph, the bounds
+# src/analysis.ts and backend/graph.py check; past any of them it is imported for its structure.
+_LOCAL = {"dim": 4096, "n_heads": 16, "q_lora_rank": 4096, "kv_lora_rank": 4096, "qk_nope_head_dim": 512, "qk_rope_head_dim": 512, "v_head_dim": 512,
+          "n_routed_experts": 64, "n_activated_experts": 8, "n_shared_experts": 4, "moe_inter_dim": 16384, "inter_dim": 65536, "vocab_size": 65536}
+# Bounds of a structure-only import, matching STRUCTURE_MAX in src/analysis.ts.
+_STRUCTURE = {"dim": 65536, "n_heads": 1024, "q_lora_rank": 65536, "kv_lora_rank": 65536, "qk_nope_head_dim": 4096, "qk_rope_head_dim": 4096, "v_head_dim": 4096,
+              "n_routed_experts": 1024, "n_activated_experts": 64, "n_shared_experts": 16, "moe_inter_dim": 262144, "inter_dim": 262144, "vocab_size": 1_000_000}
+_MAX_REPEAT = 1024
 
 
 class ReferenceIssue(ValueError):
@@ -113,32 +125,86 @@ def model_args(found, call, literal):
         if type(config.get(name)) is not int or config[name] < 0: raise ReferenceIssue(f"ModelArgs.{name} 需要非负整数", call)
     for name in ("route_scale", "rope_theta"):
         if type(config.get(name)) not in (int, float): raise ReferenceIssue(f"ModelArgs.{name} 需要数值", call)
-    if config.get("dtype") != "bf16":
-        raise ReferenceIssue('ModelArgs.dtype 只支持 "bf16"：FP8 权重需要量化内核和缩放参数，图中无法表示', call)
-    if config["max_seq_len"] > config["original_seq_len"]:
-        raise ReferenceIssue("max_seq_len 大于 original_seq_len 时官方代码启用 YaRN（改写 RoPE 频率与 softmax 缩放），图中不包含；请让 max_seq_len 不超过 original_seq_len", call)
+    if config.get("dtype") not in ("bf16", "fp8"): raise ReferenceIssue('ModelArgs.dtype 只能是 "bf16" 或 "fp8"', call)
     if config["n_layers"] < 1: raise ReferenceIssue("ModelArgs.n_layers 至少为 1", call)
     return config
 
 
-def check_size(config, latent_parameters, moe_parameters, node):
-    """Refuse a configuration the workbench cannot hold before emitting a hundred nodes of it."""
+def run_issues(config):
+    """What only a run needs and the graph cannot express: FP8 weights and YaRN. They block a runnable
+    import; a structure-only one notes them, since neither changes a shape or a parameter count."""
+    issues = []
+    if config["dtype"] == "fp8":
+        issues.append('ModelArgs.dtype 只支持 "bf16"：FP8 权重需要量化内核和缩放参数，图中无法表示')
+    if config["max_seq_len"] > config["original_seq_len"]:
+        issues.append("max_seq_len 大于 original_seq_len 时官方代码启用 YaRN（改写 RoPE 频率与 softmax 缩放），图中不包含；请让 max_seq_len 不超过 original_seq_len")
+    return issues
+
+
+def size(config, latent_parameters, moe_parameters):
+    """Nodes of the flat graph and parameters of the model a configuration builds."""
     dim, layers, dense = config["dim"], config["n_layers"], min(config["n_dense_layers"], config["n_layers"])
     nodes = 2 + dense * 10 + (layers - dense) * 6 + 4
     attention = latent_parameters(dim, config["n_heads"], config["q_lora_rank"], config["kv_lora_rank"], config["qk_nope_head_dim"], config["qk_rope_head_dim"], config["v_head_dim"])
     feed_forward = dense * 3 * dim * config["inter_dim"] + (layers - dense) * moe_parameters(dim, config["n_routed_experts"], config["n_shared_experts"], config["moe_inter_dim"])
-    parameters = 2 * config["vocab_size"] * dim + layers * (attention + 2 * dim) + feed_forward + dim
+    return nodes, 2 * config["vocab_size"] * dim + layers * (attention + 2 * dim) + feed_forward + dim
+
+
+def runnable(config, latent_parameters, moe_parameters):
+    """Whether the configuration fits the workbench: 128 nodes, 50M parameters and every local bound."""
+    nodes, parameters = size(config, latent_parameters, moe_parameters)
+    return nodes <= _MAX_NODES and parameters <= _MAX_PARAMETERS and all(config[key] <= bound for key, bound in _LOCAL.items())
+
+
+def check_structure(config, node):
+    """Refuse a configuration even a structure-only view cannot hold."""
+    for key, bound in _STRUCTURE.items():
+        if config[key] > bound: raise ReferenceIssue(f"ModelArgs.{key} = {config[key]:,} 超出仅结构显示的上限 {bound:,}", node, "LIMIT")
+    dense = min(config["n_dense_layers"], config["n_layers"])
+    if dense > _MAX_REPEAT or config["n_layers"] - dense > _MAX_REPEAT:
+        raise ReferenceIssue(f"稠密层或 MoE 层超过 {_MAX_REPEAT} 层，折叠块放不下", node, "LIMIT")
+
+
+def check_size(config, latent_parameters, moe_parameters, node):
+    """Refuse a configuration the workbench cannot hold before emitting a hundred nodes of it."""
+    nodes, parameters = size(config, latent_parameters, moe_parameters)
     if nodes > _MAX_NODES or parameters > _MAX_PARAMETERS:
         raise ReferenceIssue(f"这组 ModelArgs 约有 {parameters:,} 个参数、{nodes} 个节点，超出工作台的 5000 万参数 / 128 节点；请在文件末尾写一组缩小的 args = ModelArgs(...)，再写 model = Transformer(args)", node, "LIMIT")
 
 
-def emit(config, add, tokens, node):
-    """Append the reference Transformer after `tokens`, naming each node by its module path."""
+def _layer_params(config):
     dim = config["dim"]
     norm = {"normalized_shape": dim, "eps": 1e-6, "elementwise_affine": 1}
     attention = {"embed_dim": dim, "num_heads": config["n_heads"], "q_lora_rank": config["q_lora_rank"], "kv_lora_rank": config["kv_lora_rank"], "qk_nope_head_dim": config["qk_nope_head_dim"], "qk_rope_head_dim": config["qk_rope_head_dim"], "v_head_dim": config["v_head_dim"], "rope_theta": config["rope_theta"], "causal": 1, "eps": 1e-6}
     # The reference gives its gate a bias only at DeepSeek-V3's full width.
     experts = {"experts": config["n_routed_experts"], "top_k": config["n_activated_experts"], "shared_experts": config["n_shared_experts"], "expert_dim": config["moe_inter_dim"], "score_func": config["score_func"], "route_scale": config["route_scale"], "groups": config["n_expert_groups"], "topk_groups": config["n_limited_groups"], "gate_bias": int(dim == 7168)}
+    return norm, attention, experts
+
+
+def emit_structure(config, add, block, tokens, node):
+    """The reference Transformer for its structure alone: the embedding, the dense layers folded into
+    one repeated block, the MoE layers into another, then the final norm, the last position and the
+    head. A block starts with an Identity standing for its input, which the attention's residual
+    reads, so the block has the single entry a folded block needs."""
+    dim, (norm, attention, experts) = config["dim"], _layer_params(config)
+    dense = min(config["n_dense_layers"], config["n_layers"]); routed = config["n_layers"] - dense
+    def layer(feed_forward):
+        body = [("Identity", {}, [], "层输入"), ("RMSNorm", norm, [0], "attn_norm"), ("LatentAttention", attention, [1], "attn"), ("Add", {}, [0, 2], "残差（attn）"), ("RMSNorm", norm, [3], "ffn_norm")]
+        body += feed_forward(len(body))
+        return body + [("Add", {}, [3, len(body) - 1], "残差（ffn）")]
+    swiglu = lambda at: [("Linear", {"out_features": config["inter_dim"], "bias": 0}, [at - 1], "ffn.w1"), ("Linear", {"out_features": config["inter_dim"], "bias": 0}, [at - 1], "ffn.w3"),
+                         ("SiLU", {}, [at], "ffn.silu"), ("Multiply", {}, [at + 2, at + 1], "ffn 门控"), ("Linear", {"out_features": dim, "bias": 0}, [at + 3], "ffn.w2")]
+    h = add("Embedding", {"num_embeddings": config["vocab_size"], "embedding_dim": dim}, [(tokens, None)], "embed", node)
+    if dense: h = block("dense_layers", f"layers.0–{dense - 1} · 稠密 SwiGLU", layer(swiglu), dense, h, node)
+    if routed: h = block("moe_layers", f"layers.{dense}–{config['n_layers'] - 1} · MoE", layer(lambda at: [("MoE", experts, [at - 1], "ffn")]), routed, h, node)
+    h = add("RMSNorm", norm, [(h, None)], "norm", node)
+    h = add("Select", {"dim": 1, "index": -1}, [(h, None)], "取最后位置", node)
+    return add("Linear", {"out_features": config["vocab_size"], "bias": 0}, [(h, None)], "head", node)
+
+
+def emit(config, add, tokens, node):
+    """Append the reference Transformer after `tokens`, naming each node by its module path."""
+    dim, (norm, attention, experts) = config["dim"], _layer_params(config)
     h = add("Embedding", {"num_embeddings": config["vocab_size"], "embedding_dim": dim}, [(tokens, None)], "embed", node)
     for layer in range(config["n_layers"]):
         prefix = f"layers.{layer}"

@@ -199,3 +199,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .scene-workspace.night .scene-label span{color:#86a6b5}
 .scene-workspace.night .scene-label::before{box-shadow:0 0 7px var(--accent,#8a9aa2)}
 .scene-workspace.night .scene-label.selected{background:#0b1f2b;box-shadow:0 0 0 1.5px #9cecff,0 0 20px #4cc3ff59}
+/* A structure-only model (too large to run here): a tag in the scene heading and a note in the inspector. */
+.structure-only-tag{font-size:10.5px;font-weight:600;line-height:18px;padding:0 8px;border-radius:999px;background:#fff3df;color:#9a6a1c;box-shadow:inset 0 0 0 1px #f0d9ad}
+.scene-workspace.night .structure-only-tag{background:#3a2a0f;color:#ffcf7a;box-shadow:inset 0 0 0 1px #6b4f1f}
+.structure-notice{margin:12px 0}

@@ -1,5 +1,5 @@
 import { OPS, MAX_REPEAT, MAX_SUBGRAPH_DEPTH, GROUP_OP, isGroup, repeatOf, type Graph, type Analysis, type LayerInfo, type Diagnostic, type Metric } from './types';
-import { expandGraph, topLevelId, SubgraphError } from './subgraph';
+import { expandGraph, graphAt, topLevelId, SubgraphError } from './subgraph';
 import { ATTENTION_TYPES, attentionConfig, incomingEdges, isCrossAttention, crossInputRole, edgeKey, edgeOutputShape, isAttention, isProjectionPort, projectionPorts } from './attentionConfig';
 
 export const product = (values: number[]) => values.reduce((a, b) => a * b, 1);
@@ -45,12 +45,13 @@ export function moeParameters(dim: number, experts: number, shared: number, hidd
   return dim * experts + experts * 3 * dim * hidden + (shared ? 3 * dim * shared * hidden : 0);
 }
 export const shapeText = (shape?: number[]) => shape ? shape.join(' × ') : '—';
-export const formatNumber = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
+export const formatNumber = (value: number) => value >= 1e9 ? `${(value / 1e9).toFixed(2)}B` : value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
 
 export function validateGraph(value: unknown): Graph {
   const g = value as Graph;
   if (!g || g.version !== 1 || typeof g.name !== 'string' || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) throw new Error('不是有效的 TensorCraft3D v1 项目');
   if (g.name.length > 120 || g.nodes.length > 128 || g.edges.length > 512) throw new Error('项目超过限制（128 层 / 512 连线）');
+  if (g.structureOnly !== undefined && g.structureOnly !== true) throw new Error('structureOnly 只能是 true 或省略');
   const ids = new Set<string>();
   g.nodes.forEach(n => {
     if (!n || typeof n.id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.id) || ids.has(n.id) || !OPS.includes(n.op) || typeof n.name !== 'string' || n.name.length > 120 || !n.params || typeof n.params !== 'object' || Array.isArray(n.params)) throw new Error('节点数据或 ID 无效');
@@ -95,12 +96,40 @@ export function analyze(graph: Graph): Analysis {
     catch (error) {
       return { layers: {}, order: [], diagnostics: [{ id: 'SUBGRAPH', level: 'error', code: 'SUBGRAPH', message: (error as Error).message }], parameters: 0, activationBytes: 0, valid: false };
     }
-    return collapseAnalysis(analyzeExpanded(expanded));
+    return collapseAnalysis(analyzeExpanded(expanded, graph.structureOnly === true));
   }
-  return analyzeExpanded(graph);
+  return analyzeExpanded(graph, graph.structureOnly === true);
 }
 
 /** 把展开后的逐算子结果按顶层节点合并：参数求和，诊断归位并去重。 */
+const LEVEL_INPUT = '__levelInput', LEVEL_OUTPUT = '__levelOutput';
+
+/**
+ * The analysis of one level of a model, the root or a block drilled into along `path`. A block
+ * analysed on its own has no input, so every layer in it lacked a shape and the level showed
+ * structural errors that the model does not have. Each level is analysed instead with the shape
+ * that enters its first instance in the level above, through a stand-in input before the block's
+ * entry and a stand-in output after its exit, which are then left out of the result.
+ */
+export function analyzeLevel(graph: Graph, path: string[]): Analysis {
+  let parent = graph, analysis = analyze(graph);
+  for (const name of path) {
+    const level = graphAt(parent, [name]);
+    const instance = parent.nodes.find(node => isGroup(node) && node.subgraph === name);
+    const shape = instance ? analysis.layers[instance.id]?.input[0] : undefined;
+    const targets = new Set(level.edges.map(edge => edge.target)), sources = new Set(level.edges.map(edge => edge.source));
+    const entry = level.nodes.filter(node => !targets.has(node.id)), exit = level.nodes.filter(node => !sources.has(node.id));
+    if (!shape || entry.length !== 1 || exit.length !== 1) { analysis = analyze(level); parent = level; continue; }
+    const at = { x: 0, y: 0 };
+    const fed = analyze({ ...level, nodes: [...level.nodes, { id: LEVEL_INPUT, name: 'input', op: 'Input', params: { shape }, position: at }, { id: LEVEL_OUTPUT, name: 'output', op: 'Output', params: {}, position: at }],
+      edges: [...level.edges, { id: LEVEL_INPUT, source: LEVEL_INPUT, target: entry[0].id }, { id: LEVEL_OUTPUT, source: exit[0].id, target: LEVEL_OUTPUT }] });
+    const layers = Object.fromEntries(Object.entries(fed.layers).filter(([id]) => id !== LEVEL_INPUT && id !== LEVEL_OUTPUT));
+    analysis = { ...fed, layers, order: fed.order.filter(id => id !== LEVEL_INPUT && id !== LEVEL_OUTPUT), diagnostics: fed.diagnostics.filter(d => d.nodeId !== LEVEL_INPUT && d.nodeId !== LEVEL_OUTPUT) };
+    parent = level;
+  }
+  return analysis;
+}
+
 function collapseAnalysis(analysis: Analysis): Analysis {
   const layers: Record<string, LayerInfo> = {}, order: string[] = [];
   for (const id of analysis.order) {
@@ -129,7 +158,18 @@ function collapseAnalysis(analysis: Analysis): Analysis {
   return { layers, order, diagnostics, parameters: analysis.parameters, activationBytes: analysis.activationBytes, valid: analysis.valid };
 }
 
-function analyzeExpanded(graph: Graph): Analysis {
+/**
+ * Bounds a structure-only model is checked against instead of the local ones: wide enough for the
+ * largest published configurations (DeepSeek-V3: width 7168, 128 heads, 256 experts, a 129,280-way
+ * head), still finite so a typo is caught. Parameters not listed keep their local bound.
+ */
+const STRUCTURE_MAX: Record<string, number> = {
+  embed_dim: 65536, embedding_dim: 65536, num_heads: 1024, kv_heads: 1024, q_lora_rank: 65536, kv_lora_rank: 65536,
+  qk_nope_head_dim: 4096, qk_rope_head_dim: 4096, v_head_dim: 4096, experts: 1024, top_k: 64, shared_experts: 16,
+  expert_dim: 262144, ff_dim: 262144, out_features: 1048576, out_channels: 65536
+};
+
+function analyzeExpanded(graph: Graph, structureOnly = false): Analysis {
   const layers: Record<string, LayerInfo> = {}, diagnostics: Diagnostic[] = [], order: string[] = [];
   const add = (code: string, message: string, nodeId?: string, level: Diagnostic['level'] = 'error') => diagnostics.push({ id: `${code}_${nodeId || diagnostics.length}`, code, message, nodeId, level });
   const indegree = new Map(graph.nodes.map(n => [n.id, graph.edges.filter(e => e.target === n.id).length]));
@@ -153,7 +193,7 @@ function analyzeExpanded(graph: Graph): Analysis {
     const allEdges = incomingEdges(graph, n), inputEdges = allEdges.filter(e => !isProjectionPort(e.targetPort)), parents = inputEdges.map(e => e.source);
     const input = inputEdges.map(e => edgeOutputShape(graph, e, layers)).filter((s): s is number[] => Boolean(s));
     try {
-      const integer = (key: string, fallback: number, min = 1, max = 65536) => { const v = n.params[key] ?? fallback; if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) throw new Error(`${key} 必须是 ${min}–${max} 的整数`); return v; };
+      const integer = (key: string, fallback: number, min = 1, localMax = 65536) => { const max = structureOnly ? Math.max(localMax, STRUCTURE_MAX[key] ?? localMax) : localMax; const v = n.params[key] ?? fallback; if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) throw new Error(`${key} 必须是 ${min}–${max} 的整数`); return v; };
       for (const edge of allEdges) {
         if (edge.sourcePort && !projectionPorts(graph.nodes.find(node => node.id === edge.source)!).some(p => p.id === edge.sourcePort)) throw new Error(`输出端口 ${edge.sourcePort} 不存在`);
         if (isProjectionPort(edge.targetPort) && !projectionPorts(n).some(p => p.id === edge.targetPort)) throw new Error(`输入端口 ${edge.targetPort} 不存在`);
@@ -306,7 +346,7 @@ function analyzeExpanded(graph: Graph): Analysis {
         const dropout = n.params.dropout ?? 0.1;
         if (typeof dropout !== 'number' || !Number.isFinite(dropout) || dropout < 0 || dropout >= 1) throw new Error('dropout 需要在 [0,1) 范围内');
         const attentionElements = output[0] * heads * output[1] * Array.from({ length: branches }, (_, b) => portShapes[`b${b}:k0`][1]).reduce((a, b) => a + b, 0);
-        if (attentionElements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
+        if (!structureOnly && attentionElements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
         activationBytes += attentionElements * 4;
         const kvDim = kvHeads * (embed / heads);
         count = branches * (2 * embed * embed + 2 * embed * kvDim + 2 * embed + 2 * kvDim);
@@ -314,7 +354,7 @@ function analyzeExpanded(graph: Graph): Analysis {
           integer('norm_first', 1, 0, 1);
           if (!['relu', 'gelu'].includes(String(n.params.activation ?? 'gelu'))) throw new Error('编码器 activation 需要为 relu 或 gelu');
           const ff = integer('ff_dim', 128, 1, 16384);
-          if (product(output.slice(0, 2)) * ff > 16e6) throw new Error('FFN 中间激活超过 1600 万元素');
+          if (!structureOnly && product(output.slice(0, 2)) * ff > 16e6) throw new Error('FFN 中间激活超过 1600 万元素');
           activationBytes += product(output.slice(0, 2)) * ff * 4;
           count += 2 * embed * ff + ff + 5 * embed;
         }
@@ -333,7 +373,7 @@ function analyzeExpanded(graph: Graph): Analysis {
         }
         integer('causal', 1, 0, 1);
         const elements = output[0] * heads * output[1] * output[1];
-        if (elements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
+        if (!structureOnly && elements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
         activationBytes += elements * 4;
         count = latentAttentionParameters(embed, heads, qLora, kvLora, nope, rope, value);
       } else if (n.op === 'MoE') {
@@ -351,7 +391,7 @@ function analyzeExpanded(graph: Graph): Analysis {
         const scale = n.params.route_scale ?? 1;
         if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0 || scale > 1000) throw new Error('route_scale 需要是不超过 1000 的正数');
         const tokens = product(output.slice(0, -1));
-        if (tokens * (topK + shared) * hidden > 16e6) throw new Error('MoE 中间激活超过 1600 万元素');
+        if (!structureOnly && tokens * (topK + shared) * hidden > 16e6) throw new Error('MoE 中间激活超过 1600 万元素');
         activationBytes += tokens * ((topK + shared) * hidden * 3 + experts) * 4;
         count = moeParameters(output.at(-1)!, experts, shared, hidden);
       } else if (['Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout'].includes(n.op)) {
@@ -432,7 +472,7 @@ function analyzeExpanded(graph: Graph): Analysis {
       // 串联 N 个实例只有在算子把输入形状映射回自身时才可执行，否则第 2 个实例收到
       // 前一个的输出就会维度不匹配。后端 graph.py 必须给出同样的判断。
       if (repeat > 1 && input.length && output.join(',') !== input[0].join(',')) throw new Error('repeat > 1 需要该算子保持输入形状不变');
-      if (product(output) > 16e6 || count * repeat > 50e6) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
+      if (!structureOnly && (product(output) > 16e6 || count * repeat > 50e6)) throw new Error('该层超过本地工作台限制（1600 万激活 / 5000 万参数）');
       layers[id] = { input, output, parameters: count * repeat, repeat };
       parameters += count * repeat; activationBytes += product(output) * 4 * repeat;
       if (n.op === 'Linear' && n.id !== graph.edges.find(e => e.target === outputNode?.id)?.source && input[0].at(-1)! >= 128 && output.at(-1)! < input[0].at(-1)! * 0.1) add('BOTTLENECK', '隐藏层特征维度骤降超过 90%，可能丢失信息', id, 'warning');
@@ -463,7 +503,8 @@ function analyzeExpanded(graph: Graph): Analysis {
     else if (info.parameters !== ownerInfo.parameters) fail('共享权重的两层输入形状不同，权重形状不一致');
     else { parameters -= info.parameters; layers[n.id] = { ...info, parameters: 0 }; }
   }
-  if (parameters > 50e6) add('PARAMETER_LIMIT', '模型总参数超过 5000 万，请减少头维度或分支数');
+  if (structureOnly) add('VIEW_ONLY', '仅结构：这个模型超出本地工作台的运行上限，只显示结构、形状和参数量，不能训练、推理、观测或导出可运行代码', undefined, 'info');
+  else if (parameters > 50e6) add('PARAMETER_LIMIT', '模型总参数超过 5000 万，请减少头维度或分支数');
   if (parameters > 0) Object.entries(layers).forEach(([id, info]) => { if (info.parameters > 1e4 && info.parameters / parameters > 0.7) add('PARAMETER_HOG', `该层占总参数 ${(info.parameters / parameters * 100).toFixed(0)}%，考虑池化或降维`, id, 'warning'); });
   return { layers, order, diagnostics, parameters, activationBytes, valid: !diagnostics.some(d => d.level === 'error') };
 }

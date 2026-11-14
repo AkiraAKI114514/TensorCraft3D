@@ -703,6 +703,19 @@ class Parser:
             self.graph["edges"].append(edge)
         return Tensor(key)
 
+    def add_block(self, name, label, body, count, source, node=None):
+        """A repeated block built straight from its layers: one Group node whose subgraph `name` holds
+        `body` (op, params, input indices, name), entered at its first layer and left at its last,
+        repeated `count` times. It is marked manual, so no automatic pass ever dissolves it."""
+        layers = [{"id": f"n{index}", "name": title[:120], "op": op, "params": dict(params), "position": {"x": index * 210, "y": 100}} for index, (op, params, _, title) in enumerate(body)]
+        links = [{"id": f"e{index}_{order}", "source": f"n{source_index}", "target": f"n{index}"} for index, (_, _, sources, _) in enumerate(body) for order, source_index in enumerate(sources)]
+        self.graph.setdefault("subgraphs", {})[name] = {"id": name, "name": label[:120], "origin": "manual", "nodes": layers, "edges": links}
+        instance = self.add("Group", {}, [(source, None)], label, node)
+        group = next(item for item in self.graph["nodes"] if item["id"] == instance.node)
+        group["subgraph"] = name
+        if count > 1: group["repeat"] = count
+        return instance
+
     def input(self, name):
         shape = self.input_shapes.get(name)
         if shape is not None and (not isinstance(shape, list) or len(shape) not in (2, 3, 4, 5) or any(type(v) is not int or not 1 <= v <= 65536 for v in shape)):
@@ -1893,7 +1906,8 @@ class Parser:
         ids and subgraph names stay inside `[a-zA-Z][a-zA-Z0-9_]{0,63}`, matching the graph IR
         contract, and the result is what `backend.graph.expand_subgraphs` rebuilds.
         """
-        groups = [node for node in self.graph["nodes"] if node["op"] == "Group"]
+        # Blocks built whole (add_block) already have their subgraph; only parsed containers fold here.
+        groups = [node for node in self.graph["nodes"] if node["op"] == "Group" and "subgraph" not in node]
         if not groups: return
         # 由深到浅折叠：一个 Group 节点必然在它父块 replay 时被创建，所以 id 更大。反过来处理
         # 外层块会先把它内部那个 Group 节点一起搬进子图并移出主图，内层就再也没有机会折叠。
@@ -1959,7 +1973,7 @@ class Parser:
             anchor, call = found["Transformer"], None
             instance = next((n.value for n in self.tree.body if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) and self.path(n.value.func) == "Transformer"), None)
             if instance is None:
-                raise deepseek_reference.ReferenceIssue("没有找到顶层的 model = Transformer(args)：默认 ModelArgs 是约 16B 参数、启用 YaRN 的配置；请在文件末尾写一组缩小的 args = ModelArgs(...)，再写 model = Transformer(args)", anchor, "LIMIT")
+                raise deepseek_reference.ReferenceIssue("没有找到顶层的 model = Transformer(args)：默认 ModelArgs 是约 16B 参数、启用 YaRN 的配置；请在文件末尾写一组缩小的 args = ModelArgs(...)（可以运行），或写完整配置（如 config_671B.json 的值，只显示结构），再写 model = Transformer(args)", anchor, "LIMIT")
             else:
                 anchor = instance
                 arguments = list(instance.args) + [keyword.value for keyword in instance.keywords if keyword.arg == "args"]
@@ -1973,7 +1987,13 @@ class Parser:
                 call = argument
             config = deepseek_reference.model_args(found, call, lambda node: self.literal(node, self.constants))
             if self.constants.get("attn_impl", "absorb") not in ("naive", "absorb"): raise deepseek_reference.ReferenceIssue('attn_impl 只能是 "naive" 或 "absorb"', anchor)
-            deepseek_reference.check_size(config, latent_attention_parameters, moe_parameters, anchor)
+            # A configuration that fits is built as a runnable graph, so whatever only a run needs
+            # (FP8, YaRN) must be expressible; one that does not fit is shown for its structure.
+            structure_only = not deepseek_reference.runnable(config, latent_attention_parameters, moe_parameters)
+            if structure_only: deepseek_reference.check_structure(config, anchor)
+            else:
+                issues = deepseek_reference.run_issues(config)
+                if issues: raise deepseek_reference.ReferenceIssue(issues[0], call)
         except deepseek_reference.ReferenceIssue as issue:
             raise ImportIssue(str(issue), issue.node, issue.code) from issue
         tokens = self.input("tokens")
@@ -1982,6 +2002,14 @@ class Parser:
         shape = node["params"]["shape"]
         if len(shape) != 2: raise ImportIssue("tokens 需要 [B,S] 形状的整数序列", anchor, "INPUT_SHAPE")
         if shape[1] > config["max_seq_len"]: raise ImportIssue(f"序列长度 {shape[1]} 超过 ModelArgs.max_seq_len {config['max_seq_len']}：官方代码的 RoPE 表和 KV cache 放不下", anchor, "INPUT_SHAPE")
+        if structure_only:
+            output = deepseek_reference.emit_structure(config, self.add, self.add_block, tokens, anchor)
+            self.graph["structureOnly"] = True
+            _, parameters = deepseek_reference.size(config, latent_attention_parameters, moe_parameters)
+            dense = min(config["n_dense_layers"], config["n_layers"])
+            notes = (["权重为 FP8：只有运行才需要它的量化内核，结构与参数量不受影响"] if config["dtype"] == "fp8" else []) + (["启用 YaRN：只改变 RoPE 频率与 softmax 缩放，不改变形状和参数量，图中未表示"] if config["max_seq_len"] > config["original_seq_len"] else [])
+            self.warnings.append({"level": "info", "code": "DEEPSEEK_STRUCTURE_ONLY", "message": f"已识别 DeepSeek-V3 官方 inference/model.py（提交 {deepseek_reference.OFFICIAL_COMMIT[:7]}）。这组 ModelArgs 约 {parameters / 1e9:.1f}B 参数，超出工作台的运行上限，已按结构导入：{dense} 个稠密层和 {config['n_layers'] - dense} 个 MoE 层各折叠成一个重复块，只显示结构、形状和参数量，不能训练、推理、观测或导出可运行代码。" + "".join(f"{note}。" for note in notes)})
+            return output
         output = deepseek_reference.emit(config, self.add, tokens, anchor)
         self.warnings.append({"level": "info", "code": "DEEPSEEK_REFERENCE", "message": f"已识别 DeepSeek-V3 官方 inference/model.py（提交 {deepseek_reference.OFFICIAL_COMMIT[:7]}）：按单卡、bf16、从位置 0 开始的一次前向导入。此时 KV cache 只装着当前序列，结果与不用缓存相同；计算图以 float32 运行，KV cache、分布式与 FP8 路径不在图中。"})
         return output
@@ -2054,6 +2082,12 @@ class Parser:
             except (ValueError, TypeError, KeyError, OverflowError): pass
             kept = sum(1 for node in sharing if node.get("shares") is not None)
             if kept: self.warnings.append({"level": "info", "code": "SHARED_WEIGHTS", "message": f"有 {kept} 处重复调用同一参数层，已导入为权重共享：这些层复用首次调用的权重，不重复计入参数量。"})
+        if self.graph.get("structureOnly"):
+            # The backend analysis refuses what cannot run, so a structure-only import is laid out as
+            # its chain and checked by the workbench's own analysis, against structural bounds.
+            for index, node in enumerate(self.graph["nodes"]): node["position"] = {"x": 210 * index, "y": 100}
+            self.warnings.append({"level": "info", "code": "STRUCTURE_ONLY", "message": "已导入模型结构和参数配置；原模型权重、训练脚本及优化器不随源码导入。"})
+            return selected, None
         try: analysis = analyze_graph(self.graph)
         except (ValueError, TypeError, KeyError, OverflowError) as error:
             source = self.node_sources.get(str(error).split(":", 1)[0])

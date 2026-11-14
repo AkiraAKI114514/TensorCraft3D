@@ -27,7 +27,12 @@ export interface Layer { id: string; name: string; op: Op; params: Params; posit
 export interface SubgraphDef { id: string; name: string; nodes: Layer[]; edges: Edge[]; origin: 'auto' | 'manual'; }
 export const isGroup = (layer: { op: Op }): boolean => layer.op === GROUP_OP;
 export interface Edge { id: string; source: string; target: string; sourcePort?: string; targetPort?: string; }
-export interface Graph { version: 1; name: string; nodes: Layer[]; edges: Edge[]; subgraphs?: Record<string, SubgraphDef>; }
+/**
+ * `structureOnly` marks a model shown for its structure alone: one too large for this workbench to
+ * run (the full DeepSeek-V3, say). It is analysed against structural bounds instead of the local
+ * memory and parameter budgets, and it is never trained, run, observed or exported as Python.
+ */
+export interface Graph { version: 1; name: string; nodes: Layer[]; edges: Edge[]; subgraphs?: Record<string, SubgraphDef>; structureOnly?: boolean; }
 export interface Diagnostic { id: string; level: 'error' | 'warning' | 'info'; code: string; message: string; nodeId?: string; }
 export interface LayerInfo { input: number[][]; output: number[]; parameters: number; repeat: number; }
 export interface Analysis { layers: Record<string, LayerInfo>; order: string[]; diagnostics: Diagnostic[]; parameters: number; activationBytes: number; valid: boolean; }

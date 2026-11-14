@@ -148,7 +148,8 @@ export function graphAt(graph: Graph, path: string[]): Graph {
   for (const name of path) {
     const def = current.subgraphs?.[name];
     if (!def) throw new SubgraphError(`下钻路径中的子图 ${name} 不存在`);
-    current = { version: 1, name: def.name, nodes: def.nodes, edges: def.edges, subgraphs: current.subgraphs };
+    // A block of a structure-only model is structure-only too.
+    current = { version: 1, name: def.name, nodes: def.nodes, edges: def.edges, subgraphs: current.subgraphs, ...(graph.structureOnly ? { structureOnly: true } : {}) };
   }
   return current;
 }
