@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { analyze } from './analysis';
 import { attentionLayout } from './attentionLayout';
 import { PRESETS } from './presets';
-import { blockDimensions, flowCurve, sceneLayout } from './sceneLayout';
+import { blockDimensions, flowCurve, LABEL_GAP, sceneLayout } from './sceneLayout';
 
 const boxOf = (position: THREE.Vector3, dims: [number, number, number]) => new THREE.Box3().setFromCenterAndSize(position, new THREE.Vector3(...dims));
 
@@ -17,6 +17,17 @@ describe('scene layout', () => {
       // The bounds hold every layer, so the overview never crops one.
       expect(layout.bounds.containsBox(boxOf(entry.position, entry.dims))).toBe(true);
     }
+  });
+
+  it.each(['cnn', 'transformer', 'cross_attention', 'deepseek'])('hangs the labels of each row of %s on one baseline under all its blocks', name => {
+    const graph = PRESETS[name](), layout = sceneLayout(graph, analyze(graph), false);
+    const rows = new Map<number, number[]>();
+    for (const entry of Object.values(layout.nodes)) {
+      rows.set(entry.row, [...(rows.get(entry.row) ?? []), entry.labelY]);
+      expect(entry.labelY).toBeLessThanOrEqual(entry.position.y - entry.dims[1] / 2 - LABEL_GAP + 1e-9);
+      expect(layout.bounds.min.y).toBeLessThan(entry.labelY);
+    }
+    for (const baselines of rows.values()) expect(new Set(baselines).size).toBe(1);
   });
 
   it('sizes blocks from their output and attention modules from their own geometry', () => {

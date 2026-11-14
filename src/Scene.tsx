@@ -23,12 +23,14 @@ interface Props { graph: Graph; analysis: Analysis; selected: string | null; onS
   observation?: SceneObservation | null;
   /** One kernel window per convolution or pooling layer; on unless turned off. */
   showKernels?: boolean; }
-function layerLabel(node: Layer, dims: [number, number, number], selected: string | null, head: number | null, expanded: boolean) {
+function layerLabel(entry: SceneNode, selected: string | null, head: number | null, expanded: boolean) {
+  const { node } = entry;
   const headPosition = selected === node.id && head !== null && isAttention(node.op) ? attentionLayout(node, expanded).heads[head] : undefined;
   const attn = headPosition ? attentionLayout(node, expanded) : null, meta = head !== null ? attn?.headMeta[head] : undefined;
   // A folded layer stacks `repeat` identical instances; the ×N badge flags it.
   const repeat = repeatOf(node);
-  return { position: new THREE.Vector3(headPosition?.[0] ?? 0, headPosition ? headPosition[1] - 2.45 : -dims[1] / 2 - 0.6, 0), name: `${node.name}${repeat > 1 ? ` ×${repeat}` : ''}${meta ? ` · ${attn!.branches > 1 ? `B${meta.branch + 1} · ` : ''}H${meta.head + 1}` : ''}` };
+  // A selected head is labelled at the head; every other label hangs on its row's baseline.
+  return { position: new THREE.Vector3(headPosition?.[0] ?? 0, headPosition ? headPosition[1] - 2.45 : entry.labelY - entry.position.y, 0), name: `${node.name}${repeat > 1 ? ` ×${repeat}` : ''}${meta ? ` · ${attn!.branches > 1 ? `B${meta.branch + 1} · ` : ''}H${meta.head + 1}` : ''}` };
 }
 
 function boxCorners(box: THREE.Box3) {
@@ -211,7 +213,8 @@ function GroundShadow({ width, depth, lift }: { width: number; depth: number; li
 }
 
 // 每节点一个 <Html> 标签是最重的成本：它们不受 three.js 视锥剔除约束，节点一多就
-// 全是常驻 DOM。按缩放分三档，远景只留骨架，这是「低缩放聚合」的渲染侧。
+// 全是常驻 DOM。按相邻阶段在屏幕上的间距分三档：远景只留骨架，中景每层只标名称，
+// 近景再加形状；重叠的由 useLabelDeclutter 隐藏。
 type Detail = 'far' | 'mid' | 'near';
 const KERNEL_COLOR = '#f97316';
 const UNIT_EDGES = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
@@ -272,28 +275,34 @@ function KernelWindow({ node, input, output, from, to, fromDims, toDims, playing
   </group>;
 }
 
-// The default framing of a template lands around zoom 35–45; every layer keeps its label there.
-const DETAIL_THRESHOLDS: [number, number] = [16, 32];
+/**
+ * On-screen pixels between neighbouring stages below which labels thin out: under the first only
+ * the skeleton keeps one, under the second a label says the name alone. A label is about 70–90 px
+ * wide, so from the first up there is room for a name under every other stage, and declutter
+ * hides the rest; from the second, for a name and a shape under most stages.
+ */
+const DETAIL_PIXELS: [number, number] = [30, 66];
 
-function useDetailTier(): Detail {
+function useDetailTier(pitch: number): Detail {
   const camera = useThree(state => state.camera);
   const [tier, setTier] = useState<Detail>('near');
   // 分档必须量化：useFrame 每帧都跑，而缩放值在拖拽时每帧都变，
   // 直接 setState 会让整个场景每帧重渲染。
   useFrame(() => {
-    const zoom = (camera as THREE.OrthographicCamera).zoom;
-    const next: Detail = zoom < DETAIL_THRESHOLDS[0] ? 'far' : zoom < DETAIL_THRESHOLDS[1] ? 'mid' : 'near';
+    // An orthographic camera's zoom is its pixels per world unit.
+    const spacing = (camera as THREE.OrthographicCamera).zoom * pitch;
+    const next: Detail = spacing < DETAIL_PIXELS[0] ? 'far' : spacing < DETAIL_PIXELS[1] ? 'mid' : 'near';
     setTier(current => (current === next ? current : next));
   });
   return tier;
 }
 
-/** 远景只标注骨架：结构块、输入输出和当前选中项，其余算子的标签不建立 DOM。 */
+/** 远景只标注骨架：结构块、输入输出、折叠层和当前选中/悬停项，其余算子的标签不建立 DOM。 */
 function labelVisible(node: Layer, tier: Detail, selectedId: string | null, hovered: string | null): boolean {
-  if (tier === 'near') return true;
+  if (tier !== 'far') return true;
   if (node.op === 'Group' || node.op === 'Input' || node.op === 'Output') return true;
   if (node.id === selectedId || node.id === hovered) return true;
-  return tier === 'mid' && repeatOf(node) > 1;
+  return repeatOf(node) > 1;
 }
 
 /**
@@ -320,13 +329,13 @@ function useLabelDeclutter(labels: RefObject<Map<string, HTMLDivElement>>, rank:
 
 function World(props: Props) {
   const { gl, camera, scene, size } = useThree();
-  const detail = useDetailTier();
+  // Every layer's position, size and ports, the routes between them and the bounds, worked out once.
+  const model = useMemo(() => sceneLayout(props.graph, props.analysis, props.expanded), [props.graph, props.analysis, props.expanded]);
+  const detail = useDetailTier(model.pitch);
   // Keep label roots in one DOM container when the canvas event target changes.
   const labelPortal = useMemo(() => ({ current: gl.domElement.parentElement! }), [gl]);
   const controls = useRef<any>(null);
   const flowDirection = useRef(props.direction); flowDirection.current = props.direction;
-  // Every layer's position, size and ports, the routes between them and the bounds, worked out once.
-  const model = useMemo(() => sceneLayout(props.graph, props.analysis, props.expanded), [props.graph, props.analysis, props.expanded]);
   const { routes, bounds } = model;
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
@@ -417,10 +426,10 @@ function World(props: Props) {
     })}
     {kernels.map(kernel => <KernelWindow key={kernel.node.id} {...kernel} playing={props.playing} speed={props.speed} measured={measuredAt(kernel.node.id)} />)}
     {props.graph.nodes.map(n => {
-      const { position: pos, dims } = model.nodes[n.id];
+      const entry = model.nodes[n.id], { position: pos, dims } = entry;
       const issue = props.diagnostics.find(d => d.nodeId === n.id && d.level === 'error'), selected = props.selected === n.id;
       const color = issue ? '#e45555' : COLORS[n.op];
-      const label = layerLabel(n, dims, props.selected, props.selectedHead, props.expanded);
+      const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
           : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? '#1d3943' : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}

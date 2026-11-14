@@ -7,15 +7,25 @@ import { outerResidualCurve, residualEdges } from './graphRoutes';
 export type Dims = [number, number, number];
 export type AttentionGeometry = ReturnType<typeof attentionLayout>;
 
-/** One layer as the scene draws it: where its centre is, the box it occupies, and its attention geometry if it has one. */
-export interface SceneNode { node: Layer; position: THREE.Vector3; dims: Dims; attention: AttentionGeometry | null; }
+/**
+ * One layer as the scene draws it: where its centre is, the box it occupies, its attention geometry
+ * if it has one, the row of parallel layers it belongs to and the height its label hangs at.
+ */
+export interface SceneNode { node: Layer; position: THREE.Vector3; dims: Dims; attention: AttentionGeometry | null; row: number; labelY: number; }
 export interface SceneRoute extends Edge { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; residual: boolean; }
 /**
  * The whole scene's geometry, computed once per graph, analysis and spacing. The renderer, the
  * camera framing, the kernel windows and the image export all read it, so every layer's size and
  * every attention module's layout is worked out in one place instead of again by each of them.
  */
-export interface SceneLayout { nodes: Record<string, SceneNode>; routes: SceneRoute[]; bounds: THREE.Box3; dimensions: Record<string, Dims>; }
+export interface SceneLayout {
+  nodes: Record<string, SceneNode>; routes: SceneRoute[]; bounds: THREE.Box3; dimensions: Record<string, Dims>;
+  /** The typical distance between neighbouring stages, which decides how much a label may say at a zoom. */
+  pitch: number;
+}
+
+/** How far below the lowest block of its row a label hangs. */
+export const LABEL_GAP = 0.6;
 
 export const isMerge = (op: string) => op === 'Add' || op === 'Multiply' || op === 'Divide';
 
@@ -62,13 +72,15 @@ function placeNodes(graph: Graph, analysis: Analysis, expanded: boolean, attenti
   });
   const total = widths.reduce((a, b) => a + b, 0);
   const centers = widths.map((w, r) => widths.slice(0, r).reduce((a, b) => a + b, 0) + w / 2 - total / 2);
-  const rows: Record<number, number> = {}, positions: Record<string, THREE.Vector3> = {};
+  const rows: Record<number, number> = {}, positions: Record<string, THREE.Vector3> = {}, rowOf: Record<string, number> = {};
   graph.nodes.forEach((node, index) => {
     const r = rank[node.id] ?? index, row = rows[r] || 0; rows[r] = row + 1;
     const elevation = attention[node.id] ? attention[node.id].dimensions[1] / 2 + 1.05 : 1.65;
     positions[node.id] = new THREE.Vector3(centers[r] ?? (r - max / 2) * 2.1, elevation + row * (heights[r] ?? 3), 0);
+    rowOf[node.id] = row;
   });
-  return positions;
+  const sorted = [...widths].sort((a, b) => a - b);
+  return { positions, rowOf, pitch: sorted[Math.floor(sorted.length / 2)] };
 }
 
 /** Where an edge leaves or enters a node: an attention module's own port, or the middle of a block's side. */
@@ -105,7 +117,8 @@ function sceneBounds(nodes: Record<string, SceneNode>, routes: SceneRoute[]) {
   const box = new THREE.Box3();
   Object.values(nodes).forEach(entry => {
     const nodeBox = new THREE.Box3().setFromCenterAndSize(entry.position, new THREE.Vector3(...entry.dims));
-    nodeBox.min.y -= 1.1;
+    // Room for the label: its baseline and a line or two of text under it.
+    nodeBox.min.y = Math.min(nodeBox.min.y - 1.1, entry.labelY - 0.5);
     box.union(nodeBox);
   });
   routes.filter(route => route.residual).forEach(route => flowCurve(route).getPoints(40).forEach(point => box.expandByPoint(point)));
@@ -115,13 +128,18 @@ function sceneBounds(nodes: Record<string, SceneNode>, routes: SceneRoute[]) {
 export function sceneLayout(graph: Graph, analysis: Analysis, expanded: boolean): SceneLayout {
   const attention: Record<string, AttentionGeometry> = {};
   graph.nodes.forEach(node => { if (isAttention(node.op)) attention[node.id] = attentionLayout(node, expanded); });
-  const positions = placeNodes(graph, analysis, expanded, attention);
+  const { positions, rowOf, pitch } = placeNodes(graph, analysis, expanded, attention);
   const nodes: Record<string, SceneNode> = {}, dimensions: Record<string, Dims> = {};
   graph.nodes.forEach(node => {
     const dims = attention[node.id]?.dimensions as Dims | undefined ?? blockDimensions(analysis.layers[node.id]?.output, node.op);
-    nodes[node.id] = { node, position: positions[node.id], dims, attention: attention[node.id] ?? null };
+    nodes[node.id] = { node, position: positions[node.id], dims, attention: attention[node.id] ?? null, row: rowOf[node.id], labelY: 0 };
     dimensions[node.id] = dims;
   });
+  // Every label of a row hangs on one baseline under the row's lowest block, so labels line up
+  // instead of stepping with block heights, and none hangs over a lower neighbour's faces.
+  const baselines = new Map<number, number>();
+  Object.values(nodes).forEach(entry => baselines.set(entry.row, Math.min(baselines.get(entry.row) ?? Infinity, entry.position.y - entry.dims[1] / 2 - LABEL_GAP)));
+  Object.values(nodes).forEach(entry => { entry.labelY = baselines.get(entry.row)!; });
   const routes = routeEdges(graph, nodes);
-  return { nodes, routes, bounds: sceneBounds(nodes, routes), dimensions };
+  return { nodes, routes, bounds: sceneBounds(nodes, routes), dimensions, pitch };
 }
