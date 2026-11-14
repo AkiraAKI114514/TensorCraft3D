@@ -146,3 +146,23 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .node-op{font-size:10.5px;color:var(--ink-3)}
 .flow-layer code{font-size:11px;color:var(--ink-3)}
 @media(max-width:700px){.topbar{gap:8px}.topbar .icon-button,.header-actions>.icon-button{width:25px;height:28px}.brand-copy strong{font-size:14px}.brand-copy small{font-size:8px}.view-tabs button{font-size:11px}.scene-heading h1{font-size:20px;margin:4px 0 6px}.architecture-meta{font-size:9.5px}.scene-legend span{font-size:9.5px}.flow-controls{height:38px}.flow-direction button,.flow-controls select{font-size:10.5px}.flow-label{font-size:9.5px}.monitor-title h2{font-size:11px}.monitor-actions select{font-size:9.5px;max-width:78px}.monitor .button{font-size:9.5px;padding:3px 6px}.layer-option small{font-size:9.5px}.selected-layer h2{font-size:15px}.inspector-tabs button{font-size:11.5px}.statusbar{font-size:9px}}
+/* The 3D view's legend: a frosted card at the top right, under the validation badge, where the
+   diagonal overview leaves the canvas empty; one row per operator family present, folded by its title. */
+.scene-legend{position:absolute;top:66px;right:24px;bottom:auto;left:auto;z-index:12;display:block;width:240px;max-width:calc(100% - 48px);padding:0;border-radius:12px;background:#ffffffd9;box-shadow:0 0 0 1px #1f3a4514,0 10px 28px #0f22291a;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);overflow:hidden}
+.scene-legend.collapsed{width:auto}
+.scene-legend-toggle{display:flex;align-items:center;gap:7px;width:100%;padding:8px 12px;border:0;background:transparent;color:var(--ink);font-size:11.5px;font-weight:650;letter-spacing:.02em;cursor:pointer}
+.scene-legend-toggle small{font-size:10px;font-weight:500;color:var(--ink-3);background:#edf1f3;border-radius:999px;padding:0 6px;line-height:16px}
+.scene-legend-toggle svg{margin-left:auto;color:var(--ink-3);transition:transform .16s ease}
+.scene-legend.collapsed .scene-legend-toggle svg{transform:rotate(-90deg)}
+.scene-legend ul{list-style:none;margin:0;padding:3px 7px 8px;max-height:min(52vh,430px);overflow:auto;scrollbar-width:thin;border-top:1px solid #1f3a4510}
+.scene-legend ul[hidden]{display:none}
+.scene-legend li{display:flex;align-items:center;gap:8px;padding:4px 5px;border-radius:8px}
+.scene-legend li:hover{background:#f1f5f6}
+.legend-glyph{flex-shrink:0;overflow:visible}
+.scene-legend li>span{display:flex;flex-direction:column;align-items:flex-start;gap:0;min-width:0}
+.scene-legend li strong{font-size:11.5px;font-weight:600;line-height:15px;color:var(--ink)}
+.scene-legend li small{max-width:100%;font-size:10px;line-height:13px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:700px){.scene-legend{top:56px;right:13px;width:212px}.scene-legend-toggle{padding:6px 10px;font-size:10.5px}}
+/* Layer library and selected-layer header: the operator's own glyph, the one the legend and the scene use. */
+.layer-symbol .legend-glyph{width:26px;height:18px}
+.selected-layer .layer-symbol .legend-glyph{width:32px;height:23px}

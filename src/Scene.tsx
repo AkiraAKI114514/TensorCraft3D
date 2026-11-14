@@ -23,7 +23,9 @@ interface Props { graph: Graph; analysis: Analysis; selected: string | null; onS
   /** Measured values for this level's layers, keyed by their IDs here; painted while present. */
   observation?: SceneObservation | null;
   /** One kernel window per convolution or pooling layer; on unless turned off. */
-  showKernels?: boolean; }
+  showKernels?: boolean;
+  /** Pixels at the right edge an overlay covers (the open legend); the overview keeps the model clear of them. */
+  insetRight?: number; }
 function layerLabel(entry: SceneNode, selected: string | null, head: number | null, expanded: boolean) {
   const { node } = entry;
   const headPosition = selected === node.id && head !== null && isAttention(node.op) ? attentionLayout(node, expanded).heads[head] : undefined;
@@ -53,7 +55,7 @@ const SAFE_AREA = { top: 112, bottom: 72, left: 28, right: 28 };
  * actual extent, rather than one mirrored around the target, keeps a model with a residual loop
  * on one side from being drawn half size, and keeps its first blocks clear of the title.
  */
-function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: number, height: number, overview?: THREE.Vector3) {
+function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: number, height: number, overview?: THREE.Vector3, insetRight = 0) {
   camera.updateMatrixWorld(true);
   const view = new THREE.Box3().setFromPoints(boxCorners(bounds).map(p => p.applyMatrix4(camera.matrixWorldInverse)));
   if (!overview) {
@@ -64,9 +66,11 @@ function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: 
     return;
   }
   const extent = view.getSize(new THREE.Vector3()), center = view.getCenter(new THREE.Vector3());
-  const safeWidth = Math.max(100, width - SAFE_AREA.left - SAFE_AREA.right), safeHeight = Math.max(100, height - SAFE_AREA.top - SAFE_AREA.bottom);
+  // An open legend covers the right edge; on a narrow canvas the model keeps at least half the width.
+  const right = Math.max(SAFE_AREA.right, Math.min(insetRight, width / 2 - SAFE_AREA.left));
+  const safeWidth = Math.max(100, width - SAFE_AREA.left - right), safeHeight = Math.max(100, height - SAFE_AREA.top - SAFE_AREA.bottom);
   camera.zoom = Math.min(safeWidth / (extent.x + 0.8), safeHeight / (extent.y + 0.6), 110);
-  const shift = new THREE.Vector3(center.x - (SAFE_AREA.left - SAFE_AREA.right) / 2 / camera.zoom, center.y - (SAFE_AREA.bottom - SAFE_AREA.top) / 2 / camera.zoom, 0).applyQuaternion(camera.quaternion);
+  const shift = new THREE.Vector3(center.x - (SAFE_AREA.left - right) / 2 / camera.zoom, center.y - (SAFE_AREA.bottom - SAFE_AREA.top) / 2 / camera.zoom, 0).applyQuaternion(camera.quaternion);
   camera.position.add(shift); overview.add(shift);
   camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
 }
@@ -360,6 +364,8 @@ function World(props: Props) {
   const labelPortal = useMemo(() => ({ current: gl.domElement.parentElement! }), [gl]);
   const controls = useRef<any>(null);
   const flowDirection = useRef(props.direction); flowDirection.current = props.direction;
+  // Read when the overview is framed, not a reason to reframe: opening the legend keeps the user's view.
+  const insetRight = useRef(props.insetRight ?? 0); insetRight.current = props.insetRight ?? 0;
   const { routes, bounds } = model;
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
@@ -422,7 +428,7 @@ function World(props: Props) {
       const center = bounds.getCenter(new THREE.Vector3());
       camera.position.copy(center.clone().add(new THREE.Vector3(...(attentionView ? OVERVIEW_OFFSETS.attention : OVERVIEW_OFFSETS.blocks)))); camera.lookAt(center);
       const target = center.clone();
-      fitCamera(camera as THREE.OrthographicCamera, bounds, size.width, size.height, target);
+      fitCamera(camera as THREE.OrthographicCamera, bounds, size.width, size.height, target, insetRight.current);
       if (controls.current) { controls.current.target.copy(target); controls.current.update(); }
     };
     reset();

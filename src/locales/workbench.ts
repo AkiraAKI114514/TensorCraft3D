@@ -1,4 +1,11 @@
 export const workbenchEnglish: Record<string, string> = {
+  // The 3D view's legend (src/operatorStyle.ts, src/SceneLegend.tsx).
+  '图例': 'Legend', '收起图例': 'Collapse the legend', '展开图例': 'Expand the legend', '输入 / 输出': 'Input / output', '词嵌入': 'Embedding', '离散编号查表成向量': 'Looks up a vector for each ID',
+  '转置卷积': 'Transposed convolution', '多头注意力': 'Multi-head attention', 'Q · K · V 投影，各头独立打分': 'Q · K · V projections, each head scored on its own', 'Transformer 编码层': 'Transformer encoder layer', '注意力 + 前馈，各带残差': 'Attention + feed-forward, each with a residual',
+  'MLA 多头潜在注意力': 'MLA multi-head latent attention', 'KV 低秩压缩 · 解耦 RoPE': 'Low-rank K/V compression · decoupled RoPE', '张量收缩': 'Tensor contraction', '缩放': 'Scale', '因果掩码': 'Causal mask', '遮住之后的位置': 'Masks later positions',
+  'MoE 混合专家': 'MoE mixture of experts', '门控选 top-k 路由专家 + 共享专家': 'Gate routes to top-k experts + shared experts', '逐元素门控': 'Element-wise gate', '捷径与主路相加': 'Shortcut added to the main path', '拼接': 'Concatenation',
+  '池化与重采样': 'Pooling & resampling', '归约': 'Reduction', '形状变换': 'Reshaping', '结构块': 'Block', '逐元素相加': 'Element-wise addition', '注意力头内部': 'Inside each head', 'Q · K · V · 汇合': 'Q · K · V · merge',
+  '卷积窗口': 'Kernel window', '一个输出元素读取的输入区域': 'The input one output element reads', '数据流': 'Data flow', '示意动画，不是实测值': 'Illustrative animation, not measured values',
   '输入与输出': 'Input & output', '序列与注意力': 'Sequences & attention', '卷积与全连接': 'Convolution & dense', '池化与形状': 'Pooling & shape', '归一化与正则化': 'Normalization & regularization', '激活函数': 'Activations', '分支融合': 'Branch merging',
   '输入张量': 'Input tensor', '模型输出': 'Model output', '一维卷积': '1D convolution', '二维卷积': '2D convolution', '三维卷积': '3D convolution', '一维转置卷积': '1D transposed convolution', '二维转置卷积': '2D transposed convolution', '三维转置卷积': '3D transposed convolution', '全连接': 'Dense', '双线性层': 'Bilinear layer',
   '一维最大池化': '1D max pooling', '二维最大池化': '2D max pooling', '三维最大池化': '3D max pooling', '一维平均池化': '1D average pooling', '二维平均池化': '2D average pooling', '三维平均池化': '3D average pooling', '自适应平均池化': 'Adaptive average pooling', '自适应最大池化': 'Adaptive max pooling', '张量展平': 'Flatten tensor', '拆分张量维度': 'Split a tensor axis',
