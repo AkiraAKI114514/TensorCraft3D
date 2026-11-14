@@ -1,4 +1,5 @@
 export const workbenchEnglish: Record<string, string> = {
+  '切换到亮场': 'Switch to the day look', '切换到暗场': 'Switch to the night look',
   // The 3D view's legend (src/operatorStyle.ts, src/SceneLegend.tsx).
   '图例': 'Legend', '收起图例': 'Collapse the legend', '展开图例': 'Expand the legend', '输入 / 输出': 'Input / output', '词嵌入': 'Embedding', '离散编号查表成向量': 'Looks up a vector for each ID',
   '转置卷积': 'Transposed convolution', '多头注意力': 'Multi-head attention', 'Q · K · V 投影，各头独立打分': 'Q · K · V projections, each head scored on its own', 'Transformer 编码层': 'Transformer encoder layer', '注意力 + 前馈，各带残差': 'Attention + feed-forward, each with a residual',

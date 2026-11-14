@@ -3,15 +3,22 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer } from './types';
 import { product, shapeText } from './analysis';
 import { EdgeLine, ParticleEdge, ResidualFlow } from './Flow';
+import { FLOW_GLOW } from './flowGeometry';
+import { SceneThemeContext, useSceneLook, type SceneTheme } from './sceneTheme';
+import { EDGE_COLOR, forExport, LOOKS } from './sceneLook';
 import AttentionModule, { SceneText } from './AttentionModule';
 import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
 import { isProjectionPort } from './attentionConfig';
 import { flowCurve, isMerge, OVERVIEW_OFFSETS, sceneLayout, type SceneNode } from './sceneLayout';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
-import { blank, createTensorMaterial, floatTexture, majorGroup, tensorCells, type TensorUniforms } from './tensorBlock';
+import { blank, createTensorMaterial, floatTexture, majorGroup, NIGHT, tensorCells, type TensorUniforms } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
 import { receptiveField, WINDOW_OPS, type Field } from './receptiveField';
 import { tensorNumber } from './inferenceTypes';
@@ -25,7 +32,9 @@ interface Props { graph: Graph; analysis: Analysis; selected: string | null; onS
   /** One kernel window per convolution or pooling layer; on unless turned off. */
   showKernels?: boolean;
   /** Pixels at the right edge an overlay covers (the open legend); the overview keeps the model clear of them. */
-  insetRight?: number; }
+  insetRight?: number;
+  /** The live look; exported images always use the day look. */
+  theme?: SceneTheme; }
 function layerLabel(entry: SceneNode, selected: string | null, head: number | null, expanded: boolean) {
   const { node } = entry;
   const headPosition = selected === node.id && head !== null && isAttention(node.op) ? attentionLayout(node, expanded).heads[head] : undefined;
@@ -77,13 +86,16 @@ function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: 
 
 // 盒子轮廓的边几何体必须缓存：写在 JSX 里的 new THREE.BoxGeometry(...dims) 会在每次渲染时
 // 重新分配并重算 EdgesGeometry，节点一多就是每帧的分配风暴。
-/** The outline of the selected layer; any other outline is a faint darker tone of its own block. */
-const SELECTED_OUTLINE = '#1d3943';
+/** The outline of the selected layer, dark by day and luminous at night; any other outline is a faint tone of its own block. */
+const SELECTED_OUTLINE = '#1d3943', NIGHT_SELECTED_OUTLINE = '#9cecff';
 function NodeOutline({ dims, color }: { dims: [number, number, number]; color: string }) {
+  const night = useSceneLook() === 'night';
   const geometry = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(dims[0], dims[1], dims[2])), [dims[0], dims[1], dims[2]]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  // Dark, opaque edges on every block drew the model like a cartoon; shading separates the faces now.
-  return <lineSegments raycast={() => {}} geometry={geometry}><lineBasicMaterial color={color} transparent opacity={color === SELECTED_OUTLINE ? 0.95 : 0.38} /></lineSegments>;
+  // Dark, opaque edges on every block drew the model like a cartoon; shading separates the faces
+  // by day, and at night the faces' own glowing borders do.
+  const selected = color === SELECTED_OUTLINE || color === NIGHT_SELECTED_OUTLINE;
+  return <lineSegments raycast={() => {}} geometry={geometry} userData={{ dayMaterial: { color: selected ? SELECTED_OUTLINE : color, opacity: selected ? 0.95 : 0.38 } }}><lineBasicMaterial color={color} transparent opacity={selected ? 0.95 : night ? 0.16 : 0.38} /></lineSegments>;
 }
 
 /** The block's own hue, darker: edges that read as the block's, not as a second colour. */
@@ -186,15 +198,42 @@ const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.
 // Every mounted block, so an image export can leave out measured values: an exported diagram
 // shows the architecture, not one sample's activations.
 const paintedBlocks = new Set<TensorUniforms>();
-function withoutPaint<T>(work: () => T): T {
-  const saved = [...paintedBlocks].map(uniforms => [uniforms, uniforms.uObserve.value] as const);
-  saved.forEach(([uniforms]) => { uniforms.uObserve.value = 0; });
-  try { return work(); } finally { saved.forEach(([uniforms, value]) => { uniforms.uObserve.value = value; }); }
-}
 
 const GROUND_Y = -0.09;
-/** Edges between layers: a calm slate that reads on the floor without competing with the blocks. */
-const EDGE_COLOR = '#5f7c89';
+/** The night stage: a deep blue backdrop that lifts behind the model, drawn as the scene background. */
+function NightBackdrop() {
+  const scene = useThree(state => state.scene);
+  useEffect(() => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 512;
+    const context = canvas.getContext('2d')!, gradient = context.createRadialGradient(256, 210, 16, 256, 256, 400);
+    gradient.addColorStop(0, '#173650'); gradient.addColorStop(0.42, '#0b1b2a'); gradient.addColorStop(1, '#03070c');
+    context.fillStyle = gradient; context.fillRect(0, 0, 512, 512);
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+    const previous = scene.background; scene.background = texture;
+    return () => { scene.background = previous; texture.dispose(); };
+  }, [scene]);
+  return null;
+}
+
+/**
+ * Bloom at night: the scene is rendered into a half-float target and everything brighter than the
+ * glowing lines' threshold spills into soft light, then written out in the canvas's colour space.
+ * Rendering this way replaces react-three-fiber's own render each frame while it is mounted.
+ */
+function Bloom() {
+  const gl = useThree(state => state.gl), scene = useThree(state => state.scene), camera = useThree(state => state.camera), size = useThree(state => state.size);
+  const composer = useMemo(() => {
+    const composer = new EffectComposer(gl);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.72, 0.5, 0.56));
+    composer.addPass(new OutputPass());
+    return composer;
+  }, [gl, scene, camera]);
+  useEffect(() => { composer.setPixelRatio(gl.getPixelRatio()); composer.setSize(size.width, size.height); }, [composer, gl, size]);
+  useEffect(() => () => composer.dispose(), [composer]);
+  useFrame(() => composer.render(), 1);
+  return null;
+}
 let shadowTexture: THREE.CanvasTexture | null = null;
 /** One soft radial falloff shared by every shadow; its green channel is read as alpha. */
 function groundShadowTexture() {
@@ -212,15 +251,35 @@ function groundShadowTexture() {
  * floating. It is decoration only: not clickable, not part of the image export's geometry, and
  * edge-on (invisible) in the straight-on compact export.
  */
-function GroundShadow({ width, depth, lift }: { width: number; depth: number; lift: number }) {
+function GroundShadow({ width, depth, lift, color }: { width: number; depth: number; lift: number; color: string }) {
+  const night = useSceneLook() === 'night';
   const texture = useMemo(groundShadowTexture, []);
   // Higher above the ground, wider and fainter, the way a contact shadow behaves; a block well
   // above the floor (a row raised for an attention module) casts none, rather than a stray smudge.
-  const spread = 1.4 + Math.min(lift, 6) * 0.1, opacity = 0.22 * (1 - THREE.MathUtils.smoothstep(lift, 1.9, 2.8));
-  if (opacity <= 0.005) return null;
-  return <mesh raycast={() => {}} rotation={[-Math.PI / 2, 0, 0]} position={[0, -lift, 0]} renderOrder={-1}>
-    <planeGeometry args={[width * spread + 0.5, depth * spread + 0.5]} />
-    <meshBasicMaterial color="#1c2d35" alphaMap={texture} transparent opacity={opacity} depthWrite={false} />
+  const fade = 1 - THREE.MathUtils.smoothstep(lift, 1.9, 2.8), spread = 1.4 + Math.min(lift, 6) * 0.1;
+  if (fade <= 0.02) return null;
+  // At night a block casts light, not shadow: a pool of its own colour on the dark floor, which the
+  // export leaves out like every night-only decoration. The day shadow stays mounted, hidden, so an
+  // export draws it whatever the live look.
+  return <>
+    {night && <mesh name="scene_overlay" raycast={() => {}} rotation={[-Math.PI / 2, 0, 0]} position={[0, -lift, 0]} renderOrder={-1}>
+      <planeGeometry args={[width * spread * 1.5 + 1, depth * spread * 1.5 + 1]} />
+      <meshBasicMaterial color={color} alphaMap={texture} transparent opacity={0.42 * fade} blending={THREE.AdditiveBlending} depthWrite={false} />
+    </mesh>}
+    <mesh raycast={() => {}} visible={!night} userData={{ dayVisible: true }} rotation={[-Math.PI / 2, 0, 0]} position={[0, -lift, 0]} renderOrder={-1}>
+      <planeGeometry args={[width * spread + 0.5, depth * spread + 0.5]} />
+      <meshBasicMaterial color="#1c2d35" alphaMap={texture} transparent opacity={0.22 * fade} depthWrite={false} />
+    </mesh>
+  </>;
+}
+
+/** At night, a wide cyan glow on the floor under the whole model, the stage it stands on. */
+function StageGlow({ bounds }: { bounds: THREE.Box3 }) {
+  const texture = useMemo(groundShadowTexture, []);
+  const center = bounds.getCenter(new THREE.Vector3()), size = bounds.getSize(new THREE.Vector3());
+  return <mesh name="scene_overlay" raycast={() => {}} rotation={[-Math.PI / 2, 0, 0]} position={[center.x, GROUND_Y - 0.005, center.z]} renderOrder={-2}>
+    <planeGeometry args={[size.x * 1.35 + 10, size.z + 16]} />
+    <meshBasicMaterial color="#1d6f9a" alphaMap={texture} transparent opacity={0.38} blending={THREE.AdditiveBlending} depthWrite={false} />
   </mesh>;
 }
 
@@ -234,7 +293,7 @@ function StudioEnvironment() {
   useEffect(() => {
     const generator = new THREE.PMREMGenerator(gl), room = new RoomEnvironment();
     const texture = generator.fromScene(room, 0.04).texture;
-    scene.environment = texture; scene.environmentIntensity = 0.38;
+    scene.environment = texture;
     return () => { scene.environment = null; texture.dispose(); generator.dispose(); room.dispose(); };
   }, [gl, scene]);
   return null;
@@ -366,6 +425,12 @@ function World(props: Props) {
   const flowDirection = useRef(props.direction); flowDirection.current = props.direction;
   // Read when the overview is framed, not a reason to reframe: opening the legend keeps the user's view.
   const insetRight = useRef(props.insetRight ?? 0); insetRight.current = props.insetRight ?? 0;
+  const theme: SceneTheme = props.theme ?? 'day', look = LOOKS[theme];
+  // Bloom renders the scene several times over; under software rendering it would cost more than it shows.
+  const [software, setSoftware] = useState(false);
+  useEffect(() => {
+    NIGHT.value = theme === 'night' ? 1 : 0; FLOW_GLOW.value = look.flowGlow; scene.environmentIntensity = look.environment;
+  }, [theme, look, scene]);
   const { routes, bounds } = model;
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
@@ -422,6 +487,7 @@ function World(props: Props) {
   useEffect(() => {
     const context = gl.getContext(), ext = context.getExtension('WEBGL_debug_renderer_info');
     const name = ext ? context.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'WebGL 2'; props.onGpu(String(name));
+    setSoftware(/swiftshader|software|llvmpipe|basic render/i.test(String(name)));
   }, [gl, props.onGpu]);
   useEffect(() => {
     const reset = () => {
@@ -438,23 +504,26 @@ function World(props: Props) {
       focus: id => focus(id),
       focusHead: (id, index) => focus(id, index),
       // The render happens before captureSceneImage first awaits, so the paint is back right after.
-      capture: (width, transparent, options) => withoutPaint(() => captureSceneImage(gl, exportSource, width, transparent, options)),
+      capture: (width, transparent, options) => forExport(scene, paintedBlocks, () => captureSceneImage(gl, exportSource, width, transparent, options)),
       svg: (options, exportWidth = 1920) => exportSceneSvg(exportSource, exportWidth, options)
     });
   }, [camera, gl, scene, model, size, attentionView, props.expanded, props.graph, props.analysis, props.onReady]);
   useEffect(() => { if (props.selected && props.selectedHead !== null && model.nodes[props.selected]?.attention) focus(props.selected, props.selectedHead); }, [camera, props.selected, props.selectedHead, props.expanded, model, size]);
-  return <>
-    {/* No scene background: the canvas is transparent over the workspace's soft gradient. */}
+  return <SceneThemeContext.Provider value={theme}>
+    {/* By day the canvas is transparent over the workspace's soft gradient; at night the backdrop is the scene's background. */}
     {/* The studio environment fills from every side; a key light from the upper right and a weak
         rim from behind keep a block's top, front and side distinct tones of its one colour. */}
     <StudioEnvironment />
-    <hemisphereLight args={['#ffffff', '#c3d0d6', 0.85]} /><directionalLight position={[9, 16, 11]} intensity={1.55} /><directionalLight position={[-10, 5, -8]} intensity={0.4} />
+    {theme === 'night' && <><NightBackdrop /><StageGlow bounds={bounds} />{!software && <Bloom />}</>}
+    <hemisphereLight args={[look.sky, look.ground, look.hemisphere]} userData={{ dayLight: { intensity: LOOKS.day.hemisphere, color: LOOKS.day.sky, groundColor: LOOKS.day.ground } }} />
+    <directionalLight position={[9, 16, 11]} intensity={look.key} userData={{ dayLight: { intensity: LOOKS.day.key, color: '#ffffff' } }} />
+    <directionalLight position={[-10, 5, -8]} color={look.rimColor} intensity={look.rim} userData={{ dayLight: { intensity: LOOKS.day.rim, color: LOOKS.day.rimColor } }} />
     {/* A quiet floor: fine lines that fade out close to the model, not engineering paper to the horizon. */}
-    <Grid name="export_grid" position={[0, -0.1, 0]} args={[80, 40]} cellSize={1} cellThickness={0.4} cellColor="#e7edf0" sectionSize={5} sectionThickness={0.7} sectionColor="#d6e0e4" fadeDistance={40} fadeStrength={2.2} infiniteGrid />
+    <Grid name="export_grid" position={[0, -0.1, 0]} args={[80, 40]} cellSize={1} cellThickness={0.4} cellColor={look.cell} sectionSize={5} sectionThickness={0.7} sectionColor={look.section} fadeDistance={40} fadeStrength={2.2} infiniteGrid />
     <OrbitControls ref={controls} makeDefault enableDamping={false} minZoom={1.5} maxZoom={180} />
     {routes.map(route => {
       const flow = { start: route.start, end: route.end, control1: route.control1, control2: route.control2 };
-      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? EDGE_COLOR : '#e26969'} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
+      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? look.edge : '#e26969'} exportColor={props.analysis.layers[route.target] ? EDGE_COLOR : '#e26969'} opacity={look.edgeOpacity} exportOpacity={LOOKS.day.edgeOpacity} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
     })}
     {kernels.map(kernel => <KernelWindow key={kernel.node.id} {...kernel} playing={props.playing} speed={props.speed} measured={measuredAt(kernel.node.id)} />)}
     {props.graph.nodes.map(n => {
@@ -464,16 +533,16 @@ function World(props: Props) {
       const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
-          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? SELECTED_OUTLINE : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
+          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint
             read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow
             cast that far down would land on the band below, so only the lowest band casts them. */}
-        {!isAttention(n.op) && entry.grounded && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
-        {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color={SELECTED_OUTLINE} transparent opacity={0.75} /></mesh>}
+        {!isAttention(n.op) && entry.grounded && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} color={color} />}
+        {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]} userData={{ dayMaterial: { color: SELECTED_OUTLINE } }}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color={theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE} transparent opacity={0.75} /></mesh>}
         {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div ref={element => { if (element) labelElements.current.set(n.id, element); else labelElements.current.delete(n.id); }} className={`scene-label ${selected ? 'selected' : ''}`} style={{ '--accent': color } as CSSProperties}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
       </group>;
     })}
-  </>;
+  </SceneThemeContext.Provider>;
 }
 
 class SceneBoundary extends Component<{ children: ReactNode; failure: string }, { error: boolean }> {

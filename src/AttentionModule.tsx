@@ -5,10 +5,13 @@ import { EdgeLine, FlowArrow, ParticleEdge, ResidualFlow } from './Flow';
 import { RESIDUAL_COLOR } from './flowGeometry';
 import { attentionLayout, HEAD_FACING, type AttentionRoute, type Point3 } from './attentionLayout';
 import type { Layer } from './types';
+import { useSceneLook } from './sceneTheme';
 export { isAttention, visualHeads } from './attentionLayout';
 
 /** A part's colour, darker, for text in it: pale parts (LN, residual) gave labels that barely read. */
 const inkOf = (color: string) => `#${new THREE.Color(color).multiplyScalar(0.68).getHexString()}`;
+/** The same colour, lighter, for text and rims on the night stage. */
+const glowOf = (color: string) => `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), 0.45).getHexString()}`;
 
 /**
  * Text in the scene, drawn on a sprite at twice the old resolution, semibold, in a darker tone of
@@ -16,14 +19,16 @@ const inkOf = (color: string) => `#${new THREE.Color(color).multiplyScalar(0.68)
  * or a head's panel. The image export reads `exportText`/`exportColor` and sets its own type.
  */
 export function SceneText({ text, position, color = '#516e79', scale = 0.24 }: { text: string; position: THREE.Vector3; color?: string; scale?: number }) {
+  const night = useSceneLook() === 'night';
   const texture = useMemo(() => {
     const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 160;
     const ctx = canvas.getContext('2d')!; ctx.font = '600 76px "Segoe UI", "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
-    ctx.lineWidth = 16; ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'; ctx.strokeText(text, 512, 80, 1000);
-    ctx.fillStyle = inkOf(color); ctx.fillText(text, 512, 80, 1000);
+    // By day, dark ink on a white halo; at night, light ink on a dark one.
+    ctx.lineWidth = 16; ctx.strokeStyle = night ? 'rgba(3, 9, 15, 0.82)' : 'rgba(255, 255, 255, 0.9)'; ctx.strokeText(text, 512, 80, 1000);
+    ctx.fillStyle = night ? glowOf(color) : inkOf(color); ctx.fillText(text, 512, 80, 1000);
     const map = new THREE.CanvasTexture(canvas); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = 4; return map;
-  }, [text, color]);
+  }, [text, color, night]);
   useEffect(() => () => texture.dispose(), [texture]);
   return <sprite raycast={() => {}} position={position} scale={[scale * 6.4, scale, 1]} userData={{ exportText: text, exportColor: color }}><spriteMaterial map={texture} transparent depthTest={false} /></sprite>;
 }
@@ -40,9 +45,12 @@ function edgesOf(size: number) {
  * A part only turns translucent while another head is focused.
  */
 function Cube({ point, color, label, labelOffset, part, size = 0.3, opacity = 1, onFocus }: { point: Point3; color: string; label?: string; labelOffset?: Point3; part?: string; size?: number; opacity?: number; onFocus?: (center: THREE.Vector3) => void }) {
+  const night = useSceneLook() === 'night';
+  // At night a part glows faintly in its own colour, enough for the bloom pass to catch; the image
+  // export clears the glow (`nightGlow`) and draws the day look.
   return <group position={point} onClick={onFocus ? e => { e.stopPropagation(); onFocus(e.eventObject.getWorldPosition(new THREE.Vector3())); } : undefined}>
-    <mesh userData={{ exportMesh: true, exportPart: part || label || 'port' }}><boxGeometry args={[size, size, size]} /><meshStandardMaterial color={color} transparent={opacity < 1} opacity={opacity} roughness={0.5} metalness={0} /></mesh>
-    <lineSegments raycast={() => {}} geometry={edgesOf(size)}><lineBasicMaterial color={inkOf(color)} transparent opacity={0.4 * opacity} /></lineSegments>
+    <mesh userData={{ exportMesh: true, exportPart: part || label || 'port', nightGlow: true }}><boxGeometry args={[size, size, size]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={night ? 0.55 * opacity : 0} transparent={opacity < 1} opacity={opacity} roughness={0.5} metalness={0} /></mesh>
+    <lineSegments raycast={() => {}} geometry={edgesOf(size)} userData={{ dayMaterial: { color: inkOf(color), opacity: 0.4 * opacity } }}><lineBasicMaterial color={night ? glowOf(color) : inkOf(color)} transparent opacity={(night ? 0.7 : 0.4) * opacity} /></lineSegments>
     {label && <SceneText text={label} position={new THREE.Vector3(...(labelOffset ?? [0, size * 0.8 + 0.2, 0]))} scale={0.38} color={color} />}
   </group>;
 }
@@ -93,6 +101,7 @@ function FaceModule({ face, phase, ...props }: Props & { face: Face; phase: Reac
  * clickable, and named so the image export leaves it out.
  */
 function ModuleCard({ width, height, depth, selected }: { width: number; height: number; depth: number; selected: boolean }) {
+  const night = useSceneLook() === 'night';
   const { shape, outline } = useMemo(() => {
     const w = width + 0.5, h = height + 0.25, r = Math.min(0.4, h / 4), shape = new THREE.Shape();
     shape.moveTo(-w / 2 + r, -h / 2); shape.lineTo(w / 2 - r, -h / 2); shape.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + r);
@@ -102,8 +111,9 @@ function ModuleCard({ width, height, depth, selected }: { width: number; height:
   }, [width, height]);
   useEffect(() => () => { shape.dispose(); outline.dispose(); }, [shape, outline]);
   return <group name="scene_overlay" position={[0, 0, -depth / 2 - 0.35]}>
-    <mesh raycast={() => {}} geometry={shape} renderOrder={-2}><meshBasicMaterial color="#ffffff" transparent opacity={selected ? 0.62 : 0.46} depthWrite={false} /></mesh>
-    <lineLoop raycast={() => {}} geometry={outline}><lineBasicMaterial color={selected ? '#7fa3b1' : '#c3d2d8'} transparent opacity={0.9} /></lineLoop>
+    {/* By day a frosted white card; at night dark glass with a cyan rim, brighter when selected. */}
+    <mesh raycast={() => {}} geometry={shape} renderOrder={-2}><meshBasicMaterial color={night ? '#0b2232' : '#ffffff'} transparent opacity={night ? (selected ? 0.62 : 0.48) : selected ? 0.62 : 0.46} depthWrite={false} /></mesh>
+    <lineLoop raycast={() => {}} geometry={outline}><lineBasicMaterial color={night ? (selected ? '#9cecff' : '#2b86b3') : selected ? '#7fa3b1' : '#c3d2d8'} transparent opacity={0.9} /></lineLoop>
   </group>;
 }
 

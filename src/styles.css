@@ -166,3 +166,36 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 /* Layer library and selected-layer header: the operator's own glyph, the one the legend and the scene use. */
 .layer-symbol .legend-glyph{width:26px;height:18px}
 .selected-layer .layer-symbol .legend-glyph{width:32px;height:23px}
+/* The night stage (src/sceneTheme.ts): the 3D view's overlays turn to dark glass with light type. */
+.scene-workspace.night{background:#04080d}
+.scene-workspace.night .scene-heading .eyebrow{color:#5f8798}
+.scene-workspace.night .scene-heading h1{color:#eef7fb;text-shadow:0 0 24px #4cc3ff33}
+.scene-workspace.night .architecture-meta{color:#8fb0be}
+.scene-workspace.night .architecture-meta i{background:#3c5b69}
+.scene-workspace.night .breadcrumb button{color:#9cc2d1}
+.scene-workspace.night .validation-badge{background:#0d241ccc;border-color:#1f5a46;color:#7fe0b4;box-shadow:none}
+.scene-workspace.night .validation-badge.error{background:#36120fcc;border-color:#6b2a24;color:#ff9b8f}
+.scene-workspace.night .scene-legend{background:#07131bd6;box-shadow:0 0 0 1px #4fc3ff24,0 16px 36px #000a}
+.scene-workspace.night .scene-legend-toggle{color:#e6f4fa}
+.scene-workspace.night .scene-legend-toggle small{background:#14303f;color:#8fb0be}
+.scene-workspace.night .scene-legend-toggle svg{color:#8fb0be}
+.scene-workspace.night .scene-legend ul{border-top-color:#ffffff12}
+.scene-workspace.night .scene-legend li:hover{background:#ffffff0d}
+.scene-workspace.night .scene-legend li strong{color:#e6f4fa}
+.scene-workspace.night .scene-legend li small{color:#7f9fae}
+.scene-workspace.night .legend-glyph{filter:drop-shadow(0 0 3px #4cc3ff40)}
+.scene-workspace.night .flow-controls{background:#07131bdb;border-color:#ffffff14;box-shadow:0 16px 36px #000a}
+.scene-workspace.night .flow-controls .icon-button{color:#9cbccb}
+.scene-workspace.night .flow-controls .icon-button:hover{background:#ffffff12;color:#fff}
+.scene-workspace.night .flow-controls .icon-button.active,.scene-workspace.night .flow-direction button.active{background:#173f4d;color:#8fe8ff}
+.scene-workspace.night .flow-direction button{color:#8fb0be}
+.scene-workspace.night .flow-controls select{color:#c7dde6}
+.scene-workspace.night .flow-controls select option{color:#14232b}
+.scene-workspace.night .flow-label{color:#5f8798;border-left-color:#ffffff14}
+.scene-workspace.night .toolbar-separator{background:#ffffff1a}
+.scene-workspace.night .gpu-badge{color:#5f8798}
+.scene-workspace.night .scene-label{background:#06121bd4;box-shadow:0 0 0 1px #5fd0ff29,0 2px 12px #0009;color:#9ab8c6}
+.scene-workspace.night .scene-label strong{color:#eaf6fb}
+.scene-workspace.night .scene-label span{color:#86a6b5}
+.scene-workspace.night .scene-label::before{box-shadow:0 0 7px var(--accent,#8a9aa2)}
+.scene-workspace.night .scene-label.selected{background:#0b1f2b;box-shadow:0 0 0 1.5px #9cecff,0 0 20px #4cc3ff59}

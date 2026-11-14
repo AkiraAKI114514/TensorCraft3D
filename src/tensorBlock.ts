@@ -56,7 +56,12 @@ export interface TensorUniforms {
   /** Channels in all, the first captured one, and how many were captured. */
   uStripRange: { value: THREE.Vector3 };
   uLimit: { value: number };
+  /** Shared by every block: 1 for the night look, 0 for day (and while an image is exported). */
+  uNight: { value: number };
 }
+
+/** The night switch every block material reads; Scene.tsx sets it from the theme, the export clears it. */
+export const NIGHT = { value: 0 };
 
 // The inspector's diverging scale (AttentionInspector.css): blue above zero, red below, a warm
 // light grey at zero, and its own grey for a non-finite element.
@@ -79,6 +84,7 @@ uniform sampler2D uStrip;
 uniform vec3 uStripAxis;
 uniform vec3 uStripRange;
 uniform float uLimit;
+uniform float uNight;
 varying vec3 vTensorPosition;
 varying vec3 vTensorNormal;
 vec3 tensorHeat(float value) {
@@ -104,6 +110,7 @@ vec3 tensorHeat(float value) {
 // control flow that may diverge, and on Direct3D (ANGLE, Windows) a per-axis `continue` made
 // every line weight come out as zero.
 const FRAGMENT_GRID = `{
+  vec3 tensorBase = diffuseColor.rgb;
   vec3 tensorCoord = vTensorPosition / max(2.0 * uHalf, vec3(1e-4)) + 0.5;
   vec3 tensorFace = step(0.5, abs(vTensorNormal));
   vec3 tensorFrom = 1.0 - tensorCoord;
@@ -133,6 +140,14 @@ const FRAGMENT_GRID = `{
   diffuseColor.rgb = mix(diffuseColor.rgb, uLine, tensorLine * uLineStrength);
   // The selection glow is added after lighting; dim it on the lines too, or a selected block loses its grid.
   totalEmissiveRadiance *= 1.0 - tensorLine * uLineStrength;
+  // Night: the body turns to dark glass in its own hue, and its cell lines and the border of each
+  // face glow in that hue, which the bloom pass spreads into light. Measured values keep their
+  // exact colours. The border is measured in pixels per axis, without branching, like the grid.
+  float tensorNight = uNight * (1.0 - step(0.5, uObserve));
+  vec3 tensorEdge = min(tensorCoord, 1.0 - tensorCoord) / max(fwidth(tensorCoord), vec3(1e-5)) + tensorFace * 1e4;
+  float tensorBorder = 1.0 - clamp(min(tensorEdge.x, min(tensorEdge.y, tensorEdge.z)) - 0.75, 0.0, 1.0);
+  diffuseColor.rgb = mix(diffuseColor.rgb, tensorBase * 0.14 + vec3(0.01, 0.018, 0.028), tensorNight);
+  totalEmissiveRadiance += tensorBase * (0.04 + tensorLine * 0.42 + tensorBorder * 1.1) * tensorNight;
 }`;
 
 /** A colour as GLSL `r, g, b` in linear space, which is where the shader mixes. */
@@ -181,6 +196,7 @@ export function createTensorMaterial() {
     uStripAxis: { value: new THREE.Vector3(1, 0, 0) },
     uStripRange: { value: new THREE.Vector3(1, 0, 0) },
     uLimit: { value: 1 },
+    uNight: NIGHT,
   };
   // Matte, with a soft sheen from the studio environment (Scene.tsx) on the faces turned to it.
   const material = new THREE.MeshStandardMaterial({ roughness: 0.52, metalness: 0, envMapIntensity: 0.9 });
@@ -193,6 +209,6 @@ export function createTensorMaterial() {
       .replace('#include <common>', `#include <common>\n${FRAGMENT_HEAD}`)
       .replace('#include <color_fragment>', `#include <color_fragment>\n${FRAGMENT_GRID}`);
   };
-  material.customProgramCacheKey = () => 'tensor-block-3';
+  material.customProgramCacheKey = () => 'tensor-block-4';
   return { material, uniforms };
 }

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { RESIDUAL_COLOR } from './flowGeometry';
+import { FLOW_GLOW, RESIDUAL_COLOR } from './flowGeometry';
 import { flowCurve } from './sceneLayout';
 
 export { flowCurve };
+export { FLOW_GLOW };
 export interface FlowProps { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; active: boolean; direction: string; speed: number; color: string; intensity?: number; compact?: boolean; opacity?: number; }
 
 // Each instance follows its curve in the vertex shader, without CPU particle updates.
@@ -23,10 +24,10 @@ export function ParticleEdge({ start, end, control1, control2, active, direction
     geometry.instanceCount = count; base.dispose();
     const curve = flowCurve({ start, end, control1, control2, compact });
     const material = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uStart: { value: start }, uEnd: { value: end }, uControl1: { value: curve.v1 }, uControl2: { value: curve.v2 }, uDirection: { value: 1 }, uOpacity: { value: opacity }, uColor: { value: new THREE.Color(color) } },
+      uniforms: { uTime: { value: 0 }, uStart: { value: start }, uEnd: { value: end }, uControl1: { value: curve.v1 }, uControl2: { value: curve.v2 }, uDirection: { value: 1 }, uOpacity: { value: opacity }, uColor: { value: new THREE.Color(color) }, uGlow: FLOW_GLOW },
       vertexShader: `attribute float aPhase; attribute vec2 aOffset; uniform float uTime; uniform vec3 uStart; uniform vec3 uEnd; uniform vec3 uControl1; uniform vec3 uControl2; uniform float uDirection; varying float vGlow;
       void main(){ float t=fract(aPhase+uTime*0.22); if(uDirection<0.0)t=1.0-t; float r=1.0-t; vec3 p=r*r*r*uStart+3.0*r*r*t*uControl1+3.0*r*t*t*uControl2+t*t*t*uEnd; p.yz+=aOffset; vGlow=sin(t*3.14159)*0.5+0.5; gl_Position=projectionMatrix*modelViewMatrix*vec4(p+position,1.0); }`,
-      fragmentShader: `uniform vec3 uColor; uniform float uOpacity; varying float vGlow; void main(){gl_FragColor=vec4(uColor*(0.75+vGlow*0.45),uOpacity);}`,
+      fragmentShader: `uniform vec3 uColor; uniform float uOpacity; uniform float uGlow; varying float vGlow; void main(){gl_FragColor=vec4(uColor*(0.75+vGlow*0.45)*uGlow,uOpacity);}`,
       transparent: true, depthWrite: false
     });
     return { geometry, material };
@@ -36,14 +37,15 @@ export function ParticleEdge({ start, end, control1, control2, active, direction
   return <mesh raycast={() => {}} geometry={geometry} material={material} frustumCulled={false} />;
 }
 
-export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.75 : 0.72 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
+/** `exportColor` and `exportOpacity` are how image exports draw the edge, when the live look differs. */
+export function EdgeLine({ start, end, control1, control2, color, exportColor = color, compact = false, opacity = compact ? 0.75 : 0.72, exportOpacity = opacity }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'> & { exportColor?: string; exportOpacity?: number }) {
   const { geometry, curve } = useMemo(() => {
     const curve = flowCurve({ start, end, control1, control2, compact });
     // A main edge a touch heavier than a shortcut, round enough to read as a line rather than a seam.
     return { geometry: new THREE.TubeGeometry(curve, 48, compact ? 0.013 : 0.021, 8, false), curve };
   }, [start, end, control1, control2, compact]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  return <mesh raycast={() => {}} geometry={geometry} userData={{ exportCurve: { start: start.toArray(), end: end.toArray(), control1: curve.v1.toArray(), control2: curve.v2.toArray(), color, opacity } }}><meshBasicMaterial color={color} transparent opacity={opacity} /></mesh>;
+  return <mesh raycast={() => {}} geometry={geometry} userData={{ exportCurve: { start: start.toArray(), end: end.toArray(), control1: curve.v1.toArray(), control2: curve.v2.toArray(), color: exportColor, opacity: exportOpacity }, dayMaterial: { color: exportColor, opacity: exportOpacity } }}><meshBasicMaterial color={color} transparent opacity={opacity} /></mesh>;
 }
 
 export function FlowArrow(props: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'direction'>) {

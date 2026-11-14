@@ -29,6 +29,13 @@ test('3D rendering, GPU motion, diagnostics, editing, exports and real training'
   await expect.poll(async () => (await pixels()).colored, { timeout: 15000 }).toBeGreaterThan(1500);
   const a = await pixels(); await page.waitForTimeout(450); const b = await pixels();
   expect(a.colored).toBeGreaterThan(1500); expect(a.checksum).not.toBe(b.checksum);
+  // The night stage is the default look; the day look is one click away and still draws the model.
+  await expect(page.locator('.scene-workspace')).toHaveClass(/night/);
+  await page.getByRole('button', { name: '切换到亮场', exact: true }).click();
+  await expect(page.locator('.scene-workspace')).not.toHaveClass(/night/);
+  await expect.poll(async () => (await pixels()).colored, { timeout: 15000 }).toBeGreaterThan(1500);
+  await page.getByRole('button', { name: '切换到暗场', exact: true }).click();
+  await expect(page.locator('.scene-workspace')).toHaveClass(/night/);
   await page.getByRole('button', { name: '暂停数据流', exact: true }).click(); await page.waitForTimeout(350);
   const pausedA = await pixels(); await page.waitForTimeout(250); const pausedB = await pixels(); expect(Math.abs(pausedA.checksum - pausedB.checksum)).toBeLessThan(pausedA.checksum * 0.0001);
   await page.getByRole('button', { name: '播放数据流', exact: true }).click();
