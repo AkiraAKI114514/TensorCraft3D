@@ -2,13 +2,10 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { RESIDUAL_COLOR } from './flowGeometry';
+import { flowCurve } from './sceneLayout';
 
+export { flowCurve };
 export interface FlowProps { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; active: boolean; direction: string; speed: number; color: string; intensity?: number; compact?: boolean; opacity?: number; }
-
-export function flowCurve({ start, end, control1, control2, compact = false }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'compact'>) {
-  const d = end.x - start.x, bend = compact ? 0.05 : 0.4;
-  return new THREE.CubicBezierCurve3(start, control1 ?? start.clone().add(new THREE.Vector3(d * 0.36, bend, 0)), control2 ?? end.clone().add(new THREE.Vector3(-d * 0.36, bend, 0)), end);
-}
 
 // Each instance follows its curve in the vertex shader, without CPU particle updates.
 // A few evenly spaced pulses close to the curve read as direction of travel; a dense cloud
@@ -40,12 +37,11 @@ export function ParticleEdge({ start, end, control1, control2, active, direction
 }
 
 export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.75 : 0.6 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
-  const geometry = useMemo(() => {
+  const { geometry, curve } = useMemo(() => {
     const curve = flowCurve({ start, end, control1, control2, compact });
-    return new THREE.TubeGeometry(curve, 32, compact ? 0.013 : 0.016, 6, false);
+    return { geometry: new THREE.TubeGeometry(curve, 32, compact ? 0.013 : 0.016, 6, false), curve };
   }, [start, end, control1, control2, compact]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  const curve = flowCurve({ start, end, control1, control2, compact });
   return <mesh raycast={() => {}} geometry={geometry} userData={{ exportCurve: { start: start.toArray(), end: end.toArray(), control1: curve.v1.toArray(), control2: curve.v2.toArray(), color, opacity } }}><meshBasicMaterial color={color} transparent opacity={opacity} /></mesh>;
 }
 

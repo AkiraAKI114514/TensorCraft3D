@@ -2,13 +2,13 @@ import { Component, useEffect, useMemo, useRef, useState, type ReactNode, type R
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, OrbitControls, OrthographicCamera, Grid } from '@react-three/drei';
 import * as THREE from 'three';
-import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer, type Edge } from './types';
+import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer } from './types';
 import { product, shapeText } from './analysis';
-import { EdgeLine, ParticleEdge, ResidualFlow, flowCurve } from './Flow';
+import { EdgeLine, ParticleEdge, ResidualFlow } from './Flow';
 import AttentionModule, { SceneText } from './AttentionModule';
 import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
-import { outerResidualCurve, residualEdges } from './graphRoutes';
-import { crossInputRole, isCrossAttention, isProjectionPort } from './attentionConfig';
+import { isProjectionPort } from './attentionConfig';
+import { flowCurve, isMerge, sceneLayout, type SceneNode } from './sceneLayout';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
 import { blank, createTensorMaterial, floatTexture, majorGroup, tensorCells, type TensorUniforms } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
@@ -23,42 +23,6 @@ interface Props { graph: Graph; analysis: Analysis; selected: string | null; onS
   observation?: SceneObservation | null;
   /** One kernel window per convolution or pooling layer; on unless turned off. */
   showKernels?: boolean; }
-interface SceneRoute extends Edge { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; residual: boolean; }
-
-function layout(graph: Graph, analysis: Analysis, expanded: boolean) {
-  const rank: Record<string, number> = {};
-  for (const id of analysis.order) rank[id] = Math.max(-1, ...graph.edges.filter(e => e.target === id).map(e => rank[e.source] ?? -1)) + 1;
-  const rows: Record<number, number> = {};
-  const positions: Record<string, THREE.Vector3> = {};
-  const max = Math.max(1, ...Object.values(rank));
-  const minimumWidth = graph.nodes.some(n => isAttention(n.op)) ? (expanded ? 4 : 3.5) : (expanded ? 2.8 : 2.1);
-  const widths = Array.from({ length: max + 1 }, (_, r) => Math.max(minimumWidth, ...graph.nodes.filter(n => rank[n.id] === r && isAttention(n.op)).map(n => attentionLayout(n, expanded).dimensions[0] + 1.6)));
-  const centers = widths.map((w, r) => widths.slice(0, r).reduce((a, b) => a + b, 0) + w / 2 - widths.reduce((a, b) => a + b, 0) / 2);
-  graph.nodes.forEach((n, i) => {
-    const r = rank[n.id] ?? i, row = rows[r] || 0; rows[r] = row + 1;
-    const height = Math.max(3, ...graph.nodes.filter(layer => rank[layer.id] === r && isAttention(layer.op)).map(layer => attentionLayout(layer, expanded).dimensions[1] + 1.8));
-    const elevation = isAttention(n.op) ? attentionLayout(n, expanded).dimensions[1] / 2 + 1.05 : 1.65;
-    positions[n.id] = new THREE.Vector3(centers[r] ?? (r - max / 2) * 2.1, elevation + row * height, 0);
-  });
-  return positions;
-}
-
-function contentsDimensions(shape: number[] | undefined, op: string, node?: Layer, expanded = false): [number, number, number] {
-  if (node && isAttention(op)) return attentionLayout(node, expanded).dimensions;
-  if (op === 'Add' || op === 'Multiply' || op === 'Divide') return [0.3, 0.3, 0.3];
-  // Latent attention draws three parts side by side (input, latent, output), so it is wider; MoE
-  // draws its gate, a column of experts, its shared experts and the output, wider still.
-  if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 1.3 : 1.15, Math.min(2.5, Math.max(0.65, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), 0.8];
-  if (!shape) return [0.5, 1, 1];
-  if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
-  return [['ReLU', 'GELU', 'Dropout', 'Flatten', 'Unflatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
-}
-
-function nodePort(node: Layer, position: THREE.Vector3, side: 'input' | 'output' | 'context', expanded: boolean, shape?: number[]) {
-  const offset = isAttention(node.op) ? new THREE.Vector3(...attentionLayout(node, expanded).ports[side]) : new THREE.Vector3((side === 'input' ? -1 : 1) * contentsDimensions(shape, node.op)[0] / 2, 0, 0);
-  return position.clone().add(offset);
-}
-
 function layerLabel(node: Layer, dims: [number, number, number], selected: string | null, head: number | null, expanded: boolean) {
   const headPosition = selected === node.id && head !== null && isAttention(node.op) ? attentionLayout(node, expanded).heads[head] : undefined;
   const attn = headPosition ? attentionLayout(node, expanded) : null, meta = head !== null ? attn?.headMeta[head] : undefined;
@@ -186,6 +150,26 @@ function MoEBlock({ dims, color, glow, output, experts, shared, paint, outline, 
     { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
   ];
   return drawParts(parts, glow, outline);
+}
+
+const MERGE_SYMBOLS: Record<string, string> = { Add: '+', Multiply: '×', Divide: '÷' };
+const MERGE_SYMBOL_POSITION = new THREE.Vector3(0, 0.44, 0);
+
+/**
+ * A layer other than an attention module, as its tensor: a solid, matte block (a translucent one
+ * blended with whatever stood behind it and muddied both colours), or its parts for latent
+ * attention and MoE. A merge's small cube stands for the operation, not a tensor, so it has no
+ * grid and carries its symbol instead.
+ */
+function LayerBody({ node, dims, color, glow, outline, input, output, paint, load }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; input?: number[]; output?: number[]; paint: BlockPaint | null; load?: number[] }) {
+  if (node.op === 'LatentAttention') return <LatentAttentionBlock dims={dims} color={color} glow={glow} input={input} output={output} latent={Number(node.params.kv_lora_rank ?? 32)} paint={paint} outline={outline} />;
+  if (node.op === 'MoE') return <MoEBlock dims={dims} color={color} glow={glow} output={output} experts={Number(node.params.experts ?? 8)} shared={Number(node.params.shared_experts ?? 1)} paint={paint} outline={outline} load={load} />;
+  const symbol = MERGE_SYMBOLS[node.op];
+  return <>
+    <TensorBlock dims={dims} color={color} glow={glow} cells={symbol ? [1, 1, 1] : tensorCells(output)} paint={paint} />
+    <NodeOutline dims={dims} color={outline} />
+    {symbol && <SceneText text={symbol} position={MERGE_SYMBOL_POSITION} color={color} scale={0.38} />}
+  </>;
 }
 
 const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
@@ -341,53 +325,19 @@ function World(props: Props) {
   const labelPortal = useMemo(() => ({ current: gl.domElement.parentElement! }), [gl]);
   const controls = useRef<any>(null);
   const flowDirection = useRef(props.direction); flowDirection.current = props.direction;
-  const positions = useMemo(() => layout(props.graph, props.analysis, props.expanded), [props.graph, props.analysis, props.expanded]);
-  const routes = useMemo(() => {
-    const shortcuts = residualEdges(props.graph), lanes = new Map<string, number>();
-    return props.graph.edges.flatMap<SceneRoute>(e => {
-      if (!positions[e.source] || !positions[e.target]) return [];
-      const source = props.graph.nodes.find(n => n.id === e.source)!, target = props.graph.nodes.find(n => n.id === e.target)!;
-      const projectionPoint = (node: Layer, port?: string) => isAttention(node.op) && port ? attentionLayout(node, props.expanded).projectionPositions[port] : undefined;
-      const startPoint = projectionPoint(source, e.sourcePort), endPoint = projectionPoint(target, e.targetPort);
-      const start = startPoint ? positions[e.source].clone().add(new THREE.Vector3(...startPoint)) : nodePort(source, positions[e.source], 'output', props.expanded, props.analysis.layers[e.source]?.output);
-      const side = !isProjectionPort(e.targetPort) && isCrossAttention(target) && crossInputRole(props.graph, target, e.id) === 'context' ? 'context' : 'input';
-      const end = endPoint ? positions[e.target].clone().add(new THREE.Vector3(...endPoint)) : nodePort(target, positions[e.target], side, props.expanded, props.analysis.layers[e.target]?.output);
-      const residual = shortcuts.has(e.id);
-      if (residual) {
-        end.copy(positions[e.target]).add(new THREE.Vector3(0, 0.15, 0));
-        const obstacles = props.graph.nodes.filter(n => n.id !== e.source && n.id !== e.target).map(n => {
-          const dims = new THREE.Vector3(...contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded));
-          const box = new THREE.Box3().setFromCenterAndSize(positions[n.id], dims);
-          return { min: box.min.toArray(), max: box.max.toArray() };
-        }).filter(box => box.max[0] > start.x && box.min[0] < end.x);
-        const lane = lanes.get(e.target) ?? 0; lanes.set(e.target, lane + 1);
-        const path = outerResidualCurve(start.toArray(), end.toArray(), obstacles, lane);
-        return [{ ...e, start, end, residual, control1: new THREE.Vector3(...path.control1), control2: new THREE.Vector3(...path.control2) }];
-      }
-      return [{ ...e, start, end, residual, control1: undefined, control2: undefined }];
-    });
-  }, [props.graph, props.analysis, props.expanded, positions]);
-  const bounds = useMemo(() => {
-    const box = new THREE.Box3();
-    props.graph.nodes.forEach(n => {
-      const dims = new THREE.Vector3(...contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded));
-      const nodeBox = new THREE.Box3().setFromCenterAndSize(positions[n.id], dims);
-      nodeBox.min.y -= 1.1;
-      box.union(nodeBox);
-    });
-    routes.filter(route => route.residual).forEach(route => flowCurve(route).getPoints(40).forEach(p => box.expandByPoint(p)));
-    return box.isEmpty() ? new THREE.Box3(new THREE.Vector3(-5, 0, -2), new THREE.Vector3(5, 5, 2)) : box;
-  }, [props.graph, props.analysis, props.expanded, positions, routes]);
+  // Every layer's position, size and ports, the routes between them and the bounds, worked out once.
+  const model = useMemo(() => sceneLayout(props.graph, props.analysis, props.expanded), [props.graph, props.analysis, props.expanded]);
+  const { routes, bounds } = model;
   const attentionView = props.graph.nodes.some(n => isAttention(n.op));
   const [hover, setHover] = useState<string | null>(null);
   // A convolution or pooling layer fed by a feature map gets its one kernel window.
   const kernels = useMemo(() => props.showKernels === false ? [] : props.graph.nodes.flatMap<KernelProps>(node => {
     if (!WINDOW_OPS.has(node.op)) return [];
-    const edge = props.graph.edges.find(e => e.target === node.id && !e.targetPort), source = edge && props.graph.nodes.find(n => n.id === edge.source);
+    const edge = props.graph.edges.find(e => e.target === node.id && !e.targetPort), source = edge && model.nodes[edge.source], target = model.nodes[node.id];
     const input = edge && props.analysis.layers[edge.source]?.output, output = props.analysis.layers[node.id]?.output;
-    if (!edge || !source || !input || !output || input.length !== 4 || output.length !== 4 || !positions[source.id] || !positions[node.id]) return [];
-    return [{ node, input, output, from: positions[source.id], to: positions[node.id], fromDims: contentsDimensions(input, source.op, source, props.expanded), toDims: contentsDimensions(output, node.op, node, props.expanded) }];
-  }), [props.graph, props.analysis, positions, props.expanded, props.showKernels]);
+    if (!edge || !source || !target || !input || !output || input.length !== 4 || output.length !== 4) return [];
+    return [{ node, input, output, from: source.position, to: target.position, fromDims: source.dims, toDims: target.dims }];
+  }), [props.graph, props.analysis, model, props.showKernels]);
   // The measured value of a layer's output element, when the painted window holds channel 0 there.
   const measuredAt = (id: string) => {
     const tensor = props.observation?.tensors[id];
@@ -413,19 +363,21 @@ function World(props: Props) {
     if (controls.current) { controls.current.target.copy(center); controls.current.update(); }
     fitCamera(camera as THREE.OrthographicCamera, bounds ?? new THREE.Box3().setFromCenterAndSize(center, dimensions), size.width, size.height);
   };
+  const boxOf = (entry: SceneNode) => new THREE.Box3().setFromCenterAndSize(entry.position, new THREE.Vector3(...entry.dims));
   const focus = (id: string, head?: number) => {
-    const target = positions[id], node = props.graph.nodes.find(n => n.id === id); if (!target || !node) return;
-    const attention = isAttention(node.op) ? attentionLayout(node, props.expanded) : null;
+    const entry = model.nodes[id]; if (!entry) return;
+    const { node, position: target, attention } = entry;
     const headPoint = head !== undefined ? attention?.heads[head] : undefined;
-    const focusBox = new THREE.Box3().setFromCenterAndSize(target, new THREE.Vector3(...contentsDimensions(props.analysis.layers[id]?.output, node.op, node, props.expanded)));
-    const merge = node.op === 'Add' || node.op === 'Multiply' || node.op === 'Divide';
+    const focusBox = boxOf(entry);
+    const merge = isMerge(node.op);
+    // A merge is framed with the routes into it and every layer they span.
     if (merge) routes.filter(route => route.target === id).forEach(route => {
       flowCurve(route).getPoints(40).forEach(p => focusBox.expandByPoint(p));
-      props.graph.nodes.filter(n => positions[n.id].x >= route.start.x && positions[n.id].x <= route.end.x).forEach(n => focusBox.union(new THREE.Box3().setFromCenterAndSize(positions[n.id], new THREE.Vector3(...contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded)))));
+      Object.values(model.nodes).filter(other => other.position.x >= route.start.x && other.position.x <= route.end.x).forEach(other => focusBox.union(boxOf(other)));
     });
     const center = headPoint ? target.clone().add(new THREE.Vector3(...headPoint)) : target.clone();
     const radius = attention ? qkvRadius(attention.qkvCount) : 0;
-    const dims = headPoint ? new THREE.Vector3(2.1, Math.max(5, radius * 2 + 2.8), Math.max(4.4, radius * 2 + 1.3)) : new THREE.Vector3(...contentsDimensions(props.analysis.layers[id]?.output, node.op, node, props.expanded));
+    const dims = headPoint ? new THREE.Vector3(2.1, Math.max(5, radius * 2 + 2.8), Math.max(4.4, radius * 2 + 1.3)) : new THREE.Vector3(...entry.dims);
     centerView(center, dims, attention ? (headPoint ? new THREE.Vector3(24, 5, 18) : new THREE.Vector3(18, 7, 24)) : new THREE.Vector3(4, 8, 12), merge ? focusBox : undefined);
   };
   useEffect(() => {
@@ -441,8 +393,7 @@ function World(props: Props) {
       if (controls.current) { controls.current.target.copy(target); controls.current.update(); }
     };
     reset();
-    const exportSource = { scene, camera: camera as THREE.OrthographicCamera, graph: props.graph, analysis: props.analysis, expanded: props.expanded, viewport: size, direction: () => flowDirection.current,
-      dimensions: Object.fromEntries(props.graph.nodes.map(node => [node.id, contentsDimensions(props.analysis.layers[node.id]?.output, node.op, node, props.expanded)])) };
+    const exportSource = { scene, camera: camera as THREE.OrthographicCamera, graph: props.graph, analysis: props.analysis, expanded: props.expanded, viewport: size, direction: () => flowDirection.current, dimensions: model.dimensions };
     props.onReady({
       reset,
       focus: id => focus(id),
@@ -451,8 +402,8 @@ function World(props: Props) {
       capture: (width, transparent, options) => withoutPaint(() => captureSceneImage(gl, exportSource, width, transparent, options)),
       svg: (options, exportWidth = 1920) => exportSceneSvg(exportSource, exportWidth, options)
     });
-  }, [camera, gl, scene, positions, routes, size, bounds, attentionView, props.expanded, props.graph, props.analysis, props.onReady]);
-  useEffect(() => { if (props.selected && props.selectedHead !== null && isAttention(props.graph.nodes.find(n => n.id === props.selected)?.op || '')) focus(props.selected, props.selectedHead); }, [camera, props.selected, props.selectedHead, props.expanded, positions, size]);
+  }, [camera, gl, scene, model, size, attentionView, props.expanded, props.graph, props.analysis, props.onReady]);
+  useEffect(() => { if (props.selected && props.selectedHead !== null && model.nodes[props.selected]?.attention) focus(props.selected, props.selectedHead); }, [camera, props.selected, props.selectedHead, props.expanded, model, size]);
   return <>
     {/* No scene background: the canvas is transparent over the workspace's soft gradient. */}
     {/* Sky/ground fill plus a key light from the upper right and a weak rim from behind, so a
@@ -466,19 +417,13 @@ function World(props: Props) {
     })}
     {kernels.map(kernel => <KernelWindow key={kernel.node.id} {...kernel} playing={props.playing} speed={props.speed} measured={measuredAt(kernel.node.id)} />)}
     {props.graph.nodes.map(n => {
-      const pos = positions[n.id], dims = contentsDimensions(props.analysis.layers[n.id]?.output, n.op, n, props.expanded);
+      const { position: pos, dims } = model.nodes[n.id];
       const issue = props.diagnostics.find(d => d.nodeId === n.id && d.level === 'error'), selected = props.selected === n.id;
       const color = issue ? '#e45555' : COLORS[n.op];
       const label = layerLabel(n, dims, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
-        {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} /> : <>
-        {/* Solid, matte blocks: a translucent block blended with whatever stood behind it, which
-            muddied both colours wherever neighbours overlapped. A merge node's small cube stands
-            for the operation, not for a tensor, so it has no grid. */}
-        {n.op === 'LatentAttention' ? <LatentAttentionBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} latent={Number(n.params.kv_lora_rank ?? 32)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} /> :
-        n.op === 'MoE' ? <MoEBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} output={props.analysis.layers[n.id]?.output} experts={Number(n.params.experts ?? 8)} shared={Number(n.params.shared_experts ?? 1)} paint={paints[n.id] ?? null} outline={selected ? '#1d3943' : edgeTone(color)} load={props.observation?.loads[n.id]} /> : <>
-        <TensorBlock dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} cells={n.op === 'Add' || n.op === 'Multiply' || n.op === 'Divide' ? [1, 1, 1] : tensorCells(props.analysis.layers[n.id]?.output)} paint={paints[n.id] ?? null} />
-        <NodeOutline dims={dims} color={selected ? '#1d3943' : edgeTone(color)} /></>}{n.op === 'Add' && <SceneText text="+" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Multiply' && <SceneText text="×" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}{n.op === 'Divide' && <SceneText text="÷" position={new THREE.Vector3(0, 0.44, 0)} color={color} scale={0.38} />}</>}
+        {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
+          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? '#1d3943' : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}
         {!isAttention(n.op) && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
         {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color="#1d3943" transparent opacity={0.75} /></mesh>}
