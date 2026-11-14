@@ -1,5 +1,6 @@
 export const workbenchEnglish: Record<string, string> = {
   '仅结构 · 超出本地运行上限': 'Structure only · beyond local limits', '它超出本地工作台的运行上限；可以查看结构、形状和参数量。': 'It is past what this workbench can run; its structure, shapes and parameter counts can be explored.', '仅结构模型不能在本机观测': 'A structure-only model cannot be observed here', '仅结构模型不能在本机训练': 'A structure-only model cannot be trained here', '仅结构模型不能导出可运行的 Python；可以导出 Graph JSON': 'A structure-only model cannot be exported as runnable Python; Graph JSON can be exported',
+  'DeepSeek-V3 671B（仅结构）': 'DeepSeek-V3 671B (structure only)',
   '切换到亮场': 'Switch to the day look', '切换到暗场': 'Switch to the night look',
   // The 3D view's legend (src/operatorStyle.ts, src/SceneLegend.tsx).
   '图例': 'Legend', '收起图例': 'Collapse the legend', '展开图例': 'Expand the legend', '输入 / 输出': 'Input / output', '词嵌入': 'Embedding', '离散编号查表成向量': 'Looks up a vector for each ID',
