@@ -86,3 +86,39 @@ describe('image export stacks heads that share one input space', () => {
     expect(Object.keys(layout.projectionPositions).sort()).toEqual(projectionPorts(node).map(p => p.id).sort());
   });
 });
+
+describe('the live attention module is dense', () => {
+  it('sets the score matrices of a group on a ring by their own queries, and the weighted sums on a smaller ring behind', () => {
+    const layout = attentionLayout(PRESETS.gqa().nodes[1]);
+    expect(layout.faces.map(face => face.computations.length)).toEqual([4, 4]);
+    layout.faces.forEach(face => face.computations.forEach((c, i) => {
+      const q = face.vertices[i].point, radius = Math.hypot(q[0], q[1]);
+      expect(Math.hypot(c.score[0], c.score[1])).toBeCloseTo(radius * 0.5);
+      expect(Math.hypot(c.weighted[0], c.weighted[1])).toBeCloseTo(radius * 0.25);
+      expect(Math.atan2(c.score[1], c.score[0])).toBeCloseTo(Math.atan2(q[1], q[0]));
+      // Behind the polygon along the flow, the sums behind the scores.
+      expect(c.score[2]).toBeGreaterThan(0);
+      expect(c.weighted[2]).toBeGreaterThan(c.score[2]);
+    }));
+    // The funnel behind a face stops short of the routes into the next one, which bow back 0.25.
+    expect(layout.spacing - 0.25).toBeGreaterThan(Math.max(...layout.faces.flatMap(face => face.computations.map(c => c.weighted[2]))) + 0.1);
+  });
+
+  it.each([1, 0])('steps the parts after the heads in flow order with norm_first %i, the FFN through its hidden layer and back', normFirst => {
+    const node = PRESETS.transformer().nodes[1];
+    node.params.norm_first = normFirst;
+    const { ports, routes } = attentionLayout(node);
+    const order: (keyof typeof ports)[] = normFirst ? ['merge', 'add1', 'norm2', 'ffn', 'ffnOut', 'add2'] : ['merge', 'add1', 'norm1', 'ffn', 'ffnOut', 'add2', 'norm2'];
+    order.slice(1).forEach((port, i) => expect(ports[port][0]).toBeGreaterThan(ports[order[i]][0]));
+    expect(ports.output).toEqual(ports[order.at(-1)!]);
+    expect(routes.find(r => r.id === 'ffn-hidden')).toMatchObject({ start: ports.ffn, end: ports.ffnOut });
+    expect(routes.find(r => r.id === 'ffn-add')?.start).toEqual(ports.ffnOut);
+  });
+
+  it('leaves the flat export module as it was: no hidden FFN step, scores in a column', () => {
+    const flat = attentionLayout(PRESETS.gqa().nodes[1], false, true);
+    expect(flat.ports.ffnOut).toEqual(flat.ports.ffn);
+    expect(flat.routes.some(r => r.id === 'ffn-hidden')).toBe(false);
+    expect(flat.faces[0].computations.map(c => c.score[0])).toEqual([0, 0, 0, 0]);
+  });
+});
