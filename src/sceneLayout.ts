@@ -55,29 +55,53 @@ function ranks(graph: Graph, analysis: Analysis) {
   return rank;
 }
 
+/** Height of the first row's axis when nothing in it is taller: a block's centre stands this high. */
+const BASE_AXIS = 1.65;
+/** How far an attention module's lowest part stands above the ground. */
+const ATTENTION_LIFT = 1.05;
+/** Room between the tallest layers of two neighbouring rows, for the upper row's labels. */
+const ROW_GAP = 1.5;
+
 /**
  * Stages left to right along x, one per rank; a stage is as wide as its widest attention module
  * needs, and parallel nodes of a stage stack upward in rows.
+ *
+ * Every row has one axis, and every node of the row, attention modules included, is centred on
+ * it. Edges enter and leave blocks and modules at their centre height, so the edges along a row
+ * run straight instead of climbing to each module and back down. The first row's axis is raised
+ * just enough that its tallest module keeps its clearance above the ground; each further row
+ * sits above the one below with room for its labels between them.
  */
-function placeNodes(graph: Graph, analysis: Analysis, expanded: boolean, attention: Record<string, AttentionGeometry>) {
+function placeNodes(graph: Graph, analysis: Analysis, expanded: boolean, dims: Record<string, Dims>, attention: Record<string, AttentionGeometry>) {
   const rank = ranks(graph, analysis);
   const max = Math.max(1, ...Object.values(rank));
   const minimumWidth = graph.nodes.some(n => isAttention(n.op)) ? (expanded ? 4 : 3.5) : (expanded ? 2.8 : 2.1);
-  const widths = Array<number>(max + 1).fill(minimumWidth), heights = Array<number>(max + 1).fill(3);
+  const widths = Array<number>(max + 1).fill(minimumWidth);
   graph.nodes.forEach(node => {
     const r = rank[node.id], module = attention[node.id];
     if (r === undefined || !module || r > max) return;
     widths[r] = Math.max(widths[r], module.dimensions[0] + 1.6);
-    heights[r] = Math.max(heights[r], module.dimensions[1] + 1.8);
   });
   const total = widths.reduce((a, b) => a + b, 0);
   const centers = widths.map((w, r) => widths.slice(0, r).reduce((a, b) => a + b, 0) + w / 2 - total / 2);
-  const rows: Record<number, number> = {}, positions: Record<string, THREE.Vector3> = {}, rowOf: Record<string, number> = {};
+  const counts: Record<number, number> = {}, rowOf: Record<string, number> = {}, stageOf: Record<string, number> = {};
   graph.nodes.forEach((node, index) => {
-    const r = rank[node.id] ?? index, row = rows[r] || 0; rows[r] = row + 1;
-    const elevation = attention[node.id] ? attention[node.id].dimensions[1] / 2 + 1.05 : 1.65;
-    positions[node.id] = new THREE.Vector3(centers[r] ?? (r - max / 2) * 2.1, elevation + row * (heights[r] ?? 3), 0);
-    rowOf[node.id] = row;
+    const r = rank[node.id] ?? index, row = counts[r] || 0; counts[r] = row + 1;
+    rowOf[node.id] = row; stageOf[node.id] = r;
+  });
+  const rowCount = Math.max(0, ...Object.values(rowOf)) + 1;
+  const half = Array<number>(rowCount).fill(0), lift = Array<number>(rowCount).fill(BASE_AXIS);
+  graph.nodes.forEach(node => {
+    const row = rowOf[node.id], halfHeight = dims[node.id][1] / 2;
+    half[row] = Math.max(half[row], halfHeight);
+    if (attention[node.id]) lift[row] = Math.max(lift[row], halfHeight + ATTENTION_LIFT);
+  });
+  const axes: number[] = [];
+  for (let row = 0; row < rowCount; row++) axes.push(row ? Math.max(lift[row], axes[row - 1] + Math.max(3, half[row - 1] + half[row] + ROW_GAP)) : lift[0]);
+  const positions: Record<string, THREE.Vector3> = {};
+  graph.nodes.forEach(node => {
+    const r = stageOf[node.id];
+    positions[node.id] = new THREE.Vector3(centers[r] ?? (r - max / 2) * 2.1, axes[rowOf[node.id]], 0);
   });
   const sorted = [...widths].sort((a, b) => a - b);
   return { positions, rowOf, pitch: sorted[Math.floor(sorted.length / 2)] };
@@ -128,18 +152,18 @@ function sceneBounds(nodes: Record<string, SceneNode>, routes: SceneRoute[]) {
 export function sceneLayout(graph: Graph, analysis: Analysis, expanded: boolean): SceneLayout {
   const attention: Record<string, AttentionGeometry> = {};
   graph.nodes.forEach(node => { if (isAttention(node.op)) attention[node.id] = attentionLayout(node, expanded); });
-  const { positions, rowOf, pitch } = placeNodes(graph, analysis, expanded, attention);
-  const nodes: Record<string, SceneNode> = {}, dimensions: Record<string, Dims> = {};
-  graph.nodes.forEach(node => {
-    const dims = attention[node.id]?.dimensions as Dims | undefined ?? blockDimensions(analysis.layers[node.id]?.output, node.op);
-    nodes[node.id] = { node, position: positions[node.id], dims, attention: attention[node.id] ?? null, row: rowOf[node.id], labelY: 0 };
-    dimensions[node.id] = dims;
-  });
-  // Every label of a row hangs on one baseline under the row's lowest block, so labels line up
-  // instead of stepping with block heights, and none hangs over a lower neighbour's faces.
-  const baselines = new Map<number, number>();
-  Object.values(nodes).forEach(entry => baselines.set(entry.row, Math.min(baselines.get(entry.row) ?? Infinity, entry.position.y - entry.dims[1] / 2 - LABEL_GAP)));
-  Object.values(nodes).forEach(entry => { entry.labelY = baselines.get(entry.row)!; });
+  const dimensions: Record<string, Dims> = {};
+  graph.nodes.forEach(node => { dimensions[node.id] = attention[node.id]?.dimensions as Dims | undefined ?? blockDimensions(analysis.layers[node.id]?.output, node.op); });
+  const { positions, rowOf, pitch } = placeNodes(graph, analysis, expanded, dimensions, attention);
+  const nodes: Record<string, SceneNode> = {};
+  graph.nodes.forEach(node => { nodes[node.id] = { node, position: positions[node.id], dims: dimensions[node.id], attention: attention[node.id] ?? null, row: rowOf[node.id], labelY: 0 }; });
+  // The blocks of a row hang their labels on one baseline under the row's lowest block, so labels
+  // line up instead of stepping with block heights. An attention module is a tall open frame
+  // centred on the same axis; measured against it, the blocks' labels would hang far below them,
+  // so it labels its own lower edge instead.
+  const baselines = new Map<number, number>(), bottom = (entry: SceneNode) => entry.position.y - entry.dims[1] / 2 - LABEL_GAP;
+  Object.values(nodes).forEach(entry => { if (!entry.attention) baselines.set(entry.row, Math.min(baselines.get(entry.row) ?? Infinity, bottom(entry))); });
+  Object.values(nodes).forEach(entry => { entry.labelY = entry.attention ? bottom(entry) : baselines.get(entry.row)!; });
   const routes = routeEdges(graph, nodes);
   return { nodes, routes, bounds: sceneBounds(nodes, routes), dimensions, pitch };
 }
