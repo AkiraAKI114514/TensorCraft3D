@@ -29,11 +29,12 @@ test.beforeEach(async ({ page }) => {
 });
 
 // This file sorts first, so the training below is the first one the CI server process ever
-// runs. The first optimizer step lazily imports torch._dynamo and sympy, about 790 modules; the
+// runs. Building its first optimizer lazily imports torch._dynamo and sympy, about 790 modules; the
 // two epochs themselves take roughly 20 ms each, so that import is the whole cost. On a hosted
 // Windows runner the whole test measured 49 s on two green runs and then ran out of its 30 s
-// training wait on a third, with the status still at "准备数据" and nothing else wrong. That is
-// a budget too tight for a cold start, not a regression, so give the cold start its own budget
+// training wait on a third, and later a 90 s wait, with the status still at "准备数据" and nothing
+// else wrong. The Windows CI job now imports those modules in a separate step before the browser
+// tests ("Warm the training imports"), so this budget is only a margin for a cold local server, in
 // the same way the slow scene cases in editing.spec.ts have one.
 const coldTrainingTimeout = 90_000;
 
