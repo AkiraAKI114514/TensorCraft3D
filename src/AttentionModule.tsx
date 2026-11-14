@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
-import { EdgeLine, FlowArrow, ParticleEdge, ResidualFlow } from './Flow';
+import { FlowArrow, FlowLine, ResidualFlow } from './Flow';
 import { RESIDUAL_COLOR } from './flowGeometry';
 import { attentionLayout, HEAD_FACING, type AttentionRoute, type Point3 } from './attentionLayout';
 import type { Layer } from './types';
@@ -61,7 +61,7 @@ function Route({ route, playing, direction, speed, arrow = false, opacity = 1 }:
   // The module's own residual loops arch wide around its heads; at full strength they outweighed
   // the heads themselves, so they are drawn at half strength in the module's own pink.
   if (route.color === RESIDUAL_COLOR) return <ResidualFlow {...points} active={playing} direction={direction} speed={speed} opacity={0.5} />;
-  return <group><EdgeLine {...points} color={route.color} opacity={opacity * 0.65} compact /><ParticleEdge {...points} color={color} opacity={opacity * 0.85} active={playing} direction={direction} speed={speed} compact />{arrow && <FlowArrow {...points} color={color} direction={direction} />}</group>;
+  return <group><FlowLine {...points} color={route.color} pulseColor={color} opacity={opacity * 0.65} pulseStrength={opacity} active={playing} direction={direction} speed={speed} compact />{arrow && <FlowArrow {...points} color={color} direction={direction} />}</group>;
 }
 type Face = ReturnType<typeof attentionLayout>['faces'][number];
 function FaceModule({ face, phase, ...props }: Props & { face: Face; phase: React.RefObject<number> }) {

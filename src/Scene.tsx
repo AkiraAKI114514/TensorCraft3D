@@ -9,7 +9,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { COLORS, repeatOf, type Graph, type Analysis, type Diagnostic, type Layer } from './types';
 import { product, shapeText } from './analysis';
-import { EdgeLine, ParticleEdge, ResidualFlow } from './Flow';
+import { FlowLine, ResidualFlow } from './Flow';
 import { FLOW_GLOW } from './flowGeometry';
 import { SceneThemeContext, useSceneLook, type SceneTheme } from './sceneTheme';
 import { EDGE_COLOR, forExport, LOOKS } from './sceneLook';
@@ -508,7 +508,8 @@ function World(props: Props) {
     <OrbitControls ref={controls} makeDefault enableDamping={false} minZoom={1.5} maxZoom={180} />
     {routes.map(route => {
       const flow = { start: route.start, end: route.end, control1: route.control1, control2: route.control2 };
-      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} /> : <><EdgeLine {...flow} color={props.analysis.layers[route.target] ? look.edge : '#e26969'} exportColor={props.analysis.layers[route.target] ? EDGE_COLOR : '#e26969'} opacity={look.edgeOpacity} exportOpacity={LOOKS.day.edgeOpacity} />{detail !== 'far' && <ParticleEdge {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.direction === 'forward' ? '#31adce' : '#ee706d'} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} compact={detail === 'mid'} />}</>}</group>;
+      return <group key={route.id} name={`edge_${route.id}`}>{route.residual ? <ResidualFlow {...flow} active={props.playing} direction={props.direction} speed={props.speed} pulses={detail !== 'far'} />
+        : <FlowLine {...flow} active={props.playing} direction={props.direction} speed={props.speed} color={props.analysis.layers[route.target] ? look.edge : '#e26969'} pulseColor={props.direction === 'forward' ? '#31adce' : '#ee706d'} exportColor={props.analysis.layers[route.target] ? EDGE_COLOR : '#e26969'} opacity={look.edgeOpacity} exportOpacity={LOOKS.day.edgeOpacity} intensity={Math.log2(props.analysis.layers[route.source]?.output.reduce((a, b) => a * b, 1) || 1)} pulses={detail !== 'far'} />}</group>;
     })}
     {kernels.map(kernel => <KernelWindow key={kernel.node.id} {...kernel} playing={props.playing} speed={props.speed} measured={measuredAt(kernel.node.id)} />)}
     {props.graph.nodes.map(n => {
