@@ -38,9 +38,10 @@ export const isMerge = (op: string) => op === 'Add' || op === 'Multiply' || op =
 /** The box a non-attention layer is drawn as, sized from the tensor it outputs. */
 export function blockDimensions(shape: number[] | undefined, op: string): Dims {
   if (isMerge(op)) return [0.3, 0.3, 0.3];
-  // Latent attention draws three parts side by side (input, latent, output), so it is wider; MoE
-  // draws its gate, a column of experts, its shared experts and the output, wider still.
-  if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 1.3 : 1.15, Math.min(2.5, Math.max(0.65, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), 0.8];
+  // Latent attention and MoE draw their insides (src/layerAnatomy.ts): the two latents, the heads
+  // and their scores; the router, the expert bank, the shared experts and the sum. They need room
+  // in all three directions.
+  if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 2.4 : 2.6, Math.min(2.5, Math.max(1.8, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), op === 'MoE' ? 1.5 : 1.2];
   if (!shape) return [0.5, 1, 1];
   if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
   return [['ReLU', 'GELU', 'Dropout', 'Flatten', 'Unflatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];
@@ -100,8 +101,10 @@ function placeNodes(graph: Graph, analysis: Analysis, expanded: boolean, dims: R
   const widths = Array<number>(max + 1).fill(minimumWidth);
   graph.nodes.forEach(node => {
     const r = rank[node.id], module = attention[node.id];
-    if (r === undefined || !module || r > max) return;
-    widths[r] = Math.max(widths[r], module.dimensions[0] + 1.6);
+    if (r === undefined || r > max) return;
+    // An attention module keeps its own margin; any other block gets enough room not to touch its
+    // neighbours, which only the wide latent attention and MoE blocks need.
+    widths[r] = Math.max(widths[r], module ? module.dimensions[0] + 1.6 : dims[node.id][0] + 1.3);
   });
   const counts: Record<number, number> = {}, rowOf: Record<string, number> = {}, stageOf: Record<string, number> = {};
   graph.nodes.forEach((node, index) => {

@@ -20,6 +20,7 @@ import { flowCurve, isMerge, OVERVIEW_OFFSETS, sceneLayout, type SceneNode } fro
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
 import { blank, createTensorMaterial, floatTexture, majorGroup, NIGHT, tensorCells, type TensorUniforms } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
+import { expertAnatomy, latentAnatomy, type Anatomy } from './layerAnatomy';
 import { receptiveField, WINDOW_OPS, type Field } from './receptiveField';
 import { tensorNumber } from './inferenceTypes';
 import type { ImageExportOptions } from './imageLayout';
@@ -125,53 +126,37 @@ function TensorBlock({ dims, color, glow, cells, paint }: { dims: [number, numbe
 }
 
 /**
- * Multi-head Latent Attention as a waist: the input tensor, the narrower K/V latent it is squeezed
- * through (its height is kv_lora_rank over embed_dim) and the output tensor, inside the layer's own
- * footprint so the layout, routes and image export keep their places. Measured values paint the
- * output part, which is the tensor the layer reports.
+ * The inside of a latent attention or mixture-of-experts layer (src/layerAnatomy.ts), in its own
+ * box: every part a small tensor block, so it shades, glows at night and exports like any block;
+ * the links between parts as one set of lines; and the parts' names while the layer is selected or
+ * hovered, which is when the view is close enough to read them. Measured values paint the part
+ * that stands for the layer's output.
  */
-function LatentAttentionBlock({ dims, color, glow, input, output, latent, paint, outline }: { dims: [number, number, number]; color: string; glow: number; input?: number[]; output?: number[]; latent: number; paint: BlockPaint | null; outline: string }) {
-  const [width, height, depth] = dims, gap = 0.05, side = 0.28, waist = 0.22, rest = width - side - waist - 2 * gap;
-  const ratio = Math.min(0.85, Math.max(0.2, latent / Math.max(1, output?.at(-1) ?? 64)));
-  const latentShape = output ? [output[0], output[1], latent] : undefined;
-  const tint = (amount: number) => `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), amount).getHexString()}`;
-  const parts: { x: number; dims: [number, number, number]; color: string; cells: [number, number, number]; paint: BlockPaint | null }[] = [
-    { x: -width / 2 + side / 2, dims: [side, height, depth], color: tint(0.28), cells: tensorCells(input), paint: null },
-    { x: -width / 2 + side + gap + waist / 2, dims: [waist, height * ratio, depth], color: `#${new THREE.Color(color).multiplyScalar(0.86).getHexString()}`, cells: tensorCells(latentShape), paint: null },
-    { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
-  ];
-  return <>{parts.map((part, index) => <group key={index} position={[part.x, 0, 0]}><TensorBlock dims={part.dims} color={part.color} glow={glow} cells={part.cells} paint={part.paint} /><NodeOutline dims={part.dims} color={outline} /></group>)}</>;
+function AnatomyBlock({ anatomy, color, glow, paint, outline, showLabels }: { anatomy: Anatomy; color: string; glow: number; paint: BlockPaint | null; outline: string; showLabels: boolean }) {
+  const night = useSceneLook() === 'night';
+  const links = useMemo(() => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(anatomy.links.flat(2), 3)), [anatomy]);
+  useEffect(() => () => links.dispose(), [links]);
+  const linkColor = night ? tintOf(color, 0.45) : shadeOf(color, 0.62);
+  return <>
+    {anatomy.parts.map(part => <group key={part.key} position={part.center}>
+      <TensorBlock dims={part.size} color={part.color} glow={glow} cells={part.cells} paint={part.output ? paint : null} />
+      <NodeOutline dims={part.size} color={part.output ? outline : edgeTone(part.color)} />
+    </group>)}
+    <lineSegments raycast={() => {}} geometry={links} userData={{ dayMaterial: { color: shadeOf(color, 0.62), opacity: 0.6 } }}><lineBasicMaterial color={linkColor} transparent opacity={night ? 0.85 : 0.6} /></lineSegments>
+    {showLabels && anatomy.labels.map(label => <SceneText key={label.text} text={label.text} position={new THREE.Vector3(...label.position)} color={label.color} scale={0.2} />)}
+  </>;
 }
 
-type BlockPart = { x: number; y?: number; dims: [number, number, number]; color: string; cells: [number, number, number]; paint: BlockPaint | null };
 const tintOf = (color: string, amount: number) => `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), amount).getHexString()}`;
 const shadeOf = (color: string, amount: number) => `#${new THREE.Color(color).multiplyScalar(amount).getHexString()}`;
-const drawParts = (parts: BlockPart[], glow: number, outline: string) => <>{parts.map((part, index) => <group key={index} position={[part.x, part.y ?? 0, 0]}><TensorBlock dims={part.dims} color={part.color} glow={glow} cells={part.cells} paint={part.paint} /><NodeOutline dims={part.dims} color={outline} /></group>)}</>;
 
-/** At most this many bars stand for the routed experts; a larger layer gives each bar a run of them. */
-const MAX_DRAWN_EXPERTS = 16;
-/**
- * A mixture-of-experts layer as its parts, inside its own footprint: the gate (its grid is tokens by
- * experts), one bar per routed expert (or per run of experts past 16), the shared experts when there
- * are any, and the output tensor, which measured values paint. A measured routing shades each bar by
- * the tokens its experts received, from pale (none) to the full colour (the busiest bar).
- */
-function MoEBlock({ dims, color, glow, output, experts, shared, paint, outline, load }: { dims: [number, number, number]; color: string; glow: number; output?: number[]; experts: number; shared: number; paint: BlockPaint | null; outline: string; load?: number[] }) {
-  const [width, height, depth] = dims, gap = 0.05, gate = 0.16, column = 0.42, sharedWidth = shared ? 0.12 : 0;
-  const rest = width - gate - column - sharedWidth - gap * (shared ? 3 : 2);
-  const per = Math.ceil(Math.max(1, experts) / MAX_DRAWN_EXPERTS), drawn = Math.ceil(Math.max(1, experts) / per);
-  const spacing = Math.min(0.04, height * 0.15 / drawn), bar = (height - spacing * (drawn - 1)) / drawn;
-  const barLoads = load ? Array.from({ length: drawn }, (_, index) => load.slice(index * per, (index + 1) * per).reduce((sum, count) => sum + count, 0)) : null;
-  const busiest = barLoads ? Math.max(1, ...barLoads) : 1;
-  const barColor = (index: number) => barLoads ? `#${new THREE.Color(tintOf(color, 0.82)).lerp(new THREE.Color(shadeOf(color, 0.82)), barLoads[index] / busiest).getHexString()}` : color;
-  const columnX = -width / 2 + gate + gap + column / 2;
-  const parts: BlockPart[] = [
-    { x: -width / 2 + gate / 2, dims: [gate, height, depth], color: tintOf(color, 0.32), cells: tensorCells(output ? [output[0], product(output.slice(1, -1)), experts] : undefined), paint: null },
-    ...Array.from({ length: drawn }, (_, index): BlockPart => ({ x: columnX, y: height / 2 - bar / 2 - index * (bar + spacing), dims: [column, bar, depth * 0.85], color: barColor(index), cells: [1, 1, 1], paint: null })),
-    ...(shared ? [{ x: columnX + column / 2 + gap + sharedWidth / 2, dims: [sharedWidth, height * 0.9, depth] as [number, number, number], color: shadeOf(color, 0.78), cells: [1, 1, 1] as [number, number, number], paint: null }] : []),
-    { x: width / 2 - rest / 2, dims: [rest, height, depth], color, cells: tensorCells(output), paint }
-  ];
-  return drawParts(parts, glow, outline);
+/** The anatomy of a latent attention or MoE layer from its parameters and output, or null for any other layer. */
+function anatomyOf(node: Layer, dims: [number, number, number], color: string, output: number[] | undefined, load?: number[]): Anatomy | null {
+  const value = (name: string, fallback: number) => Number(node.params[name] ?? fallback);
+  const embed = output?.at(-1) ?? value('embed_dim', 64), positions = output && output.length > 2 ? product(output.slice(1, -1)) : 1;
+  if (node.op === 'LatentAttention') return latentAnatomy(dims, color, { embed, heads: value('num_heads', 4), qLora: value('q_lora_rank', 32), kvLora: value('kv_lora_rank', 32), nope: value('qk_nope_head_dim', 16), rope: value('qk_rope_head_dim', 8), value: value('v_head_dim', 16), positions });
+  if (node.op === 'MoE') return expertAnatomy(dims, color, { embed, experts: value('experts', 8), topK: value('top_k', 2), shared: value('shared_experts', 1), groups: value('groups', 1), positions }, load);
+  return null;
 }
 
 const MERGE_SYMBOLS: Record<string, string> = { Add: '+', Multiply: '×', Divide: '÷' };
@@ -183,9 +168,9 @@ const MERGE_SYMBOL_POSITION = new THREE.Vector3(0, 0.44, 0);
  * attention and MoE. A merge's small cube stands for the operation, not a tensor, so it has no
  * grid and carries its symbol instead.
  */
-function LayerBody({ node, dims, color, glow, outline, input, output, paint, load }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; input?: number[]; output?: number[]; paint: BlockPaint | null; load?: number[] }) {
-  if (node.op === 'LatentAttention') return <LatentAttentionBlock dims={dims} color={color} glow={glow} input={input} output={output} latent={Number(node.params.kv_lora_rank ?? 32)} paint={paint} outline={outline} />;
-  if (node.op === 'MoE') return <MoEBlock dims={dims} color={color} glow={glow} output={output} experts={Number(node.params.experts ?? 8)} shared={Number(node.params.shared_experts ?? 1)} paint={paint} outline={outline} load={load} />;
+function LayerBody({ node, dims, color, glow, outline, output, paint, load, showLabels }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; output?: number[]; paint: BlockPaint | null; load?: number[]; showLabels: boolean }) {
+  const anatomy = useMemo(() => anatomyOf(node, dims, color, output, load), [node, dims, color, output, load]);
+  if (anatomy) return <AnatomyBlock anatomy={anatomy} color={color} glow={glow} paint={paint} outline={outline} showLabels={showLabels} />;
   const symbol = MERGE_SYMBOLS[node.op];
   return <>
     <TensorBlock dims={dims} color={color} glow={glow} cells={symbol ? [1, 1, 1] : tensorCells(output)} paint={paint} />
@@ -533,7 +518,7 @@ function World(props: Props) {
       const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
-          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
+          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} showLabels={selected || hover === n.id} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint
             read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow
             cast that far down would land on the band below, so only the lowest band casts them. */}

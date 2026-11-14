@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { Analysis, Graph } from './types';
 import { HEAD_COLORS, legendRows, type Glyph, type LegendRow } from './operatorStyle';
+import { ROPE_COLOR } from './layerAnatomy';
 import { useI18n } from './i18n';
 
 /** A hex colour moved toward white (`t` > 0) or black (`t` < 0). */
@@ -34,10 +35,10 @@ export function LegendGlyph({ glyph, color, secondary }: { glyph: Glyph; color: 
       case 'membrane': return <Box x={15} y={21} w={2} h={16} d={11} color={color} opacity={0.9} />;
       case 'shape': return <Box x={15} y={20} w={3} h={10} d={9} color={color} />;
       case 'table': return <><Box x={11} y={21} w={10} h={15} d={9} color={color} />{[0, 1, 2, 3].map(i => <line key={i} x1={11} x2={21} y1={9.5 + i * 3} y2={9.5 + i * 3} stroke={tone(color, -0.35)} strokeWidth={0.7} />)}</>;
-      // Multi-head latent attention: the input, the narrow K/V latent it is squeezed through, the output.
-      case 'waist': return <><Box x={5} y={21} w={4} h={15} d={9} color={tone(color, 0.28)} /><Box x={14} y={17} w={3} h={7} d={9} color={tone(color, -0.12)} /><Box x={22} y={21} w={6} h={15} d={9} color={color} /></>;
-      // Mixture of experts: the gate, a column of experts (two of them routed), the output.
-      case 'experts': return <><Box x={4} y={21} w={2.5} h={15} d={8} color={tone(color, 0.32)} />{[0, 1, 2, 3].map(i => <Box key={i} x={11} y={9 + i * 4} w={7} h={3} d={7} color={i === 1 || i === 2 ? tone(color, -0.18) : tone(color, 0.6)} />)}<Box x={24} y={21} w={5} h={15} d={8} color={color} /></>;
+      // Multi-head latent attention: the input, the Q and K/V latents it is squeezed through, heads with their RoPE part on top, the output.
+      case 'waist': return <><Box x={2} y={21} w={3} h={15} d={7} color={tone(color, 0.28)} /><Box x={8} y={12} w={2.5} h={5} d={6} color={tone(color, 0.1)} /><Box x={8} y={20} w={2.5} h={4} d={6} color={tone(color, -0.15)} />{[0, 1, 2].map(i => <g key={i}><Box x={14 + i * 2.6} y={21 - i * 0.9} w={1.6} h={9} d={2} color={tone(color, 0.18)} /><Box x={14 + i * 2.6} y={12 - i * 0.9} w={1.6} h={4} d={2} color={ROPE_COLOR} /></g>)}<Box x={25} y={21} w={4} h={15} d={7} color={color} /></>;
+      // Mixture of experts: the router, a bank of experts (two of them routed), the output.
+      case 'experts': return <><Box x={3} y={21} w={2.5} h={15} d={8} color={tone(color, 0.32)} />{[0, 1, 2, 3].map(i => <Box key={i} x={9 + (i % 2) * 6} y={13 + Math.floor(i / 2) * 7} w={4.5} h={4.5} d={4} color={i === 0 || i === 3 ? tone(color, -0.12) : tone(color, 0.6)} />)}<Box x={24} y={21} w={5} h={15} d={8} color={color} /></>;
       // An attention head: Q, K and V around a frosted panel.
       case 'heads': return <><path d="M9 19L18 4L27 19Z" fill={tone(color, 0.75)} stroke={tone(color, -0.1)} strokeWidth={0.9} strokeLinejoin="round" /><circle cx={18} cy={5} r={2.6} fill={HEAD_COLORS.q} /><circle cx={9} cy={19} r={2.6} fill={HEAD_COLORS.k} /><circle cx={27} cy={19} r={2.6} fill={HEAD_COLORS.v} /><circle cx={18} cy={14} r={1.8} fill={HEAD_COLORS.merge} /></>;
       // A shortcut arching over the layers it skips, onto its addition.
