@@ -48,3 +48,101 @@
 .scene-label span{display:block;font-size:8.5px;line-height:12px;color:#6d818a;font-variant-numeric:tabular-nums;white-space:nowrap}
 .scene-label.selected{background:#fff;box-shadow:0 0 0 1.5px #1d3943,0 6px 16px #0f2a3524}
 @media(max-width:700px){.scene-label{max-width:104px;padding:2px 6px 2px 13px}.scene-label::before{left:5px;top:7px;width:4px;height:4px}.scene-label strong{font-size:8.5px;line-height:13px;max-width:86px}.scene-label span{font-size:7px;line-height:10px}}
+/* Workbench refresh: one ink ramp, one accent, a readable type scale (nothing under 10px on a
+   desktop), and quieter chrome, so the model is the brightest thing on screen. These rules come
+   last and override the original sizes and colours above; the narrow layout is re-tuned below. */
+:root{--ink:#14232b;--ink-2:#3d5059;--ink-3:#687b84;--ink-4:#91a1a8;--line:#e2e8eb;--line-strong:#d3dce0;--surface:#fff;--surface-2:#f6f8f9;--accent:#137567;--accent-strong:#0d5f53;--accent-soft:#e3f1ee;--shadow-sm:0 1px 2px #0f22290f;--shadow-md:0 8px 24px #0f222917;font-family:'Inter','Segoe UI Variable Text','Segoe UI','PingFang SC','Microsoft YaHei UI','Microsoft YaHei',system-ui,sans-serif;color:var(--ink);font-size:12.5px;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.topbar{background:#0f1a20;border-bottom:1px solid #1c2a31;gap:18px}
+.brand-mark{background:linear-gradient(145deg,#1f9582,#13544b);color:#eafff8;border-radius:8px;box-shadow:inset 0 1px 0 #ffffff2e,0 1px 2px #0006}
+.brand-copy strong{font-size:16px;font-weight:650;letter-spacing:-.01em}
+.brand-copy small{font-size:10px;color:#87a0a7}
+.header-divider{background:#27363e}
+.project-title input{font-size:13px;font-weight:550;color:#eef4f6}
+.saved-state{font-size:11px;color:#7c949c}
+.topbar .icon-button{width:32px;height:32px;border-radius:8px;color:#a5b8be}
+.topbar .icon-button:hover{background:#1c2b33;color:#fff}
+.topbar .button.subtle{background:transparent;border-color:#2c3d45;color:#dde8eb}
+.topbar .button.subtle:hover{background:#18262d;border-color:#3a4d56}
+.topbar .button.primary{background:#2eb398;color:#052620}
+.topbar .button.primary:hover{background:#3ac3a7}
+.button{border-radius:8px;font-size:12px;font-weight:550}
+.button.primary{background:var(--accent);color:#fff}
+.button.primary:hover{background:var(--accent-strong)}
+.button.subtle{border-color:var(--line-strong);color:var(--ink-2)}
+.icon-button{border-radius:7px;color:var(--ink-3)}
+.icon-button:hover{background:#edf1f3;color:var(--ink)}
+.icon-button.active{background:var(--accent-soft);color:var(--accent)}
+.library,.inspector,.workspace-toolbar,.monitor,.statusbar{background:var(--surface)}
+.panel-title{font-size:13px;font-weight:650;color:var(--ink)}
+.tiny-badge{font-size:11px;line-height:20px;background:#eef2f4;color:var(--ink-3);border-radius:6px}
+.preset-selector{border-radius:8px;border-color:var(--line-strong);background:var(--surface-2);color:var(--ink-3)}
+.preset-selector select{font-size:12px;color:var(--ink-2)}
+.layer-group h3{font-size:11px;font-weight:600;color:var(--ink-4);letter-spacing:.02em;margin:18px 6px 6px}
+.layer-option{border-radius:9px;min-height:46px;padding:6px 8px;gap:10px}
+.layer-option:hover{background:var(--surface-2);border-color:var(--line)}
+.layer-symbol{width:28px;height:28px;border-radius:8px}
+.layer-option strong{font-size:12px;font-weight:600;color:var(--ink)}
+.layer-option small{font-size:10.5px;line-height:15px;color:var(--ink-3);overflow-wrap:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+/* Room for the larger type between the narrow (176px) and wide (230px) breakpoints above. */
+@media(min-width:1181px) and (max-width:1599px){.library{width:226px;min-width:226px}}
+/* An operator name is one word; it ellipsizes rather than breaking mid-word. */
+.layer-option strong{overflow-wrap:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.library-footer{font-size:11px;color:var(--ink-3)}
+.main-workspace{background:#edf1f3}
+.view-tabs button{font-size:12.5px;font-weight:500;color:var(--ink-3)}
+.view-tabs button.active{color:var(--ink);border-color:var(--accent);font-weight:600}
+.scene-heading .eyebrow{font-size:10px;letter-spacing:.08em;color:var(--ink-4)}
+.scene-heading h1{font-size:26px;font-weight:650;letter-spacing:-.02em;color:var(--ink);margin:4px 0 8px}
+.architecture-meta{font-size:11.5px;color:var(--ink-3)}
+.validation-badge{font-size:11px;border-radius:999px;padding:5px 11px;box-shadow:var(--shadow-sm)}
+.scene-legend{gap:8px 14px;max-width:260px}
+.scene-legend span{font-size:11px;color:var(--ink-3)}
+.scene-legend i{width:8px;height:8px;border-radius:3px}
+.flow-controls{height:42px;padding:0 8px;border-radius:12px;border-color:var(--line);background:#ffffffeb;box-shadow:var(--shadow-md);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.flow-direction button{font-size:11.5px;border-radius:7px;padding:5px 8px;color:var(--ink-3)}
+.flow-direction button.active{background:var(--accent-soft);color:var(--accent)}
+.flow-controls select{font-size:11.5px;color:var(--ink-2)}
+.flow-label{font-size:11px;color:var(--ink-4)}
+.gpu-badge{font-size:10.5px;color:var(--ink-4)}
+.monitor-title h2{font-size:13px;font-weight:650;color:var(--ink)}
+.source-badge{font-size:10.5px;line-height:20px;border-radius:6px;padding:0 7px}
+.monitor-summary{font-size:11.5px;color:var(--ink-3)}
+.monitor-actions select{font-size:11.5px;color:var(--ink-3)}
+.monitor .button{font-size:11.5px;min-height:29px;padding:4px 10px}
+.chart-legend{font-size:11px;color:var(--ink-3)}
+.chart-legend .train-status{font-size:11px;color:var(--ink-3)}
+.metric-grid>div>span{font-size:11px;color:var(--ink-3)}
+.metric-grid strong{font-weight:600;color:var(--ink)}
+.inspector-tabs button{font-size:12.5px;color:var(--ink-3)}
+.inspector-tabs button.active{color:var(--ink);border-color:var(--accent)}
+.selected-layer h2{font-size:17px;font-weight:650;color:var(--ink)}
+.selected-layer .eyebrow{font-size:9.5px;letter-spacing:.08em;color:var(--ink-4)}
+.field-label{font-size:11.5px;color:var(--ink-3)}
+.field-label input,.field-label select{font-size:12.5px;border-radius:8px;border-color:var(--line-strong);color:var(--ink)}
+.field-label input:focus,.field-label select:focus,.parameter-field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #1375671f}
+.inspector-section h3{font-size:12px;font-weight:650;color:var(--ink-2)}
+.inspector-section h3 span{font-size:10.5px;color:var(--ink-4)}
+.tensor-box{border-radius:9px;background:var(--surface-2);border-color:var(--line)}
+.tensor-box>span{font-size:10.5px;color:var(--ink-4)}
+.tensor-box code{font-size:12px;color:var(--ink-2);font-family:'Cascadia Mono',Consolas,monospace}
+.parameter-field{font-size:11.5px;color:var(--ink-2)}
+.parameter-field input{font-size:12px;border-radius:7px;border-color:var(--line-strong);color:var(--ink);background:#fff}
+.stat-row{font-size:11.5px;color:var(--ink-3)}
+.stat-row strong{font-size:11.5px;color:var(--ink-2)}
+.muted-text,.connection-row{font-size:11.5px}
+.model-summary span{font-size:10.5px;color:var(--ink-4)}
+.model-summary strong{font-size:19px;font-weight:600;color:var(--ink)}
+.empty-inspector{font-size:12px;color:var(--ink-4)}
+.diagnostic-item{border-radius:9px;font-size:11px}
+.diagnostic-item strong{font-size:10.5px}
+.diagnostic-item p{font-size:11px}
+.statusbar{font-size:10.5px;color:var(--ink-3)}
+.modal{border-radius:14px;border-color:var(--line);box-shadow:0 28px 80px #0f22293d}
+.modal-heading h2{font-size:20px;font-weight:650;color:var(--ink)}
+.code-preview{border-radius:9px;font-size:12px;font-family:'Cascadia Mono',Consolas,monospace}
+.flow-layer{border-radius:9px;box-shadow:var(--shadow-sm)}
+.flow-layer strong{font-size:12.5px;font-weight:600;color:var(--ink)}
+.node-op{font-size:10.5px;color:var(--ink-3)}
+.flow-layer code{font-size:11px;color:var(--ink-3)}
+@media(max-width:700px){.topbar{gap:8px}.topbar .icon-button,.header-actions>.icon-button{width:25px;height:28px}.brand-copy strong{font-size:14px}.brand-copy small{font-size:8px}.view-tabs button{font-size:11px}.scene-heading h1{font-size:20px;margin:4px 0 6px}.architecture-meta{font-size:9.5px}.scene-legend span{font-size:9.5px}.flow-controls{height:38px}.flow-direction button,.flow-controls select{font-size:10.5px}.flow-label{font-size:9.5px}.monitor-title h2{font-size:11px}.monitor-actions select{font-size:9.5px;max-width:78px}.monitor .button{font-size:9.5px;padding:3px 6px}.layer-option small{font-size:9.5px}.selected-layer h2{font-size:15px}.inspector-tabs button{font-size:11.5px}.statusbar{font-size:9px}}
