@@ -8,6 +8,16 @@ test('3D rendering, GPU motion, diagnostics, editing, exports and real training'
   await expect(page.locator('canvas')).toBeVisible();
   await expect(page.locator('.gpu-badge')).toContainText('WebGL');
   await expect(page.locator('.statusbar')).toContainText('PyTorch');
+  // With nothing to show yet, the monitor is folded to its header and the scene has the room.
+  // The scene's container follows the layout at once; the canvas itself is resized a moment later.
+  const sceneHeight = async () => (await page.locator('.scene-workspace').boundingBox())!.height;
+  await expect(page.locator('#monitor-body')).toBeHidden();
+  await page.getByRole('button', { name: '展开训练监控', exact: true }).click();
+  await expect(page.locator('#monitor-body')).toBeVisible();
+  const open = await sceneHeight();
+  await page.getByRole('button', { name: '收起训练监控', exact: true }).click();
+  await expect(page.locator('#monitor-body')).toBeHidden();
+  await expect.poll(sceneHeight).toBeGreaterThan(open + 100);
   const pixels = () => page.locator('canvas').evaluate(canvas => new Promise<{ width: number; height: number; colored: number; checksum: number }>(resolve => requestAnimationFrame(() => {
     const element = canvas as HTMLCanvasElement, gl = element.getContext('webgl2')!;
     const buffer = new Uint8Array(element.width * element.height * 4);
