@@ -35,6 +35,8 @@ describe('tensor blocks', () => {
     expect(shader.fragmentShader).toContain('diffuseColor.rgb = mix(diffuseColor.rgb, uLine');
     expect(shader.uniforms.uCells).toBe(uniforms.uCells);
     expect(shader.fragmentShader).toContain('texelFetch(uMap');
-    expect(material.customProgramCacheKey()).toBe('tensor-block-2');
+    // The studio shading darkens a face toward the block's foot, except where measured values are painted.
+    expect(shader.fragmentShader).toContain('smoothstep(0.0, 0.85, tensorCoord.y)');
+    expect(material.customProgramCacheKey()).toBe('tensor-block-3');
   });
 });
