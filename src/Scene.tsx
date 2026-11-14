@@ -139,6 +139,27 @@ function anatomyOf(node: Layer, dims: [number, number, number], color: string, o
   return null;
 }
 
+/**
+ * Latent attention and MoE layers past which a model draws each one's parts only where they can be
+ * read: zoomed in and in view, or selected. DeepSeek-V3's 119 drew twelve thousand parts at once and
+ * ran at a dozen frames a second. A model with fewer always draws them.
+ */
+const ANATOMY_BUDGET = 16;
+const viewFrustum = new THREE.Frustum(), viewProjection = new THREE.Matrix4(), viewSphere = new THREE.Sphere();
+
+/** Whether `group`, within `radius` of its origin, is in the camera's view; checked every few frames while `enabled`. */
+function useInView(group: RefObject<THREE.Group | null>, radius: number, enabled: boolean) {
+  const [inView, setInView] = useState(false), frame = useRef(0);
+  useFrame(({ camera }) => {
+    if (!enabled || !group.current || frame.current++ % 6) return;
+    viewFrustum.setFromProjectionMatrix(viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    group.current.getWorldPosition(viewSphere.center); viewSphere.radius = radius;
+    const next = viewFrustum.intersectsSphere(viewSphere);
+    setInView(current => current === next ? current : next);
+  });
+  return inView;
+}
+
 const MERGE_SYMBOLS: Record<string, string> = { Add: '+', Multiply: '×', Divide: '÷' };
 const MERGE_SYMBOL_POSITION = new THREE.Vector3(0, 0.44, 0);
 
@@ -146,17 +167,20 @@ const MERGE_SYMBOL_POSITION = new THREE.Vector3(0, 0.44, 0);
  * A layer other than an attention module, as its tensor: a solid, matte block (a translucent one
  * blended with whatever stood behind it and muddied both colours), or its parts for latent
  * attention and MoE. A merge's small cube stands for the operation, not a tensor, so it has no
- * grid and carries its symbol instead.
+ * grid and carries its symbol instead. In a `crowded` model, latent attention and MoE draw their
+ * parts only when `selected`, or when `near` and in view; otherwise each is its tensor block.
  */
-function LayerBody({ node, dims, color, glow, outline, output, paint, load, showLabels }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; output?: number[]; paint: BlockPaint | null; load?: number[]; showLabels: boolean }) {
-  const anatomy = useMemo(() => anatomyOf(node, dims, color, output, load), [node, dims, color, output, load]);
-  if (anatomy) return <AnatomyBlock anatomy={anatomy} color={color} glow={glow} paint={paint} outline={outline} showLabels={showLabels} />;
+function LayerBody({ node, dims, color, glow, outline, output, paint, load, showLabels, crowded, near, selected }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; output?: number[]; paint: BlockPaint | null; load?: number[]; showLabels: boolean; crowded: boolean; near: boolean; selected: boolean }) {
+  const group = useRef<THREE.Group>(null), parts = node.op === 'LatentAttention' || node.op === 'MoE';
+  const inView = useInView(group, Math.hypot(...dims) / 2, parts && crowded && near && !selected);
+  const detailed = !crowded || selected || near && inView;
+  const anatomy = useMemo(() => detailed ? anatomyOf(node, dims, color, output, load) : null, [detailed, node, dims, color, output, load]);
   const symbol = MERGE_SYMBOLS[node.op];
-  return <>
+  return <group ref={group}>{anatomy ? <AnatomyBlock anatomy={anatomy} color={color} glow={glow} paint={paint} outline={outline} showLabels={showLabels} /> : <>
     <TensorBlock dims={dims} color={color} glow={glow} cells={symbol ? [1, 1, 1] : tensorCells(output)} paint={paint} />
     <NodeOutline dims={dims} color={outline} />
     {symbol && <SceneText text={symbol} position={MERGE_SYMBOL_POSITION} color={color} scale={0.38} />}
-  </>;
+  </>}</group>;
 }
 
 
@@ -380,6 +404,7 @@ function World(props: Props) {
   // Every layer's position, size and ports, the routes between them and the bounds, worked out once.
   const model = useMemo(() => sceneLayout(props.graph, props.analysis, props.expanded), [props.graph, props.analysis, props.expanded]);
   const detail = useDetailTier(model.pitch);
+  const crowded = useMemo(() => props.graph.nodes.filter(node => node.op === 'LatentAttention' || node.op === 'MoE').length > ANATOMY_BUDGET, [props.graph.nodes]);
   // Keep label roots in one DOM container when the canvas event target changes.
   const labelPortal = useMemo(() => ({ current: gl.domElement.parentElement! }), [gl]);
   const controls = useRef<any>(null);
@@ -495,7 +520,7 @@ function World(props: Props) {
       const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} positions={props.analysis.layers[n.id]?.output.at(-2)} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
-          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} showLabels={selected || hover === n.id} />}
+          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} showLabels={selected || hover === n.id} crowded={crowded} near={detail === 'near'} selected={selected} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint
             read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow
             cast that far down would land on the band below, so only the lowest band casts them. */}

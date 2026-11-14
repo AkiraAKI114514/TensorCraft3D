@@ -1,6 +1,7 @@
 export const diagnosticEnglish: Record<string, string> = {
   '不是有效的 TensorCraft3D v1 项目': 'Not a valid TensorCraft3D v1 project',
   '项目超过限制（128 层 / 512 连线）': 'Project exceeds the limits (128 layers / 512 connections)',
+  '仅结构模型超过限制（512 层 / 1024 连线）': 'Structure-only model exceeds the limits (512 layers / 1024 connections)',
   'structureOnly 只能是 true 或省略': 'structureOnly must be true or absent',
   '仅结构：这个模型超出本地工作台的运行上限，只显示结构、形状和参数量，不能训练、推理、观测或导出可运行代码': 'Structure only: this model is past what this workbench can run; it shows its structure, shapes and parameter counts, and cannot be trained, run, observed or exported as runnable code',
   '节点数据或 ID 无效': 'Node data or ID is invalid',

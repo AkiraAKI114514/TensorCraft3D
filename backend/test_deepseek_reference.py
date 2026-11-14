@@ -130,23 +130,27 @@ class DeepSeekReferenceTests(unittest.TestCase):
         graph = result["graph"]
         self.assertIsNotNone(graph, result["diagnostics"])
         self.assertIs(graph["structureOnly"], True)
-        # 61 layers fold into two repeated blocks, so the top level is eight nodes.
-        self.assertEqual([(node["op"], node.get("repeat")) for node in graph["nodes"]],
-                         [("Input", None), ("Embedding", None), ("Group", 3), ("Group", 58), ("RMSNorm", None), ("Select", None), ("Linear", None), ("Output", None)])
-        dense, routed = graph["subgraphs"]["dense_layers"], graph["subgraphs"]["moe_layers"]
-        self.assertEqual([node["op"] for node in dense["nodes"]], ["Identity", "RMSNorm", "LatentAttention", "Add", "RMSNorm", "Linear", "Linear", "SiLU", "Multiply", "Linear", "Add"])
-        self.assertEqual([node["op"] for node in routed["nodes"]], ["Identity", "RMSNorm", "LatentAttention", "Add", "RMSNorm", "MoE", "Add"])
-        self.assertEqual({dense["origin"], routed["origin"]}, {"manual"})
-        # Each block's residuals read the Identity that stands for its input.
-        self.assertEqual(sorted(edge["source"] for edge in routed["edges"] if edge["target"] in ("n3", "n6")), ["n0", "n2", "n3", "n5"])
-        attention, experts = routed["nodes"][2]["params"], routed["nodes"][5]["params"]
+        # All 61 layers, flat in one graph past the 128-node budget of a runnable one: three dense
+        # SwiGLU layers of ten nodes, then 58 MoE layers of six.
+        ops = [node["op"] for node in graph["nodes"]]
+        self.assertNotIn("subgraphs", graph)
+        self.assertEqual((len(ops), len(graph["edges"])), (384, 508))
+        self.assertEqual(ops[:2] + ops[-4:], ["Input", "Embedding", "RMSNorm", "Select", "Linear", "Output"])
+        self.assertEqual(ops[2:12], ["RMSNorm", "LatentAttention", "Add", "RMSNorm", "Linear", "Linear", "SiLU", "Multiply", "Linear", "Add"])
+        self.assertEqual(ops[32:38], ["RMSNorm", "LatentAttention", "Add", "RMSNorm", "MoE", "Add"])
+        self.assertEqual((ops.count("LatentAttention"), ops.count("MoE")), (61, 58))
+        names = {node["id"]: node["name"] for node in graph["nodes"]}
+        self.assertEqual([names[graph["nodes"][index]["id"]] for index in (3, 378)], ["layers.0.attn", "layers.60.ffn"])
+        # Each layer's residuals read the stream entering it: layer 3's attention residual adds layer 2's output.
+        self.assertEqual(sorted(edge["source"] for edge in graph["edges"] if edge["target"] == graph["nodes"][34]["id"]), sorted([graph["nodes"][31]["id"], graph["nodes"][33]["id"]]))
+        attention, experts = graph["nodes"][33]["params"], graph["nodes"][36]["params"]
         self.assertEqual((attention["num_heads"], attention["q_lora_rank"], attention["kv_lora_rank"], attention["qk_nope_head_dim"], attention["qk_rope_head_dim"]), (128, 1536, 512, 128, 64))
         self.assertEqual((experts["experts"], experts["top_k"], experts["shared_experts"], experts["groups"], experts["topk_groups"], experts["route_scale"], experts["gate_bias"]), (256, 8, 1, 8, 4, 2.5, 1))
-        self.assertEqual(graph["nodes"][6]["params"]["out_features"], 129280)
+        self.assertEqual(graph["nodes"][-2]["params"]["out_features"], 129280)
         _, parameters = deepseek_reference.size({**FULL, "max_seq_len": 16384, "original_seq_len": 4096}, latent_attention_parameters, moe_parameters)
         self.assertEqual(parameters, 671_026_404_352)
         note = next(d["message"] for d in result["diagnostics"] if d["code"] == "DEEPSEEK_STRUCTURE_ONLY")
-        for fragment in ("671.0B", "3 个稠密层和 58 个 MoE 层", "FP8", "YaRN"): self.assertIn(fragment, note)
+        for fragment in ("671.0B", "3 个稠密层和 58 个 MoE 层全部展开", "FP8", "YaRN"): self.assertIn(fragment, note)
         # The workbench analyses exactly this graph (src/structureOnly.test.ts).
         self.assertEqual(graph, json.loads(STRUCTURE.read_text(encoding="utf-8")))
 
@@ -161,6 +165,10 @@ class DeepSeekReferenceTests(unittest.TestCase):
         self.assertIsNone(result["graph"])
         self.assertEqual(result["diagnostics"][0]["code"], "LIMIT")
         self.assertIn("超出仅结构显示的上限", result["diagnostics"][0]["message"])
+        # Past the structure-only node budget, too: 93 layers are 576 nodes.
+        result = import_pytorch(full_config(n_layers=93), "Transformer", {"tokens": [1, 16]})
+        self.assertIsNone(result["graph"])
+        self.assertIn("超出仅结构显示的 512 个节点", result["diagnostics"][0]["message"])
 
     def test_the_full_width_gate_keeps_its_bias(self):
         emitted = []

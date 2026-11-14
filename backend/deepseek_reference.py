@@ -12,8 +12,9 @@ the current sequence, so it equals the cache-free computation the graph runs, in
 the reference's attention implementations ("naive" and "absorb") compute the same function.
 
 A configuration past the workbench's local limits (the full 671B model, say) is imported for its
-structure alone: its dense and MoE layers become two repeated blocks, the graph is marked
-`structureOnly`, and FP8 weights or YaRN, which only a run would need, are noted rather than refused.
+structure alone: every layer is laid out in one flat graph, past the node budget of a runnable one,
+the graph is marked `structureOnly`, and FP8 weights or YaRN, which only a run would need, are noted
+rather than refused.
 """
 import ast
 import copy
@@ -53,7 +54,9 @@ _LOCAL = {"dim": 4096, "n_heads": 16, "q_lora_rank": 4096, "kv_lora_rank": 4096,
 # Bounds of a structure-only import, matching STRUCTURE_MAX in src/analysis.ts.
 _STRUCTURE = {"dim": 65536, "n_heads": 1024, "q_lora_rank": 65536, "kv_lora_rank": 65536, "qk_nope_head_dim": 4096, "qk_rope_head_dim": 4096, "v_head_dim": 4096,
               "n_routed_experts": 1024, "n_activated_experts": 64, "n_shared_experts": 16, "moe_inter_dim": 262144, "inter_dim": 262144, "vocab_size": 1_000_000}
-_MAX_REPEAT = 1024
+# A structure-only graph is never run, so it may hold every layer of a full configuration in one
+# view (DeepSeek-V3's 61 layers are 384 nodes and 508 edges); matches STRUCTURE_LIMITS in src/analysis.ts.
+STRUCTURE_NODES, STRUCTURE_EDGES = 512, 1024
 
 
 class ReferenceIssue(ValueError):
@@ -141,10 +144,17 @@ def run_issues(config):
     return issues
 
 
+def _node_count(config):
+    """Nodes of the flat graph a configuration builds: tokens and embedding, ten per dense layer, six
+    per MoE layer, then the final norm, the last position, the head and the output."""
+    dense = min(config["n_dense_layers"], config["n_layers"])
+    return 2 + dense * 10 + (config["n_layers"] - dense) * 6 + 4
+
+
 def size(config, latent_parameters, moe_parameters):
     """Nodes of the flat graph and parameters of the model a configuration builds."""
     dim, layers, dense = config["dim"], config["n_layers"], min(config["n_dense_layers"], config["n_layers"])
-    nodes = 2 + dense * 10 + (layers - dense) * 6 + 4
+    nodes = _node_count(config)
     attention = latent_parameters(dim, config["n_heads"], config["q_lora_rank"], config["kv_lora_rank"], config["qk_nope_head_dim"], config["qk_rope_head_dim"], config["v_head_dim"])
     feed_forward = dense * 3 * dim * config["inter_dim"] + (layers - dense) * moe_parameters(dim, config["n_routed_experts"], config["n_shared_experts"], config["moe_inter_dim"])
     return nodes, 2 * config["vocab_size"] * dim + layers * (attention + 2 * dim) + feed_forward + dim
@@ -160,9 +170,9 @@ def check_structure(config, node):
     """Refuse a configuration even a structure-only view cannot hold."""
     for key, bound in _STRUCTURE.items():
         if config[key] > bound: raise ReferenceIssue(f"ModelArgs.{key} = {config[key]:,} 超出仅结构显示的上限 {bound:,}", node, "LIMIT")
-    dense = min(config["n_dense_layers"], config["n_layers"])
-    if dense > _MAX_REPEAT or config["n_layers"] - dense > _MAX_REPEAT:
-        raise ReferenceIssue(f"稠密层或 MoE 层超过 {_MAX_REPEAT} 层，折叠块放不下", node, "LIMIT")
+    nodes = _node_count(config)
+    if nodes > STRUCTURE_NODES:
+        raise ReferenceIssue(f"这组 ModelArgs 的 {config['n_layers']} 层展开后有 {nodes} 个节点，超出仅结构显示的 {STRUCTURE_NODES} 个节点", node, "LIMIT")
 
 
 def check_size(config, latent_parameters, moe_parameters, node):
@@ -179,27 +189,6 @@ def _layer_params(config):
     # The reference gives its gate a bias only at DeepSeek-V3's full width.
     experts = {"experts": config["n_routed_experts"], "top_k": config["n_activated_experts"], "shared_experts": config["n_shared_experts"], "expert_dim": config["moe_inter_dim"], "score_func": config["score_func"], "route_scale": config["route_scale"], "groups": config["n_expert_groups"], "topk_groups": config["n_limited_groups"], "gate_bias": int(dim == 7168)}
     return norm, attention, experts
-
-
-def emit_structure(config, add, block, tokens, node):
-    """The reference Transformer for its structure alone: the embedding, the dense layers folded into
-    one repeated block, the MoE layers into another, then the final norm, the last position and the
-    head. A block starts with an Identity standing for its input, which the attention's residual
-    reads, so the block has the single entry a folded block needs."""
-    dim, (norm, attention, experts) = config["dim"], _layer_params(config)
-    dense = min(config["n_dense_layers"], config["n_layers"]); routed = config["n_layers"] - dense
-    def layer(feed_forward):
-        body = [("Identity", {}, [], "层输入"), ("RMSNorm", norm, [0], "attn_norm"), ("LatentAttention", attention, [1], "attn"), ("Add", {}, [0, 2], "残差（attn）"), ("RMSNorm", norm, [3], "ffn_norm")]
-        body += feed_forward(len(body))
-        return body + [("Add", {}, [3, len(body) - 1], "残差（ffn）")]
-    swiglu = lambda at: [("Linear", {"out_features": config["inter_dim"], "bias": 0}, [at - 1], "ffn.w1"), ("Linear", {"out_features": config["inter_dim"], "bias": 0}, [at - 1], "ffn.w3"),
-                         ("SiLU", {}, [at], "ffn.silu"), ("Multiply", {}, [at + 2, at + 1], "ffn 门控"), ("Linear", {"out_features": dim, "bias": 0}, [at + 3], "ffn.w2")]
-    h = add("Embedding", {"num_embeddings": config["vocab_size"], "embedding_dim": dim}, [(tokens, None)], "embed", node)
-    if dense: h = block("dense_layers", f"layers.0–{dense - 1} · 稠密 SwiGLU", layer(swiglu), dense, h, node)
-    if routed: h = block("moe_layers", f"layers.{dense}–{config['n_layers'] - 1} · MoE", layer(lambda at: [("MoE", experts, [at - 1], "ffn")]), routed, h, node)
-    h = add("RMSNorm", norm, [(h, None)], "norm", node)
-    h = add("Select", {"dim": 1, "index": -1}, [(h, None)], "取最后位置", node)
-    return add("Linear", {"out_features": config["vocab_size"], "bias": 0}, [(h, None)], "head", node)
 
 
 def emit(config, add, tokens, node):

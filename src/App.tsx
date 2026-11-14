@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Boxes, Plus, Play, Pause, RotateCcw, RotateCw, Focus, Download, Upload, Camera, Code2, Network, Cuboid, ChevronDown, ChevronRight, ArrowLeft, ArrowRight, Trash2, X, Check, CircleAlert, TriangleAlert, Activity, Settings2, Maximize2, FileJson, CheckCircle2, Cpu, MoreHorizontal, Square, LoaderCircle, FolderOpen, Save, CircleHelp, Layers3, Grid3x3, Moon, Sun } from 'lucide-react';
 import type { Connection } from '@xyflow/react';
-import { analyze, analyzeLevel, diagnoseMetrics, formatNumber, shapeText, validateGraph } from './analysis';
+import { analyze, analyzeLevel, diagnoseMetrics, formatNumber, GRAPH_LIMITS, shapeText, STRUCTURE_LIMITS, validateGraph } from './analysis';
 import { COLORS, DEFAULTS, MAX_REPEAT, OPS, type Graph, type Op, type Metric, type TrainingConfig } from './types';
 import { PRESETS } from './presets';
 import { download, safeFilename } from './export';
@@ -169,7 +169,7 @@ export default function App() {
   };
   const addLayer = (op: Op, detached = false) => {
     if (training) return notify('训练期间请先停止训练再修改模型');
-    if (level.nodes.length >= 128) return notify('最多支持 128 层');
+    if (level.nodes.length >= (level.structureOnly ? STRUCTURE_LIMITS : GRAPH_LIMITS).nodes) return notify(level.structureOnly ? '仅结构模型最多支持 512 层' : '最多支持 128 层');
     const id = `n_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`, base = node && node.op !== 'Output' ? node : level.nodes.find(n => n.id === level.edges.find(e => e.target === level.nodes.find(n => n.op === 'Output')?.id)?.source);
     const layer = { id, name: `${op}_${level.nodes.filter(n => n.op === op).length + 1}`, op, params: structuredClone(DEFAULTS[op]), position: { x: (base?.position.x || 0) + 210, y: (base?.position.y || 100) + (detached ? 140 : 0) } };
     const edges = [...level.edges];
@@ -194,7 +194,7 @@ export default function App() {
     if (training) return notify('训练期间请先停止训练再修改模型');
     if (!c.source || !c.target) return notify('结构错误：请选择输入与输出对象');
     if (c.source === c.target) return notify('结构错误：模块不能连接自身');
-    if (level.edges.length >= 512) return notify('结构错误：最多支持 512 条连线');
+    if (level.edges.length >= (level.structureOnly ? STRUCTURE_LIMITS : GRAPH_LIMITS).edges) return notify(level.structureOnly ? '结构错误：仅结构模型最多支持 1024 条连线' : '结构错误：最多支持 512 条连线');
     const target = level.nodes.find(n => n.id === c.target)!;
     const targetPort = isProjectionPort(c.targetHandle ?? undefined) ? c.targetHandle! : isCrossAttention(target) ? (c.targetHandle === 'query' || c.targetHandle === 'context' ? c.targetHandle : level.edges.some(e => e.target === target.id && !isProjectionPort(e.targetPort) && crossInputRole(level, target, e.id) === 'query') ? 'context' : 'query') : undefined;
     const edge = { id: `e_${crypto.randomUUID()}`, source: c.source, target: c.target, ...(c.sourceHandle ? { sourcePort: c.sourceHandle } : {}), ...(targetPort ? { targetPort } : {}) };
