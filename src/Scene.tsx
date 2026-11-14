@@ -18,9 +18,10 @@ import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
 import { isProjectionPort } from './attentionConfig';
 import { flowCurve, isMerge, OVERVIEW_OFFSETS, sceneLayout, type SceneNode } from './sceneLayout';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
-import { blank, createTensorMaterial, floatTexture, majorGroup, NIGHT, tensorCells, type TensorUniforms } from './tensorBlock';
+import { NIGHT, tensorCells } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
-import { expertAnatomy, latentAnatomy, type Anatomy } from './layerAnatomy';
+import { expertAnatomy, latentAnatomy, type Anatomy, type AnatomyPolygon } from './layerAnatomy';
+import { edgeTone, NIGHT_SELECTED_OUTLINE, NodeOutline, paintedBlocks, SELECTED_OUTLINE, TensorBlock } from './TensorBlockMesh';
 import { receptiveField, WINDOW_OPS, type Field } from './receptiveField';
 import { tensorNumber } from './inferenceTypes';
 import type { ImageExportOptions } from './imageLayout';
@@ -85,45 +86,6 @@ function fitCamera(camera: THREE.OrthographicCamera, bounds: THREE.Box3, width: 
   camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
 }
 
-// 盒子轮廓的边几何体必须缓存：写在 JSX 里的 new THREE.BoxGeometry(...dims) 会在每次渲染时
-// 重新分配并重算 EdgesGeometry，节点一多就是每帧的分配风暴。
-/** The outline of the selected layer, dark by day and luminous at night; any other outline is a faint tone of its own block. */
-const SELECTED_OUTLINE = '#1d3943', NIGHT_SELECTED_OUTLINE = '#9cecff';
-function NodeOutline({ dims, color }: { dims: [number, number, number]; color: string }) {
-  const night = useSceneLook() === 'night';
-  const geometry = useMemo(() => new THREE.EdgesGeometry(new THREE.BoxGeometry(dims[0], dims[1], dims[2])), [dims[0], dims[1], dims[2]]);
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  // Dark, opaque edges on every block drew the model like a cartoon; shading separates the faces
-  // by day, and at night the faces' own glowing borders do.
-  const selected = color === SELECTED_OUTLINE || color === NIGHT_SELECTED_OUTLINE;
-  return <lineSegments raycast={() => {}} geometry={geometry} userData={{ dayMaterial: { color: selected ? SELECTED_OUTLINE : color, opacity: selected ? 0.95 : 0.38 } }}><lineBasicMaterial color={color} transparent opacity={selected ? 0.95 : night ? 0.16 : 0.38} /></lineSegments>;
-}
-
-/** The block's own hue, darker: edges that read as the block's, not as a second colour. */
-const edgeTone = (color: string) => `#${new THREE.Color(color).multiplyScalar(0.62).getHexString()}`;
-
-/**
- * A layer drawn as the tensor it outputs: a solid block whose faces carry that tensor's cell
- * grid, so channels, rows and columns are counted on the block instead of implied by its size.
- * The footprint is unchanged, which keeps the layout, routes and image export where they were.
- */
-function TensorBlock({ dims, color, glow, cells, paint }: { dims: [number, number, number]; color: string; glow: number; cells: [number, number, number]; paint: BlockPaint | null }) {
-  const block = useMemo(createTensorMaterial, []);
-  useEffect(() => { paintedBlocks.add(block.uniforms); return () => { paintedBlocks.delete(block.uniforms); block.material.dispose(); }; }, [block]);
-  const textures = useMemo(() => ({ map: paint?.map ? floatTexture(paint.map.values, paint.map.columns, paint.map.rows) : null, strip: paint?.strip ? floatTexture(paint.strip.values, paint.strip.count, 1) : null }), [paint]);
-  useEffect(() => () => { textures.map?.dispose(); textures.strip?.dispose(); }, [textures]);
-  block.material.color.set(color); block.material.emissive.set(color); block.material.emissiveIntensity = glow;
-  const u = block.uniforms;
-  u.uCells.value.set(...cells); u.uGroups.value.set(...cells.map(majorGroup) as [number, number, number]);
-  u.uHalf.value.set(dims[0] / 2, dims[1] / 2, dims[2] / 2); u.uLine.value.set(edgeTone(color));
-  u.uObserve.value = paint ? 1 : 0; u.uLimit.value = paint?.limit ?? 1;
-  u.uMap.value = textures.map ?? blank(); u.uStrip.value = textures.strip ?? blank();
-  if (paint?.map) { u.uMapSize.value.set(paint.map.columns, paint.map.rows); u.uMapTotal.value.set(paint.map.uTotal, paint.map.vTotal); u.uMapU.value.copy(AXES[paint.map.u]); u.uMapV.value.copy(AXES[paint.map.v]); }
-  else u.uMapSize.value.set(0, 0);
-  if (paint?.strip) { u.uStripAxis.value.copy(AXES[paint.strip.axis]); u.uStripRange.value.set(paint.strip.total, paint.strip.start, paint.strip.count); }
-  else u.uStripRange.value.set(1, 0, 0);
-  return <mesh userData={{ exportMesh: true, exportShade: true, exportCells: cells }} material={block.material}><boxGeometry args={dims} /></mesh>;
-}
 
 /**
  * The inside of a latent attention or mixture-of-experts layer (src/layerAnatomy.ts), in its own
@@ -132,6 +94,23 @@ function TensorBlock({ dims, color, glow, cells, paint }: { dims: [number, numbe
  * hovered, which is when the view is close enough to read them. Measured values paint the part
  * that stands for the layer's output.
  */
+/**
+ * A frosted polygon facing the flow, as on the attention module's heads: its corners are (y, z), so
+ * it is drawn in the x–y plane and turned to face along x. Decoration only, not clickable.
+ */
+function AnatomyPanel({ polygon }: { polygon: AnatomyPolygon }) {
+  const night = useSceneLook() === 'night';
+  const { fill, rim } = useMemo(() => {
+    const corners = polygon.corners.map(([y, z]) => new THREE.Vector2(-z, y));
+    return { fill: new THREE.ShapeGeometry(new THREE.Shape(corners)), rim: new THREE.BufferGeometry().setFromPoints(corners.map(corner => new THREE.Vector3(corner.x, corner.y, 0))) };
+  }, [polygon]);
+  useEffect(() => () => { fill.dispose(); rim.dispose(); }, [fill, rim]);
+  return <group position={[polygon.x, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
+    <mesh raycast={() => {}} geometry={fill} renderOrder={-1}><meshBasicMaterial color={polygon.color} transparent opacity={night ? 0.26 : 0.18} side={THREE.DoubleSide} depthWrite={false} /></mesh>
+    <lineLoop raycast={() => {}} geometry={rim}><lineBasicMaterial color={night ? tintOf(polygon.color, 0.55) : shadeOf(polygon.color, 0.7)} transparent opacity={0.9} /></lineLoop>
+  </group>;
+}
+
 function AnatomyBlock({ anatomy, color, glow, paint, outline, showLabels }: { anatomy: Anatomy; color: string; glow: number; paint: BlockPaint | null; outline: string; showLabels: boolean }) {
   const night = useSceneLook() === 'night';
   const links = useMemo(() => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(anatomy.links.flat(2), 3)), [anatomy]);
@@ -142,6 +121,7 @@ function AnatomyBlock({ anatomy, color, glow, paint, outline, showLabels }: { an
       <TensorBlock dims={part.size} color={part.color} glow={glow} cells={part.cells} paint={part.output ? paint : null} />
       <NodeOutline dims={part.size} color={part.output ? outline : edgeTone(part.color)} />
     </group>)}
+    {anatomy.polygons?.map(polygon => <AnatomyPanel key={polygon.key} polygon={polygon} />)}
     <lineSegments raycast={() => {}} geometry={links} userData={{ dayMaterial: { color: shadeOf(color, 0.62), opacity: 0.6 } }}><lineBasicMaterial color={linkColor} transparent opacity={night ? 0.85 : 0.6} /></lineSegments>
     {showLabels && anatomy.labels.map(label => <SceneText key={label.text} text={label.text} position={new THREE.Vector3(...label.position)} color={label.color} scale={0.2} />)}
   </>;
@@ -179,10 +159,6 @@ function LayerBody({ node, dims, color, glow, outline, output, paint, load, show
   </>;
 }
 
-const AXES = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
-// Every mounted block, so an image export can leave out measured values: an exported diagram
-// shows the architecture, not one sample's activations.
-const paintedBlocks = new Set<TensorUniforms>();
 
 const GROUND_Y = -0.09;
 /** The night stage: a deep blue backdrop that lifts behind the model, drawn as the scene background. */
@@ -518,7 +494,7 @@ function World(props: Props) {
       const color = issue ? '#e45555' : COLORS[n.op];
       const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
-        {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
+        {isAttention(n.op) ? <AttentionModule node={n} positions={props.analysis.layers[n.id]?.output.at(-2)} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
           : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} showLabels={selected || hover === n.id} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint
             read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow

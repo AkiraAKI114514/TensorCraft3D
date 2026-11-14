@@ -17,7 +17,12 @@ export interface AnatomyPart {
   output?: boolean;
 }
 export interface AnatomyLabel { text: string; position: Point3; color: string }
-export interface Anatomy { parts: AnatomyPart[]; links: [Point3, Point3][]; labels: AnatomyLabel[] }
+/**
+ * A frosted polygon facing the flow (in the y–z plane at `x`), its corners `corners` as (y, z): the
+ * panel attention heads share, as on the attention module's polygon faces.
+ */
+export interface AnatomyPolygon { key: string; x: number; corners: [number, number][]; color: string }
+export interface Anatomy { parts: AnatomyPart[]; links: [Point3, Point3][]; labels: AnatomyLabel[]; polygons?: AnatomyPolygon[] }
 
 /** Colours of the parts that are not the layer's own: the rotary key and RMSNorm. */
 export const ROPE_COLOR = '#e0a33a';
@@ -43,10 +48,11 @@ export interface LatentShape { embed: number; heads: number; qLora: number; kvLo
 /**
  * Multi-head latent attention, left to right:
  * - the input, then two lanes: Q is squeezed through its own latent c_Q (upper), and K and V
- *   share the latent c_KV (lower), next to the rotary key k_pe that every head shares; each latent
- *   is RMS-normalised;
- * - the heads, each split into the part that is not rotated and the RoPE part on top;
- * - one score matrix per head (positions × positions);
+ *   share the latent c_KV (lower); each latent is RMS-normalised;
+ * - the heads on a ring, the corners of a frosted polygon facing the flow as on the attention
+ *   module's heads, each split into the part that is not rotated and the RoPE part on top; at the
+ *   hub the rotary key k_pe, which every head shares, with a spoke to each head;
+ * - the score matrices (positions × positions) on a second, smaller ring behind;
  * - the output, after the heads are concatenated and projected.
  * Latent heights follow the square root of their rank over the embedding width, so the squeeze shows.
  */
@@ -59,7 +65,6 @@ export function latentAnatomy([width, height, depth]: Point3, color: string, sha
   const latentHeight = (rank: number) => lane * 0.9 * clamp(Math.sqrt(rank / Math.max(1, shape.embed)), 0.15, 1);
   const query: AnatomyPart | null = shape.qLora ? { key: 'q-latent', center: [x(0.24), lane / 2, 0], size: [latentWidth, latentHeight(shape.qLora), latentDepth], color: tint(color, 0.12), cells: tensorCells([1, S, shape.qLora]) } : null;
   const kv: AnatomyPart = { key: 'kv-latent', center: [x(0.24), -lane / 2, 0], size: [latentWidth, latentHeight(shape.kvLora), latentDepth], color: shade(color, 0.18), cells: tensorCells([1, S, shape.kvLora]) };
-  const ropeKey: AnatomyPart = { key: 'k-pe', center: [x(0.24), -lane / 2, depth / 2 - depth * 0.07], size: [latentWidth * 0.8, lane * 0.9 * clamp(shape.rope / Math.max(1, shape.embed), 0.12, 0.45), depth * 0.12], color: ROPE_COLOR, cells: tensorCells([1, S, shape.rope]) };
   const norm = (of: AnatomyPart, key: string): AnatomyPart => ({ key, center: [of.center[0] + latentWidth / 2 + width * 0.035, of.center[1], 0], size: [width * 0.02, of.size[1], latentDepth], color: NORM_COLOR, cells: [1, 1, 1] });
   const kvNorm = norm(kv, 'kv-norm');
   if (query) {
@@ -68,32 +73,47 @@ export function latentAnatomy([width, height, depth]: Point3, color: string, sha
     links.push(link(input, query), link(query, qNorm));
     labels.push({ text: 'c_Q', position: [query.center[0], query.center[1] + query.size[1] / 2 + 0.16, 0], color });
   }
-  parts.push(kv, ropeKey, kvNorm);
+  parts.push(kv, kvNorm);
   links.push(link(input, kv), link(kv, kvNorm));
-  labels.push({ text: 'c_KV', position: [kv.center[0], kv.center[1] - kv.size[1] / 2 - 0.16, 0], color }, { text: 'k_pe · RoPE', position: [ropeKey.center[0], ropeKey.center[1] + ropeKey.size[1] / 2 + 0.14, ropeKey.center[2]], color: ROPE_COLOR });
-  // One slab per head along the depth, the RoPE part on top in its own colour.
-  const drawn = Math.max(1, Math.min(MAX_DRAWN_HEADS, shape.heads)), pitch = depth * 0.92 / drawn, slab = Math.min(pitch * 0.62, 0.16);
-  const headX = x(0.55), headWidth = width * 0.045, headHeight = height * 0.9, ropeShare = clamp(shape.rope / Math.max(1, shape.nope + shape.rope), 0.1, 0.6);
-  const scoreX = x(0.75), score = Math.min(height * 0.42, pitch * 0.9);
+  labels.push({ text: 'c_KV', position: [kv.center[0], kv.center[1] - kv.size[1] / 2 - 0.16, 0], color });
+  // The heads on a ring facing the flow, the first at the top; k_pe at the hub.
+  const drawn = Math.max(1, Math.min(MAX_DRAWN_HEADS, shape.heads)), radius = Math.min(height, depth) * 0.36;
+  const headX = x(0.55), headWidth = width * 0.045, ropeShare = clamp(shape.rope / Math.max(1, shape.nope + shape.rope), 0.1, 0.6);
+  const tile = Math.min(0.3, drawn > 1 ? 2 * Math.PI * radius / drawn * 0.5 : 0.3), ring = (head: number, scale = 1): [number, number] => {
+    const angle = Math.PI / 2 + 2 * Math.PI * head / drawn;
+    return drawn > 1 ? [Math.sin(angle) * radius * scale, Math.cos(angle) * radius * scale] : [0, 0];
+  };
+  const hub = Math.max(0.08, radius * 0.3);
+  const ropeKey: AnatomyPart = { key: 'k-pe', center: [headX, 0, 0], size: [headWidth * 0.9, hub, hub], color: ROPE_COLOR, cells: tensorCells([1, S, shape.rope]) };
+  if (drawn > 1) parts.push(ropeKey);
+  const scoreX = x(0.76), plate = Math.min(tile * 0.95, 0.26);
   for (let head = 0; head < drawn; head++) {
-    const z = -depth * 0.46 + pitch * (head + 0.5);
-    const nopeHeight = headHeight * (1 - ropeShare), ropeHeight = headHeight * ropeShare;
-    parts.push({ key: `head-${head}`, center: [headX, -headHeight / 2 + nopeHeight / 2, z], size: [headWidth, nopeHeight, slab], color: tint(color, 0.18), cells: tensorCells([1, shape.nope]) });
-    parts.push({ key: `head-rope-${head}`, center: [headX, headHeight / 2 - ropeHeight / 2, z], size: [headWidth, ropeHeight, slab], color: ROPE_COLOR, cells: tensorCells([1, shape.rope]) });
-    parts.push({ key: `scores-${head}`, center: [scoreX, 0, z], size: [width * 0.015, score, Math.min(score, slab * 1.6)], color: shade(color, 0.3), cells: tensorCells([1, S, S]) });
+    const [y, z] = ring(head), [scoreY, scoreZ] = ring(head, 0.88);
+    const nopeHeight = tile * (1 - ropeShare), ropeHeight = tile * ropeShare;
+    parts.push({ key: `head-${head}`, center: [headX, y - tile / 2 + nopeHeight / 2, z], size: [headWidth, nopeHeight, tile * 0.55], color: tint(color, 0.18), cells: tensorCells([1, shape.nope]) });
+    parts.push({ key: `head-rope-${head}`, center: [headX, y + tile / 2 - ropeHeight / 2, z], size: [headWidth, ropeHeight, tile * 0.55], color: ROPE_COLOR, cells: tensorCells([1, shape.rope]) });
+    parts.push({ key: `scores-${head}`, center: [scoreX, scoreY, scoreZ], size: [width * 0.015, plate, plate], color: shade(color, 0.3), cells: tensorCells([1, S, S]) });
+    // A spoke from the shared rotary key to the head, and the head on to its score matrix.
+    if (drawn > 1) links.push([[headX, 0, 0], [headX, y, z]]);
+    links.push([[headX + headWidth / 2, y, z], [scoreX - width * 0.0075, scoreY, scoreZ]]);
   }
+  if (drawn === 1) parts.push({ ...ropeKey, center: [headX, -tile / 2 - hub, 0] });
   const output: AnatomyPart = { key: 'output', center: [x(0.93), 0, 0], size: [width * 0.14, height, depth], color, cells: tensorCells([1, S, shape.embed]), output: true };
   parts.push(output);
-  const heads: AnatomyPart = { key: 'heads', center: [headX, 0, 0], size: [headWidth, headHeight, depth], color, cells: [1, 1, 1] };
-  const scores: AnatomyPart = { key: 'scores', center: [scoreX, 0, 0], size: [width * 0.015, score, depth], color, cells: [1, 1, 1] };
-  if (query) links.push(link(parts.find(part => part.key === 'q-norm')!, heads, lane / 2, headHeight / 4));
-  links.push(link(kvNorm, heads, -lane / 2, -headHeight / 4), link(ropeKey, heads, ropeKey.center[1], headHeight / 2 - headHeight * ropeShare / 2), link(heads, scores), link(scores, output));
+  const ringEdge: AnatomyPart = { key: 'ring', center: [headX, 0, 0], size: [headWidth, radius * 2, radius * 2], color, cells: [1, 1, 1] };
+  const scoreRing: AnatomyPart = { key: 'score-ring', center: [scoreX, 0, 0], size: [width * 0.015, radius * 2, radius * 2], color, cells: [1, 1, 1] };
+  // c_Q reaches the heads from above, c_KV from below and through the hub's k_pe.
+  if (query) links.push(link(parts.find(part => part.key === 'q-norm')!, ringEdge, lane / 2, radius * 0.6));
+  links.push(link(kvNorm, ringEdge, -lane / 2, -radius * 0.6), link(kvNorm, ropeKey, -lane / 2, 0), link(scoreRing, output));
+  const corners = (scale: number) => Array.from({ length: drawn }, (_, head) => ring(head, scale));
+  const polygons: AnatomyPolygon[] = drawn > 2 ? [{ key: 'heads', x: headX, corners: corners(1), color }, { key: 'scores', x: scoreX, corners: corners(0.88), color: shade(color, 0.3) }] : [];
   labels.push(
-    { text: `${shape.heads} heads`, position: [headX, headHeight / 2 + 0.2, 0], color },
-    { text: 'softmax(QKᵀ)·V', position: [scoreX, score / 2 + 0.2, 0], color },
+    { text: `${shape.heads} heads`, position: [headX, radius + tile / 2 + 0.2, 0], color },
+    { text: 'k_pe · RoPE', position: [headX, -radius - tile / 2 - 0.18, 0], color: ROPE_COLOR },
+    { text: 'softmax(QKᵀ)·V', position: [scoreX, radius + plate / 2 + 0.2, 0], color },
     { text: 'Wᵒ', position: [output.center[0], height / 2 + 0.18, 0], color }
   );
-  return { parts, links, labels };
+  return { parts, links, labels, polygons };
 }
 
 /** At most this many expert cubes are drawn; past that, each cube stands for a run of experts. */

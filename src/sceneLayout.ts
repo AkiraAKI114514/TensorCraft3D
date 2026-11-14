@@ -41,7 +41,7 @@ export function blockDimensions(shape: number[] | undefined, op: string): Dims {
   // Latent attention and MoE draw their insides (src/layerAnatomy.ts): the two latents, the heads
   // and their scores; the router, the expert bank, the shared experts and the sum. They need room
   // in all three directions.
-  if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 2.4 : 2.6, Math.min(2.5, Math.max(1.8, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), op === 'MoE' ? 1.5 : 1.2];
+  if (op === 'LatentAttention' || op === 'MoE') return [op === 'MoE' ? 2.4 : 2.6, Math.min(2.5, Math.max(1.8, Math.log2((shape?.at(-1) ?? 64) + 1) * 0.25)), op === 'MoE' ? 1.5 : 1.6];
   if (!shape) return [0.5, 1, 1];
   if (shape.length === 4) return [Math.max(0.22, Math.log2(shape[1] + 1) * 0.15), Math.max(0.6, Math.log2(shape[2] + 1) * 0.38), Math.max(0.6, Math.log2(shape[3] + 1) * 0.38)];
   return [['ReLU', 'GELU', 'Dropout', 'Flatten', 'Unflatten'].includes(op) ? 0.18 : 0.55, Math.min(2.5, Math.max(0.65, Math.log2(shape.at(-1)! + 1) * 0.25)), 0.8];

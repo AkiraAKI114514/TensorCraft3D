@@ -35,6 +35,24 @@ describe('latent attention anatomy', () => {
     expect(height('kv-latent')).toBeLessThan(height('q-latent'));
   });
 
+  it('sets the heads on a ring around the rotary key they share, the corners of a polygon facing the flow', () => {
+    const anatomy = latentAnatomy(blockDimensions([1, 16, 7168], 'LatentAttention'), '#5470b4', fullLatent);
+    const hub = anatomy.parts.find(part => part.key === 'k-pe')!;
+    const heads = anatomy.parts.filter(part => /^head-\d/.test(part.key));
+    // A head's centre is its tile's centre; the tile spans its unrotated and RoPE parts.
+    const centre = (index: number) => {
+      const nope = heads[index], rope = anatomy.parts.find(part => part.key === `head-rope-${index}`)!;
+      return [(nope.center[1] - nope.size[1] / 2 + rope.center[1] + rope.size[1] / 2) / 2, nope.center[2]];
+    };
+    const distances = heads.map((_, index) => Math.hypot(centre(index)[0] - hub.center[1], centre(index)[1] - hub.center[2]));
+    distances.forEach(distance => expect(distance).toBeCloseTo(distances[0], 6));
+    expect(heads.every(head => head.center[0] === hub.center[0])).toBe(true);
+    const [ring, scores] = anatomy.polygons!;
+    expect([ring.key, ring.corners.length, scores.key, scores.corners.length]).toEqual(['heads', MAX_DRAWN_HEADS, 'scores', MAX_DRAWN_HEADS]);
+    // A spoke from the hub to every head.
+    expect(anatomy.links.filter(([from]) => from[0] === hub.center[0] && from[1] === 0 && from[2] === 0)).toHaveLength(MAX_DRAWN_HEADS);
+  });
+
   it('leaves out the query latent when queries come from one projection', () => {
     const keys = latentAnatomy(blockDimensions([1, 16, 128], 'LatentAttention'), '#5470b4', { ...templateLatent, qLora: 0 }).parts.map(part => part.key);
     expect(keys).not.toContain('q-latent');

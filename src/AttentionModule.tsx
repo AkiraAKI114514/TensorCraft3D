@@ -6,6 +6,8 @@ import { RESIDUAL_COLOR } from './flowGeometry';
 import { attentionLayout, HEAD_FACING, type AttentionRoute, type Point3 } from './attentionLayout';
 import type { Layer } from './types';
 import { useSceneLook } from './sceneTheme';
+import { edgeTone, NodeOutline, TensorBlock } from './TensorBlockMesh';
+import { gridCount } from './tensorBlock';
 export { isAttention, visualHeads } from './attentionLayout';
 
 /** A part's colour, darker, for text in it: pale parts (LN, residual) gave labels that barely read. */
@@ -32,29 +34,27 @@ export function SceneText({ text, position, color = '#516e79', scale = 0.24 }: {
   useEffect(() => () => texture.dispose(), [texture]);
   return <sprite raycast={() => {}} position={position} scale={[scale * 6.4, scale, 1]} userData={{ exportText: text, exportColor: color }}><spriteMaterial map={texture} transparent depthTest={false} /></sprite>;
 }
-const cubeEdges = new Map<number, THREE.EdgesGeometry>();
-/** One shared outline per cube size; the parts of every module reuse them. */
-function edgesOf(size: number) {
-  let edges = cubeEdges.get(size);
-  if (!edges) { edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(size, size, size)); cubeEdges.set(size, edges); }
-  return edges;
-}
+type Dims = [number, number, number];
+const cube = (size: number): Dims => [size, size, size];
 /**
- * One part of a module (a projection, a score, a port, LN, FFN, a residual add): a solid, matte
- * cube with a faint outline in its own colour, like the layer blocks, rather than a glassy speck.
- * A part only turns translucent while another head is focused.
+ * One part of a module, drawn as a small tensor block like the layer blocks and the parts of latent
+ * attention and MoE: `dims` is its shape (thin along the flow for a projection tile, a norm plate or
+ * a score matrix), `cells` the grid its faces carry. It shades by day, glows at night through the
+ * block shader, and keeps the export name and position the image export and click-centring use. A
+ * part only turns translucent while another head is focused.
  */
-function Cube({ point, color, label, labelOffset, part, size = 0.3, opacity = 1, onFocus }: { point: Point3; color: string; label?: string; labelOffset?: Point3; part?: string; size?: number; opacity?: number; onFocus?: (center: THREE.Vector3) => void }) {
-  const night = useSceneLook() === 'night';
-  // At night a part glows faintly in its own colour, enough for the bloom pass to catch; the image
-  // export clears the glow (`nightGlow`) and draws the day look.
+function Part({ point, color, label, labelOffset, part, dims, cells = [1, 1, 1], opacity = 1, glow = 0, onFocus }: { point: Point3; color: string; label?: string; labelOffset?: Point3; part?: string; dims: Dims; cells?: Dims; opacity?: number; glow?: number; onFocus?: (center: THREE.Vector3) => void }) {
   return <group position={point} onClick={onFocus ? e => { e.stopPropagation(); onFocus(e.eventObject.getWorldPosition(new THREE.Vector3())); } : undefined}>
-    <mesh userData={{ exportMesh: true, exportPart: part || label || 'port', nightGlow: true }}><boxGeometry args={[size, size, size]} /><meshStandardMaterial color={color} emissive={color} emissiveIntensity={night ? 0.55 * opacity : 0} transparent={opacity < 1} opacity={opacity} roughness={0.5} metalness={0} /></mesh>
-    <lineSegments raycast={() => {}} geometry={edgesOf(size)} userData={{ dayMaterial: { color: inkOf(color), opacity: 0.4 * opacity } }}><lineBasicMaterial color={night ? glowOf(color) : inkOf(color)} transparent opacity={(night ? 0.7 : 0.4) * opacity} /></lineSegments>
-    {label && <SceneText text={label} position={new THREE.Vector3(...(labelOffset ?? [0, size * 0.8 + 0.2, 0]))} scale={0.38} color={color} />}
+    <TensorBlock dims={dims} color={color} glow={glow} cells={cells} paint={null} part={part || label || 'port'} opacity={opacity} />
+    {opacity > 0.5 && <NodeOutline dims={dims} color={edgeTone(color)} />}
+    {label && <SceneText text={label} position={new THREE.Vector3(...(labelOffset ?? [0, dims[1] / 2 + 0.22, 0]))} scale={0.38} color={color} />}
   </group>;
 }
-interface Props { node: Layer; selected: boolean; selectedHead: number | null; selectedProjection: string | null; onSelectProjection: (port: string, center: THREE.Vector3) => void; overriddenPorts: string[]; attachedPorts: boolean; onSelectHead: (index: number) => void; onFocusPart: (center: THREE.Vector3) => void; playing: boolean; rotating: boolean; direction: string; speed: number; expanded: boolean; error: boolean; }
+/** The sizes a module's parts are drawn from: the head width, the positions and the feed-forward width. */
+interface Sizes { head: number; positions: number; embed: number; feedForward: number }
+interface Props { node: Layer; selected: boolean; selectedHead: number | null; selectedProjection: string | null; onSelectProjection: (port: string, center: THREE.Vector3) => void; overriddenPorts: string[]; attachedPorts: boolean; onSelectHead: (index: number) => void; onFocusPart: (center: THREE.Vector3) => void; playing: boolean; rotating: boolean; direction: string; speed: number; expanded: boolean; error: boolean;
+  /** Positions in the sequence the module attends over, which its score matrices are drawn with. */
+  positions?: number; }
 function Route({ route, playing, direction, speed, arrow = false, opacity = 1 }: { route: AttentionRoute; playing: boolean; direction: string; speed: number; arrow?: boolean; opacity?: number }) {
   const points = useMemo(() => ({ start: new THREE.Vector3(...route.start), end: new THREE.Vector3(...route.end), control1: new THREE.Vector3(...route.control1), control2: new THREE.Vector3(...route.control2) }), [route]);
   const color = direction === 'forward' ? route.color : '#ee706d';
@@ -64,7 +64,7 @@ function Route({ route, playing, direction, speed, arrow = false, opacity = 1 }:
   return <group><FlowLine {...points} color={route.color} pulseColor={color} opacity={opacity * 0.65} pulseStrength={opacity} active={playing} direction={direction} speed={speed} compact />{arrow && <FlowArrow {...points} color={color} direction={direction} />}</group>;
 }
 type Face = ReturnType<typeof attentionLayout>['faces'][number];
-function FaceModule({ face, phase, ...props }: Props & { face: Face; phase: React.RefObject<number> }) {
+function FaceModule({ face, phase, sizes, ...props }: Props & { face: Face; phase: React.RefObject<number>; sizes: Sizes }) {
   const group = useRef<THREE.Group>(null), [hovered, setHovered] = useState(false);
   const focused = props.selected && (props.selectedHead !== null && face.computations.some(c => c.head === props.selectedHead) || face.vertices.some(v => v.id === props.selectedProjection));
   const dimmed = props.selected && (props.selectedHead !== null || props.selectedProjection !== null) && !focused;
@@ -82,13 +82,17 @@ function FaceModule({ face, phase, ...props }: Props & { face: Face; phase: Reac
       {/* A frosted panel: the head reads as one surface its projections sit on, with a light rim. */}
       <mesh geometry={geometry} userData={{ exportMesh: true, exportPart: 'qkv-face', exportSides: face.vertices.length }}><meshStandardMaterial color={color} transparent opacity={dimmed ? 0.06 : focused ? 0.28 : 0.18} roughness={0.35} metalness={0} side={THREE.DoubleSide} depthWrite={false} /></mesh>
       <lineSegments raycast={() => {}}><edgesGeometry args={[geometry]} /><lineBasicMaterial color={inkOf(color)} transparent opacity={dimmed ? 0.15 : focused ? 0.75 : 0.45} /></lineSegments>
-      {face.vertices.map(v => <Cube key={v.id} point={v.point} color={v.color} part={v.id} label={v.label} labelOffset={[v.point[0] / Math.hypot(v.point[0], v.point[1]) * 0.42, v.point[1] / Math.hypot(v.point[0], v.point[1]) * 0.42, 0.12]} size={props.selectedProjection === v.id ? 0.38 : 0.28} opacity={dimmed ? 0.22 : 1} onFocus={center => props.onSelectProjection(v.id, center)} />)}
-      <Cube point={face.points.inlet} color="#728f9e" part="head-input" size={0.15} onFocus={props.onFocusPart} />
-      <Cube point={face.points.outlet} color="#36a18a" part="head-output" size={0.15} onFocus={props.onFocusPart} />
-      {props.node.params.attention_type === 'cross' && <Cube point={face.points.context} color="#a17cbb" part="context-input" size={0.15} onFocus={props.onFocusPart} />}
+      {/* Each Q, K or V is a projection block, its grid one head wide by the positions. It keeps depth:
+          the polygon is often seen nearly edge-on, and a thin tile there would be too slim to click. */}
+      {face.vertices.map(v => { const chosen = props.selectedProjection === v.id, side = chosen ? 0.36 : 0.27; return <Part key={v.id} point={v.point} color={v.color} part={v.id} label={v.label} labelOffset={[v.point[0] / Math.hypot(v.point[0], v.point[1]) * 0.44, v.point[1] / Math.hypot(v.point[0], v.point[1]) * 0.44, 0.12]} dims={[side, side, side * 0.75]} cells={[gridCount(sizes.head), gridCount(sizes.positions), 1]} glow={chosen ? 0.25 : 0} opacity={dimmed ? 0.22 : 1} onFocus={center => props.onSelectProjection(v.id, center)} />; })}
+      <Part point={face.points.inlet} color="#728f9e" part="head-input" dims={cube(0.14)} onFocus={props.onFocusPart} />
+      <Part point={face.points.outlet} color="#36a18a" part="head-output" dims={cube(0.14)} onFocus={props.onFocusPart} />
+      {props.node.params.attention_type === 'cross' && <Part point={face.points.context} color="#a17cbb" part="context-input" dims={cube(0.14)} onFocus={props.onFocusPart} />}
+      {/* Per head: its score matrix, positions by positions, and the weighted sum of its values; no larger
+          than the cubes they replace, so they never cover a projection tile someone clicks. */}
       {face.computations.map(c => <group key={c.head}>
-        <Cube point={c.score} color="#539aa9" part={`scores-${c.head}`} size={0.2} opacity={dimmed ? 0.15 : 1} onFocus={center => { props.onSelectHead(c.head); props.onFocusPart(center); }} />
-        <Cube point={c.weighted} color="#36a18a" part={`weighted-${c.head}`} size={0.15} opacity={dimmed ? 0.15 : 1} onFocus={props.onFocusPart} />
+        <Part point={c.score} color="#539aa9" part={`scores-${c.head}`} dims={[0.21, 0.21, 0.035]} cells={[gridCount(sizes.positions), gridCount(sizes.positions), 1]} glow={focused && props.selectedHead === c.head ? 0.25 : 0} opacity={dimmed ? 0.15 : 1} onFocus={center => { props.onSelectHead(c.head); props.onFocusPart(center); }} />
+        <Part point={c.weighted} color="#36a18a" part={`weighted-${c.head}`} dims={[0.12, 0.17, 0.06]} cells={[1, gridCount(sizes.head), 1]} opacity={dimmed ? 0.15 : 1} onFocus={props.onFocusPart} />
       </group>)}
       {focused && <SceneText text="QKᵀ → Softmax → ×V" position={new THREE.Vector3(0, -face.points.inlet[1] + 0.32, 0.3)} scale={0.26} />}
       {face.routes.filter(r => !r.projection || !props.overriddenPorts.includes(r.projection)).map(route => <Route key={route.id} route={route} playing={props.playing} direction={props.direction} speed={props.speed} opacity={dimmed ? 0.18 : 1} />)}
@@ -121,14 +125,26 @@ export default function AttentionModule(props: Props) {
   const layout = useMemo(() => attentionLayout(props.node, props.expanded), [props.node, props.expanded]), phase = useRef(0);
   useFrame((_, delta) => { if (props.playing && props.rotating && !props.selected) phase.current += delta * props.speed; });
   const ports = layout.ports;
+  const embed = Number(props.node.params.embed_dim ?? 64), heads = Math.max(1, Number(props.node.params.num_heads ?? 1));
+  const sizes: Sizes = { head: Math.max(1, Math.round(embed / heads)), positions: Math.max(1, props.positions ?? 8), embed, feedForward: Number(props.node.params.ff_dim ?? embed * 2) };
+  // A tensor travelling through the module is a slab one position deep per cell row; FFN is wider in
+  // proportion to its hidden width, and LN a thin plate, as RMSNorm is drawn in latent attention.
+  const slab = (height: number): Dims => [0.12, height, 0.5], tensorCells: Dims = [1, gridCount(sizes.embed), gridCount(sizes.positions)];
+  const norm = '#bc8cc8';
   return <>
     <ModuleCard width={layout.dimensions[0]} height={layout.dimensions[1]} depth={layout.dimensions[2]} selected={props.selected} />
-    {props.node.op === 'Transformer' && <><Cube point={ports.norm1} color="#bc8cc8" label="LN" part="LN1" size={0.36} onFocus={props.onFocusPart} /><Cube point={ports.add1} color={RESIDUAL_COLOR} label="+" part="Add1" size={0.26} onFocus={props.onFocusPart} /><Cube point={ports.norm2} color="#bc8cc8" label="LN" part="LN2" size={0.36} onFocus={props.onFocusPart} /><Cube point={ports.ffn} color="#e48369" label="FFN" size={0.6} onFocus={props.onFocusPart} /><Cube point={ports.add2} color={RESIDUAL_COLOR} label="+" part="Add2" size={0.26} onFocus={props.onFocusPart} /></>}
-    <Cube point={ports.input} color="#7d91a8" part="input" label={props.node.params.attention_type === 'cross' ? 'Query' : undefined} size={0.22} onFocus={props.onFocusPart} />
-    {props.node.params.attention_type === 'cross' && <Cube point={ports.context} color="#a17cbb" part="context-input" label="Context" size={0.22} onFocus={props.onFocusPart} />}
-    {layout.branches > 1 && layout.branchMerges.map((point, i) => <Cube key={i} point={point} color="#3c9b94" label={`B${i + 1} · Wᵒ`} part={`branch-output-${i}`} size={0.28} onFocus={props.onFocusPart} />)}
-    <Cube point={ports.merge} color="#3c9b94" label={layout.branches > 1 ? 'Branch Mean' : 'Concat · Wᵒ'} labelOffset={[0, -0.6, 0]} size={0.44} onFocus={props.onFocusPart} />
+    {props.node.op === 'Transformer' && <>
+      <Part point={ports.norm1} color={norm} label="LN" part="LN1" dims={[0.05, 0.56, 0.46]} onFocus={props.onFocusPart} />
+      <Part point={ports.add1} color={RESIDUAL_COLOR} label="+" part="Add1" dims={cube(0.24)} onFocus={props.onFocusPart} />
+      <Part point={ports.norm2} color={norm} label="LN" part="LN2" dims={[0.05, 0.56, 0.46]} onFocus={props.onFocusPart} />
+      <Part point={ports.ffn} color="#e48369" label="FFN" dims={[0.3, Math.min(1.1, 0.6 + 0.08 * Math.log2(Math.max(1, sizes.feedForward / sizes.embed) + 1)), 0.5]} cells={[1, gridCount(sizes.feedForward), gridCount(sizes.positions)]} onFocus={props.onFocusPart} />
+      <Part point={ports.add2} color={RESIDUAL_COLOR} label="+" part="Add2" dims={cube(0.24)} onFocus={props.onFocusPart} />
+    </>}
+    <Part point={ports.input} color="#7d91a8" part="input" label={props.node.params.attention_type === 'cross' ? 'Query' : undefined} dims={slab(0.62)} cells={tensorCells} onFocus={props.onFocusPart} />
+    {props.node.params.attention_type === 'cross' && <Part point={ports.context} color="#a17cbb" part="context-input" label="Context" dims={slab(0.5)} cells={tensorCells} onFocus={props.onFocusPart} />}
+    {layout.branches > 1 && layout.branchMerges.map((point, i) => <Part key={i} point={point} color="#3c9b94" label={`B${i + 1} · Wᵒ`} part={`branch-output-${i}`} dims={[0.18, 0.5, 0.4]} cells={tensorCells} onFocus={props.onFocusPart} />)}
+    <Part point={ports.merge} color="#3c9b94" label={layout.branches > 1 ? 'Branch Mean' : 'Concat · Wᵒ'} labelOffset={[0, -0.6, 0]} dims={[0.22, 0.66, 0.5]} cells={tensorCells} onFocus={props.onFocusPart} />
     {layout.routes.map(route => <Route key={route.id} route={route} playing={props.playing} direction={props.direction} speed={props.speed} arrow />)}
-    {layout.faces.map(face => <FaceModule key={`${face.branch}-${face.group}`} {...props} face={face} phase={phase} />)}
+    {layout.faces.map(face => <FaceModule key={`${face.branch}-${face.group}`} {...props} face={face} phase={phase} sizes={sizes} />)}
   </>;
 }
