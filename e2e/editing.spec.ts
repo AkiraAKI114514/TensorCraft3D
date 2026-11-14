@@ -61,7 +61,9 @@ const sceneCaseTimeout = 180_000;
 const focusCases: [string, string[][]][] = [
   ['cnn', [['layer_0', 'Input'], ['layer_1', 'Conv2d'], ['layer_2', 'BatchNorm2d'], ['layer_3', 'ReLU'], ['layer_4', 'MaxPool2d'], ['layer_7', 'AdaptiveAvgPool2d'], ['layer_8', 'Flatten'], ['layer_9', 'Linear'], ['layer_10', 'Output']]],
   ['mlp', [['layer_3', 'Dropout'], ['layer_5', 'GELU']]],
-  ['residual', [['layer_5', 'Add']]]
+  ['residual', [['layer_5', 'Add']]],
+  // Wraps into two bands: the first layer of the second band, and the Add its crossing shortcut lands on.
+  ['deepseek', [['ffn_norm_2', 'RMSNorm'], ['residual_2b', 'Add']]]
 ];
 
 for (const [preset, entries] of focusCases) for (const [id, op] of entries) test(`centers ${preset} ${id} (${op}) when clicked`, async ({ page }) => {

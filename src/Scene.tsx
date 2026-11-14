@@ -8,7 +8,7 @@ import { EdgeLine, ParticleEdge, ResidualFlow } from './Flow';
 import AttentionModule, { SceneText } from './AttentionModule';
 import { isAttention, attentionLayout, qkvRadius } from './attentionLayout';
 import { isProjectionPort } from './attentionConfig';
-import { flowCurve, isMerge, sceneLayout, type SceneNode } from './sceneLayout';
+import { flowCurve, isMerge, OVERVIEW_OFFSETS, sceneLayout, type SceneNode } from './sceneLayout';
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
 import { blank, createTensorMaterial, floatTexture, majorGroup, tensorCells, type TensorUniforms } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
@@ -396,7 +396,7 @@ function World(props: Props) {
   useEffect(() => {
     const reset = () => {
       const center = bounds.getCenter(new THREE.Vector3());
-      camera.position.copy(center.clone().add(attentionView ? new THREE.Vector3(14, 8, 26) : new THREE.Vector3(15, 9, 18))); camera.lookAt(center);
+      camera.position.copy(center.clone().add(new THREE.Vector3(...(attentionView ? OVERVIEW_OFFSETS.attention : OVERVIEW_OFFSETS.blocks)))); camera.lookAt(center);
       const target = center.clone();
       fitCamera(camera as THREE.OrthographicCamera, bounds, size.width, size.height, target);
       if (controls.current) { controls.current.target.copy(target); controls.current.update(); }
@@ -433,8 +433,10 @@ function World(props: Props) {
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
           : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? '#1d3943' : edgeTone(color)} input={props.analysis.layers[n.id]?.input[0]} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} />}
-        {/* An attention module is an open frame of small parts; one shadow under its whole footprint read as a smudge. */}
-        {!isAttention(n.op) && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
+        {/* An attention module is an open frame of small parts; one shadow under its whole footprint
+            read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow
+            cast that far down would land on the band below, so only the lowest band casts them. */}
+        {!isAttention(n.op) && entry.grounded && <GroundShadow width={dims[0]} depth={dims[2]} lift={pos.y - GROUND_Y} />}
         {selected && !isAttention(n.op) && <mesh raycast={() => {}} position={[0, -dims[1] / 2 - 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.45, 0.49, 48]} /><meshBasicMaterial color="#1d3943" transparent opacity={0.75} /></mesh>}
         {labelVisible(n, detail, props.selected, hover) && <Html portal={labelPortal} position={label.position} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}><div ref={element => { if (element) labelElements.current.set(n.id, element); else labelElements.current.delete(n.id); }} className={`scene-label ${selected ? 'selected' : ''}`}><strong>{label.name}</strong>{detail === 'near' && <span>{shapeText(props.analysis.layers[n.id]?.output)}</span>}</div></Html>}
       </group>;
