@@ -1,4 +1,7 @@
 import { DEFAULTS, type Graph, type Op, type Params } from './types';
+// The full 671B DeepSeek-V3, exactly as the importer builds it from the official model.py and
+// configs/config_671B.json (backend/test_deepseek_reference.py pins the importer to this file).
+import deepseekV3Structure from '../tests/fixtures/deepseek-v3-671b-structure.json' with { type: 'json' };
 
 function sequential(name: string, specs: [Op, Params?, string?][]): Graph {
   const nodes = specs.map(([op, params, label], i) => ({ id: `layer_${i}`, name: label || `${op}_${i}`, op, params: { ...DEFAULTS[op], ...params }, position: { x: i * 210, y: 100 } }));
@@ -13,6 +16,8 @@ function wired(name: string, specs: [string, Op, Params, string, number, number]
   };
 }
 export const PRESETS: Record<string, () => Graph> = {
+  // Structure only: past every local limit, so it is explored, never trained, run or exported as Python.
+  deepseek_v3: () => ({ ...structuredClone(deepseekV3Structure as unknown as Graph), name: 'DeepSeek-V3 671B' }),
   cnn: () => sequential('Compact CNN', [['Input', {}, '图像输入'], ['Conv2d', { out_channels: 16 }, '卷积块 01'], ['BatchNorm2d', {}, '批归一化'], ['ReLU', {}, '激活'], ['MaxPool2d', {}, '下采样'], ['Conv2d', { out_channels: 32 }, '卷积块 02'], ['ReLU', {}, '激活'], ['AdaptiveAvgPool2d', {}, '全局池化'], ['Flatten', {}, '展平'], ['Linear', { out_features: 10 }, '分类器'], ['Output', {}, '分类输出']]),
   mlp: () => sequential('Feature MLP', [['Input', { shape: [1, 16] }, '特征输入'], ['Linear', { out_features: 64 }], ['ReLU'], ['Dropout'], ['Linear', { out_features: 32 }], ['GELU'], ['Linear', { out_features: 3 }, '分类器'], ['Output', {}, '分类输出']]),
   residual: () => {

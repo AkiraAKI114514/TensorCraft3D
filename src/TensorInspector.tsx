@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, Box, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
+import { Activity, Box, Cpu, LoaderCircle, TriangleAlert, Upload, X } from 'lucide-react';
 import { isGroup, type Graph } from './types';
 import { useI18n } from './i18n';
 import { tensorNumber, type AttentionSelection, type InferenceReport, type ParameterSnapshot, type RoutingSelection } from './inferenceTypes';
@@ -188,6 +188,7 @@ export default function TensorInspector({ graph, drillPath = ROOT, trainedModel 
   // Keep the pending request mounted when another inspector tab is selected.
   return <section className="tensor-inspector" aria-label={t('Tensor Inspector')} hidden={!active} aria-busy={busy}>
     <div className="tensor-heading"><span className="eyebrow">OBSERVATION / SINGLE SAMPLE</span><h2>{t('真实张量观测')}</h2></div>
+    {graph.structureOnly && <div className="backend-notice structure-notice" role="note"><Cpu size={16} /><div><strong>{t('仅结构模型不能在本机观测')}</strong><p>{t('它超出本地工作台的运行上限；可以查看结构、形状和参数量。')}</p></div></div>}
     <label className="field-label">{t('观测来源')}<select aria-label={t('观测来源')} value={source} disabled={busy} onChange={e => setSource(e.target.value as 'live' | 'offline')}><option value="live">{t('在工作台运行单样本推理')}</option><option value="offline">{t('外部 Python 观测快照 · 只读')}</option></select></label>
     {node && (drillPath.length > 0 || isGroup(node)) && <div className="tensor-block-scope">
       {target ? <>

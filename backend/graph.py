@@ -634,6 +634,11 @@ def analyze_graph(graph):
     import re
     if not isinstance(graph, dict) or graph.get("version") != 1:
         raise ValueError("Unsupported graph version")
+    # A structure-only model (src/types.ts) is past this workbench's limits. It is analysed in the
+    # browser for its structure, and nothing that trains, runs or observes a model gets past here.
+    if "structureOnly" in graph:
+        if graph["structureOnly"] is not True: raise ValueError("structureOnly must be true or absent")
+        raise ValueError("Structure-only model: it exceeds this workbench's limits and cannot be trained, run or observed")
     # The authored graph carries the strict contract: real node ids, real ops, and a
     # declared subgraph on every Group node. Expansion below derives ids such as
     # `g/0/attn`, which the id pattern deliberately does not admit, so the strict pass

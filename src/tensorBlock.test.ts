@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { createTensorMaterial, gridCount, majorGroup, tensorCells } from './tensorBlock';
+import { createTensorMaterial, gridCount, majorGroup, NIGHT, tensorCells } from './tensorBlock';
 
 describe('tensor blocks', () => {
   it('counts every element up to 16 and whole groups of elements beyond', () => {
@@ -35,6 +35,10 @@ describe('tensor blocks', () => {
     expect(shader.fragmentShader).toContain('diffuseColor.rgb = mix(diffuseColor.rgb, uLine');
     expect(shader.uniforms.uCells).toBe(uniforms.uCells);
     expect(shader.fragmentShader).toContain('texelFetch(uMap');
-    expect(material.customProgramCacheKey()).toBe('tensor-block-2');
+    // The studio shading darkens a face toward the block's foot, except where measured values are painted.
+    expect(shader.fragmentShader).toContain('smoothstep(0.0, 0.85, tensorCoord.y)');
+    expect(shader.fragmentShader).toContain('uniform float uNight;');
+    expect(uniforms.uNight).toBe(NIGHT);
+    expect(material.customProgramCacheKey()).toBe('tensor-block-4');
   });
 });

@@ -1,0 +1,508 @@
+{
+ "version": 1,
+ "name": "Transformer",
+ "nodes": [
+  {
+   "id": "import_0",
+   "name": "tokens",
+   "op": "Input",
+   "params": {
+    "shape": [
+     1,
+     16
+    ]
+   },
+   "position": {
+    "x": 0,
+    "y": 100
+   }
+  },
+  {
+   "id": "import_1",
+   "name": "embed",
+   "op": "Embedding",
+   "params": {
+    "num_embeddings": 129280,
+    "embedding_dim": 7168
+   },
+   "position": {
+    "x": 210,
+    "y": 100
+   }
+  },
+  {
+   "id": "import_2",
+   "name": "layers.0–2 · 稠密 SwiGLU",
+   "op": "Group",
+   "params": {},
+   "position": {
+    "x": 420,
+    "y": 100
+   },
+   "subgraph": "dense_layers",
+   "repeat": 3
+  },
+  {
+   "id": "import_3",
+   "name": "layers.3–60 · MoE",
+   "op": "Group",
+   "params": {},
+   "position": {
+    "x": 630,
+    "y": 100
+   },
+   "subgraph": "moe_layers",
+   "repeat": 58
+  },
+  {
+   "id": "import_4",
+   "name": "norm",
+   "op": "RMSNorm",
+   "params": {
+    "normalized_shape": 7168,
+    "eps": 1e-06,
+    "elementwise_affine": 1
+   },
+   "position": {
+    "x": 840,
+    "y": 100
+   }
+  },
+  {
+   "id": "import_5",
+   "name": "取最后位置",
+   "op": "Select",
+   "params": {
+    "dim": 1,
+    "index": -1
+   },
+   "position": {
+    "x": 1050,
+    "y": 100
+   }
+  },
+  {
+   "id": "import_6",
+   "name": "head",
+   "op": "Linear",
+   "params": {
+    "out_features": 129280,
+    "bias": 0
+   },
+   "position": {
+    "x": 1260,
+    "y": 100
+   }
+  },
+  {
+   "id": "import_7",
+   "name": "输出",
+   "op": "Output",
+   "params": {},
+   "position": {
+    "x": 1470,
+    "y": 100
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "edge_0",
+   "source": "import_0",
+   "target": "import_1"
+  },
+  {
+   "id": "edge_1",
+   "source": "import_1",
+   "target": "import_2"
+  },
+  {
+   "id": "edge_2",
+   "source": "import_2",
+   "target": "import_3"
+  },
+  {
+   "id": "edge_3",
+   "source": "import_3",
+   "target": "import_4"
+  },
+  {
+   "id": "edge_4",
+   "source": "import_4",
+   "target": "import_5"
+  },
+  {
+   "id": "edge_5",
+   "source": "import_5",
+   "target": "import_6"
+  },
+  {
+   "id": "edge_6",
+   "source": "import_6",
+   "target": "import_7"
+  }
+ ],
+ "subgraphs": {
+  "dense_layers": {
+   "id": "dense_layers",
+   "name": "layers.0–2 · 稠密 SwiGLU",
+   "origin": "manual",
+   "nodes": [
+    {
+     "id": "n0",
+     "name": "层输入",
+     "op": "Identity",
+     "params": {},
+     "position": {
+      "x": 0,
+      "y": 100
+     }
+    },
+    {
+     "id": "n1",
+     "name": "attn_norm",
+     "op": "RMSNorm",
+     "params": {
+      "normalized_shape": 7168,
+      "eps": 1e-06,
+      "elementwise_affine": 1
+     },
+     "position": {
+      "x": 210,
+      "y": 100
+     }
+    },
+    {
+     "id": "n2",
+     "name": "attn",
+     "op": "LatentAttention",
+     "params": {
+      "embed_dim": 7168,
+      "num_heads": 128,
+      "q_lora_rank": 1536,
+      "kv_lora_rank": 512,
+      "qk_nope_head_dim": 128,
+      "qk_rope_head_dim": 64,
+      "v_head_dim": 128,
+      "rope_theta": 10000.0,
+      "causal": 1,
+      "eps": 1e-06
+     },
+     "position": {
+      "x": 420,
+      "y": 100
+     }
+    },
+    {
+     "id": "n3",
+     "name": "残差（attn）",
+     "op": "Add",
+     "params": {},
+     "position": {
+      "x": 630,
+      "y": 100
+     }
+    },
+    {
+     "id": "n4",
+     "name": "ffn_norm",
+     "op": "RMSNorm",
+     "params": {
+      "normalized_shape": 7168,
+      "eps": 1e-06,
+      "elementwise_affine": 1
+     },
+     "position": {
+      "x": 840,
+      "y": 100
+     }
+    },
+    {
+     "id": "n5",
+     "name": "ffn.w1",
+     "op": "Linear",
+     "params": {
+      "out_features": 18432,
+      "bias": 0
+     },
+     "position": {
+      "x": 1050,
+      "y": 100
+     }
+    },
+    {
+     "id": "n6",
+     "name": "ffn.w3",
+     "op": "Linear",
+     "params": {
+      "out_features": 18432,
+      "bias": 0
+     },
+     "position": {
+      "x": 1260,
+      "y": 100
+     }
+    },
+    {
+     "id": "n7",
+     "name": "ffn.silu",
+     "op": "SiLU",
+     "params": {},
+     "position": {
+      "x": 1470,
+      "y": 100
+     }
+    },
+    {
+     "id": "n8",
+     "name": "ffn 门控",
+     "op": "Multiply",
+     "params": {},
+     "position": {
+      "x": 1680,
+      "y": 100
+     }
+    },
+    {
+     "id": "n9",
+     "name": "ffn.w2",
+     "op": "Linear",
+     "params": {
+      "out_features": 7168,
+      "bias": 0
+     },
+     "position": {
+      "x": 1890,
+      "y": 100
+     }
+    },
+    {
+     "id": "n10",
+     "name": "残差（ffn）",
+     "op": "Add",
+     "params": {},
+     "position": {
+      "x": 2100,
+      "y": 100
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e1_0",
+     "source": "n0",
+     "target": "n1"
+    },
+    {
+     "id": "e2_0",
+     "source": "n1",
+     "target": "n2"
+    },
+    {
+     "id": "e3_0",
+     "source": "n0",
+     "target": "n3"
+    },
+    {
+     "id": "e3_1",
+     "source": "n2",
+     "target": "n3"
+    },
+    {
+     "id": "e4_0",
+     "source": "n3",
+     "target": "n4"
+    },
+    {
+     "id": "e5_0",
+     "source": "n4",
+     "target": "n5"
+    },
+    {
+     "id": "e6_0",
+     "source": "n4",
+     "target": "n6"
+    },
+    {
+     "id": "e7_0",
+     "source": "n5",
+     "target": "n7"
+    },
+    {
+     "id": "e8_0",
+     "source": "n7",
+     "target": "n8"
+    },
+    {
+     "id": "e8_1",
+     "source": "n6",
+     "target": "n8"
+    },
+    {
+     "id": "e9_0",
+     "source": "n8",
+     "target": "n9"
+    },
+    {
+     "id": "e10_0",
+     "source": "n3",
+     "target": "n10"
+    },
+    {
+     "id": "e10_1",
+     "source": "n9",
+     "target": "n10"
+    }
+   ]
+  },
+  "moe_layers": {
+   "id": "moe_layers",
+   "name": "layers.3–60 · MoE",
+   "origin": "manual",
+   "nodes": [
+    {
+     "id": "n0",
+     "name": "层输入",
+     "op": "Identity",
+     "params": {},
+     "position": {
+      "x": 0,
+      "y": 100
+     }
+    },
+    {
+     "id": "n1",
+     "name": "attn_norm",
+     "op": "RMSNorm",
+     "params": {
+      "normalized_shape": 7168,
+      "eps": 1e-06,
+      "elementwise_affine": 1
+     },
+     "position": {
+      "x": 210,
+      "y": 100
+     }
+    },
+    {
+     "id": "n2",
+     "name": "attn",
+     "op": "LatentAttention",
+     "params": {
+      "embed_dim": 7168,
+      "num_heads": 128,
+      "q_lora_rank": 1536,
+      "kv_lora_rank": 512,
+      "qk_nope_head_dim": 128,
+      "qk_rope_head_dim": 64,
+      "v_head_dim": 128,
+      "rope_theta": 10000.0,
+      "causal": 1,
+      "eps": 1e-06
+     },
+     "position": {
+      "x": 420,
+      "y": 100
+     }
+    },
+    {
+     "id": "n3",
+     "name": "残差（attn）",
+     "op": "Add",
+     "params": {},
+     "position": {
+      "x": 630,
+      "y": 100
+     }
+    },
+    {
+     "id": "n4",
+     "name": "ffn_norm",
+     "op": "RMSNorm",
+     "params": {
+      "normalized_shape": 7168,
+      "eps": 1e-06,
+      "elementwise_affine": 1
+     },
+     "position": {
+      "x": 840,
+      "y": 100
+     }
+    },
+    {
+     "id": "n5",
+     "name": "ffn",
+     "op": "MoE",
+     "params": {
+      "experts": 256,
+      "top_k": 8,
+      "shared_experts": 1,
+      "expert_dim": 2048,
+      "score_func": "sigmoid",
+      "route_scale": 2.5,
+      "groups": 8,
+      "topk_groups": 4,
+      "gate_bias": 1
+     },
+     "position": {
+      "x": 1050,
+      "y": 100
+     }
+    },
+    {
+     "id": "n6",
+     "name": "残差（ffn）",
+     "op": "Add",
+     "params": {},
+     "position": {
+      "x": 1260,
+      "y": 100
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e1_0",
+     "source": "n0",
+     "target": "n1"
+    },
+    {
+     "id": "e2_0",
+     "source": "n1",
+     "target": "n2"
+    },
+    {
+     "id": "e3_0",
+     "source": "n0",
+     "target": "n3"
+    },
+    {
+     "id": "e3_1",
+     "source": "n2",
+     "target": "n3"
+    },
+    {
+     "id": "e4_0",
+     "source": "n3",
+     "target": "n4"
+    },
+    {
+     "id": "e5_0",
+     "source": "n4",
+     "target": "n5"
+    },
+    {
+     "id": "e6_0",
+     "source": "n3",
+     "target": "n6"
+    },
+    {
+     "id": "e6_1",
+     "source": "n5",
+     "target": "n6"
+    }
+   ]
+  }
+ },
+ "structureOnly": true
+}

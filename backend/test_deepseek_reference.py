@@ -1,5 +1,6 @@
 """Recognising DeepSeek-V3's official inference/model.py, and computing what it computes."""
 import hashlib
+import json
 import unittest
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from . import deepseek_reference
+from .graph import analyze_graph, latent_attention_parameters, moe_parameters
 from .pytorch_import import import_pytorch
 from .test_latent_attention import deepseek_naive_mla
 from .test_moe import deepseek_moe
@@ -25,6 +27,22 @@ def with_config(source=SOURCE, **overrides):
     """The official file plus what a user appends to import it: a small ModelArgs and the model."""
     arguments = ", ".join(f"{key}={value!r}" for key, value in {**CONFIG, **overrides}.items())
     return f"{source}\n\nargs = ModelArgs({arguments})\nmodel = Transformer(args)\n"
+
+
+# DeepSeek-V3's own configuration (configs/config_671B.json at the pinned commit): past every local
+# limit, so it imports for its structure alone. The workbench analyses the same graph in
+# src/structureOnly.test.ts from the shared fixture below.
+FULL = dict(vocab_size=129280, dim=7168, inter_dim=18432, moe_inter_dim=2048, n_layers=61, n_dense_layers=3, n_heads=128,
+            n_routed_experts=256, n_shared_experts=1, n_activated_experts=8, n_expert_groups=8, n_limited_groups=4,
+            route_scale=2.5, score_func="sigmoid", q_lora_rank=1536, kv_lora_rank=512, qk_nope_head_dim=128,
+            qk_rope_head_dim=64, v_head_dim=128, dtype="fp8")
+STRUCTURE = FIXTURE.parent / "deepseek-v3-671b-structure.json"
+
+
+def full_config(**overrides):
+    """The official file plus the full 671B ModelArgs (the defaults keep YaRN on: max_seq_len 16384 > 4096)."""
+    arguments = ", ".join(f"{key}={value!r}" for key, value in {**FULL, **overrides}.items())
+    return f"{SOURCE}\n\nargs = ModelArgs({arguments})\nmodel = Transformer(args)\n"
 
 
 def official_forward(layers, tokens):
@@ -106,6 +124,43 @@ class DeepSeekReferenceTests(unittest.TestCase):
         self.assertNotEqual(changed, SOURCE)
         self.rejected(with_config(changed), "MLA 与固定版本 b15f0db 不一致")
         self.rejected(with_config(SOURCE.replace('attn_impl: Literal["naive", "absorb"] = "absorb"', 'attn_impl = "fast"')), "attn_impl")
+
+    def test_the_full_model_imports_for_its_structure(self):
+        result = import_pytorch(full_config(), "Transformer", {"tokens": [1, 16]})
+        graph = result["graph"]
+        self.assertIsNotNone(graph, result["diagnostics"])
+        self.assertIs(graph["structureOnly"], True)
+        # 61 layers fold into two repeated blocks, so the top level is eight nodes.
+        self.assertEqual([(node["op"], node.get("repeat")) for node in graph["nodes"]],
+                         [("Input", None), ("Embedding", None), ("Group", 3), ("Group", 58), ("RMSNorm", None), ("Select", None), ("Linear", None), ("Output", None)])
+        dense, routed = graph["subgraphs"]["dense_layers"], graph["subgraphs"]["moe_layers"]
+        self.assertEqual([node["op"] for node in dense["nodes"]], ["Identity", "RMSNorm", "LatentAttention", "Add", "RMSNorm", "Linear", "Linear", "SiLU", "Multiply", "Linear", "Add"])
+        self.assertEqual([node["op"] for node in routed["nodes"]], ["Identity", "RMSNorm", "LatentAttention", "Add", "RMSNorm", "MoE", "Add"])
+        self.assertEqual({dense["origin"], routed["origin"]}, {"manual"})
+        # Each block's residuals read the Identity that stands for its input.
+        self.assertEqual(sorted(edge["source"] for edge in routed["edges"] if edge["target"] in ("n3", "n6")), ["n0", "n2", "n3", "n5"])
+        attention, experts = routed["nodes"][2]["params"], routed["nodes"][5]["params"]
+        self.assertEqual((attention["num_heads"], attention["q_lora_rank"], attention["kv_lora_rank"], attention["qk_nope_head_dim"], attention["qk_rope_head_dim"]), (128, 1536, 512, 128, 64))
+        self.assertEqual((experts["experts"], experts["top_k"], experts["shared_experts"], experts["groups"], experts["topk_groups"], experts["route_scale"], experts["gate_bias"]), (256, 8, 1, 8, 4, 2.5, 1))
+        self.assertEqual(graph["nodes"][6]["params"]["out_features"], 129280)
+        _, parameters = deepseek_reference.size({**FULL, "max_seq_len": 16384, "original_seq_len": 4096}, latent_attention_parameters, moe_parameters)
+        self.assertEqual(parameters, 671_026_404_352)
+        note = next(d["message"] for d in result["diagnostics"] if d["code"] == "DEEPSEEK_STRUCTURE_ONLY")
+        for fragment in ("671.0B", "3 个稠密层和 58 个 MoE 层", "FP8", "YaRN"): self.assertIn(fragment, note)
+        # The workbench analyses exactly this graph (src/structureOnly.test.ts).
+        self.assertEqual(graph, json.loads(STRUCTURE.read_text(encoding="utf-8")))
+
+    def test_a_structure_only_model_is_never_built_or_run(self):
+        graph = json.loads(STRUCTURE.read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "Structure-only model"): analyze_graph(graph)
+        with self.assertRaisesRegex(ValueError, "structureOnly must be true"): analyze_graph({**graph, "structureOnly": False})
+        with self.assertRaises(ValueError): build_model(graph)
+
+    def test_a_configuration_past_even_the_structural_bounds_is_refused(self):
+        result = import_pytorch(full_config(n_heads=2048), "Transformer", {"tokens": [1, 16]})
+        self.assertIsNone(result["graph"])
+        self.assertEqual(result["diagnostics"][0]["code"], "LIMIT")
+        self.assertIn("超出仅结构显示的上限", result["diagnostics"][0]["message"])
 
     def test_the_full_width_gate_keeps_its_bias(self):
         emitted = []

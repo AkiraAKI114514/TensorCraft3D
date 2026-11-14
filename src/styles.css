@@ -30,3 +30,176 @@
 .scene-observation{position:absolute;right:24px;top:64px;z-index:12;width:236px;display:flex;flex-direction:column;gap:5px;padding:9px 11px;background:#ffffffeb;border:1px solid #dde6e9;border-radius:6px;box-shadow:0 3px 10px #203c4510;font-size:10px;line-height:1.5;color:#5d727a}.scene-observation-head{display:flex;align-items:center;justify-content:space-between;color:#2c4853}.scene-observation-head strong{font-size:11px;font-weight:600}.scene-observation-head button{display:flex;border:0;background:transparent;color:#7f959f;padding:2px;cursor:pointer}.scene-observation-scale{display:flex;align-items:center;gap:6px;color:#7f959f}.scene-observation-scale i{flex:1;height:6px;border-radius:3px;background:linear-gradient(90deg,#651b1b,#e34948,#f0efec,#3987e5,#0d366b)}.scene-observation p{margin:0}
 @media(max-width:700px){.scene-observation{top:auto;bottom:118px;right:13px;width:min(236px,calc(100% - 26px))}}
 .kernel-value{font:600 10px/14px 'DM Sans','Segoe UI','Microsoft YaHei',sans-serif;color:#9a3412;background:#fff7edf0;border:1px solid #fdba74;border-radius:4px;padding:1px 5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* A folded monitor is its header alone, which gives the scene the room back. */
+.monitor.collapsed{height:auto;min-height:0}
+.monitor.collapsed .monitor-header{border-bottom:0}
+.monitor-body[hidden]{display:none}
+.monitor-toggle{display:grid;place-items:center;width:22px;height:22px;margin-left:-5px;border:0;border-radius:6px;background:transparent;color:#69858f;cursor:pointer;transition:transform .16s ease,background .16s ease}
+.monitor-toggle:hover{background:#eef3f5;color:#244651}
+.monitor-toggle:focus-visible{outline:2px solid #2f8f9d;outline-offset:1px}
+.monitor.collapsed .monitor-toggle{transform:rotate(-90deg)}
+.monitor-summary{font-size:10px;color:#6f838b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* 3D scene art direction: a soft studio backdrop behind the transparent canvas, and labels set as
+   quiet type with a dot in the layer's own colour instead of bordered pills. */
+.scene-workspace{background:radial-gradient(120% 95% at 50% 36%,#fdfefe 0%,#f3f6f8 56%,#e7edf0 100%)}
+.scene-label{min-width:0;max-width:156px;padding:3px 8px 3px 16px;border:0;border-radius:6px;background:#ffffffdb;box-shadow:0 0 0 1px #1f3a4512,0 1px 3px #0f2a3514;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);text-align:left;position:relative;color:#4c6470}
+.scene-label::before{content:'';position:absolute;left:7px;top:8px;width:5px;height:5px;border-radius:50%;background:var(--accent,#8a9aa2);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#8a9aa2) 22%,transparent)}
+.scene-label strong{display:block;font-size:10px;line-height:15px;font-weight:600;color:#1c2e36;letter-spacing:.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:132px}
+.scene-label span{display:block;font-size:8.5px;line-height:12px;color:#6d818a;font-variant-numeric:tabular-nums;white-space:nowrap}
+.scene-label.selected{background:#fff;box-shadow:0 0 0 1.5px #1d3943,0 6px 16px #0f2a3524}
+@media(max-width:700px){.scene-label{max-width:104px;padding:2px 6px 2px 13px}.scene-label::before{left:5px;top:7px;width:4px;height:4px}.scene-label strong{font-size:8.5px;line-height:13px;max-width:86px}.scene-label span{font-size:7px;line-height:10px}}
+/* Workbench refresh: one ink ramp, one accent, a readable type scale (nothing under 10px on a
+   desktop), and quieter chrome, so the model is the brightest thing on screen. These rules come
+   last and override the original sizes and colours above; the narrow layout is re-tuned below. */
+:root{--ink:#14232b;--ink-2:#3d5059;--ink-3:#687b84;--ink-4:#91a1a8;--line:#e2e8eb;--line-strong:#d3dce0;--surface:#fff;--surface-2:#f6f8f9;--accent:#137567;--accent-strong:#0d5f53;--accent-soft:#e3f1ee;--shadow-sm:0 1px 2px #0f22290f;--shadow-md:0 8px 24px #0f222917;font-family:'Inter','Segoe UI Variable Text','Segoe UI','PingFang SC','Microsoft YaHei UI','Microsoft YaHei',system-ui,sans-serif;color:var(--ink);font-size:12.5px;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.topbar{background:#0f1a20;border-bottom:1px solid #1c2a31;gap:18px}
+.brand-mark{background:linear-gradient(145deg,#1f9582,#13544b);color:#eafff8;border-radius:8px;box-shadow:inset 0 1px 0 #ffffff2e,0 1px 2px #0006}
+.brand-copy strong{font-size:16px;font-weight:650;letter-spacing:-.01em}
+.brand-copy small{font-size:10px;color:#87a0a7}
+.header-divider{background:#27363e}
+.project-title input{font-size:13px;font-weight:550;color:#eef4f6}
+.saved-state{font-size:11px;color:#7c949c}
+.topbar .icon-button{width:32px;height:32px;border-radius:8px;color:#a5b8be}
+.topbar .icon-button:hover{background:#1c2b33;color:#fff}
+.topbar .button.subtle{background:transparent;border-color:#2c3d45;color:#dde8eb}
+.topbar .button.subtle:hover{background:#18262d;border-color:#3a4d56}
+.topbar .button.primary{background:#2eb398;color:#052620}
+.topbar .button.primary:hover{background:#3ac3a7}
+.button{border-radius:8px;font-size:12px;font-weight:550}
+.button.primary{background:var(--accent);color:#fff}
+.button.primary:hover{background:var(--accent-strong)}
+.button.subtle{border-color:var(--line-strong);color:var(--ink-2)}
+.icon-button{border-radius:7px;color:var(--ink-3)}
+.icon-button:hover{background:#edf1f3;color:var(--ink)}
+.icon-button.active{background:var(--accent-soft);color:var(--accent)}
+.library,.inspector,.workspace-toolbar,.monitor,.statusbar{background:var(--surface)}
+.panel-title{font-size:13px;font-weight:650;color:var(--ink)}
+.tiny-badge{font-size:11px;line-height:20px;background:#eef2f4;color:var(--ink-3);border-radius:6px}
+.preset-selector{border-radius:8px;border-color:var(--line-strong);background:var(--surface-2);color:var(--ink-3)}
+.preset-selector select{font-size:12px;color:var(--ink-2)}
+.layer-group h3{font-size:11px;font-weight:600;color:var(--ink-4);letter-spacing:.02em;margin:18px 6px 6px}
+.layer-option{border-radius:9px;min-height:46px;padding:6px 8px;gap:10px}
+.layer-option:hover{background:var(--surface-2);border-color:var(--line)}
+.layer-symbol{width:28px;height:28px;border-radius:8px}
+.layer-option strong{font-size:12px;font-weight:600;color:var(--ink)}
+.layer-option small{font-size:10.5px;line-height:15px;color:var(--ink-3);overflow-wrap:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+/* Room for the larger type between the narrow (176px) and wide (230px) breakpoints above. */
+@media(min-width:1181px) and (max-width:1599px){.library{width:226px;min-width:226px}}
+/* An operator name is one word; it ellipsizes rather than breaking mid-word. */
+.layer-option strong{overflow-wrap:normal;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.library-footer{font-size:11px;color:var(--ink-3)}
+.main-workspace{background:#edf1f3}
+.view-tabs button{font-size:12.5px;font-weight:500;color:var(--ink-3)}
+.view-tabs button.active{color:var(--ink);border-color:var(--accent);font-weight:600}
+.scene-heading .eyebrow{font-size:10px;letter-spacing:.08em;color:var(--ink-4)}
+.scene-heading h1{font-size:26px;font-weight:650;letter-spacing:-.02em;color:var(--ink);margin:4px 0 8px}
+.architecture-meta{font-size:11.5px;color:var(--ink-3)}
+.validation-badge{font-size:11px;border-radius:999px;padding:5px 11px;box-shadow:var(--shadow-sm)}
+.scene-legend{gap:8px 14px;max-width:260px}
+.scene-legend span{font-size:11px;color:var(--ink-3)}
+.scene-legend i{width:8px;height:8px;border-radius:3px}
+.flow-controls{height:42px;padding:0 8px;border-radius:12px;border-color:var(--line);background:#ffffffeb;box-shadow:var(--shadow-md);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.flow-direction button{font-size:11.5px;border-radius:7px;padding:5px 8px;color:var(--ink-3)}
+.flow-direction button.active{background:var(--accent-soft);color:var(--accent)}
+.flow-controls select{font-size:11.5px;color:var(--ink-2)}
+.flow-label{font-size:11px;color:var(--ink-4)}
+.gpu-badge{font-size:10.5px;color:var(--ink-4)}
+.monitor-title h2{font-size:13px;font-weight:650;color:var(--ink)}
+.source-badge{font-size:10.5px;line-height:20px;border-radius:6px;padding:0 7px}
+.monitor-summary{font-size:11.5px;color:var(--ink-3)}
+.monitor-actions select{font-size:11.5px;color:var(--ink-3)}
+.monitor .button{font-size:11.5px;min-height:29px;padding:4px 10px}
+.chart-legend{font-size:11px;color:var(--ink-3)}
+.chart-legend .train-status{font-size:11px;color:var(--ink-3)}
+.metric-grid>div>span{font-size:11px;color:var(--ink-3)}
+.metric-grid strong{font-weight:600;color:var(--ink)}
+.inspector-tabs button{font-size:12.5px;color:var(--ink-3)}
+.inspector-tabs button.active{color:var(--ink);border-color:var(--accent)}
+.selected-layer h2{font-size:17px;font-weight:650;color:var(--ink)}
+.selected-layer .eyebrow{font-size:9.5px;letter-spacing:.08em;color:var(--ink-4)}
+.field-label{font-size:11.5px;color:var(--ink-3)}
+.field-label input,.field-label select{font-size:12.5px;border-radius:8px;border-color:var(--line-strong);color:var(--ink)}
+.field-label input:focus,.field-label select:focus,.parameter-field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #1375671f}
+.inspector-section h3{font-size:12px;font-weight:650;color:var(--ink-2)}
+.inspector-section h3 span{font-size:10.5px;color:var(--ink-4)}
+.tensor-box{border-radius:9px;background:var(--surface-2);border-color:var(--line)}
+.tensor-box>span{font-size:10.5px;color:var(--ink-4)}
+.tensor-box code{font-size:12px;color:var(--ink-2);font-family:'Cascadia Mono',Consolas,monospace}
+.parameter-field{font-size:11.5px;color:var(--ink-2)}
+.parameter-field input{font-size:12px;border-radius:7px;border-color:var(--line-strong);color:var(--ink);background:#fff}
+.stat-row{font-size:11.5px;color:var(--ink-3)}
+.stat-row strong{font-size:11.5px;color:var(--ink-2)}
+.muted-text,.connection-row{font-size:11.5px}
+.model-summary span{font-size:10.5px;color:var(--ink-4)}
+.model-summary strong{font-size:19px;font-weight:600;color:var(--ink)}
+.empty-inspector{font-size:12px;color:var(--ink-4)}
+.diagnostic-item{border-radius:9px;font-size:11px}
+.diagnostic-item strong{font-size:10.5px}
+.diagnostic-item p{font-size:11px}
+.statusbar{font-size:10.5px;color:var(--ink-3)}
+.modal{border-radius:14px;border-color:var(--line);box-shadow:0 28px 80px #0f22293d}
+.modal-heading h2{font-size:20px;font-weight:650;color:var(--ink)}
+.code-preview{border-radius:9px;font-size:12px;font-family:'Cascadia Mono',Consolas,monospace}
+.flow-layer{border-radius:9px;box-shadow:var(--shadow-sm)}
+.flow-layer strong{font-size:12.5px;font-weight:600;color:var(--ink)}
+.node-op{font-size:10.5px;color:var(--ink-3)}
+.flow-layer code{font-size:11px;color:var(--ink-3)}
+@media(max-width:700px){.topbar{gap:8px}.topbar .icon-button,.header-actions>.icon-button{width:25px;height:28px}.brand-copy strong{font-size:14px}.brand-copy small{font-size:8px}.view-tabs button{font-size:11px}.scene-heading h1{font-size:20px;margin:4px 0 6px}.architecture-meta{font-size:9.5px}.scene-legend span{font-size:9.5px}.flow-controls{height:38px}.flow-direction button,.flow-controls select{font-size:10.5px}.flow-label{font-size:9.5px}.monitor-title h2{font-size:11px}.monitor-actions select{font-size:9.5px;max-width:78px}.monitor .button{font-size:9.5px;padding:3px 6px}.layer-option small{font-size:9.5px}.selected-layer h2{font-size:15px}.inspector-tabs button{font-size:11.5px}.statusbar{font-size:9px}}
+/* The 3D view's legend: a frosted card at the top right, under the validation badge, where the
+   diagonal overview leaves the canvas empty; one row per operator family present, folded by its title. */
+.scene-legend{position:absolute;top:66px;right:24px;bottom:auto;left:auto;z-index:12;display:block;width:240px;max-width:calc(100% - 48px);padding:0;border-radius:12px;background:#ffffffd9;box-shadow:0 0 0 1px #1f3a4514,0 10px 28px #0f22291a;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);overflow:hidden}
+.scene-legend.collapsed{width:auto}
+.scene-legend-toggle{display:flex;align-items:center;gap:7px;width:100%;padding:8px 12px;border:0;background:transparent;color:var(--ink);font-size:11.5px;font-weight:650;letter-spacing:.02em;cursor:pointer}
+.scene-legend-toggle small{font-size:10px;font-weight:500;color:var(--ink-3);background:#edf1f3;border-radius:999px;padding:0 6px;line-height:16px}
+.scene-legend-toggle svg{margin-left:auto;color:var(--ink-3);transition:transform .16s ease}
+.scene-legend.collapsed .scene-legend-toggle svg{transform:rotate(-90deg)}
+.scene-legend ul{list-style:none;margin:0;padding:3px 7px 8px;max-height:min(52vh,430px);overflow:auto;scrollbar-width:thin;border-top:1px solid #1f3a4510}
+.scene-legend ul[hidden]{display:none}
+.scene-legend li{display:flex;align-items:center;gap:8px;padding:4px 5px;border-radius:8px}
+.scene-legend li:hover{background:#f1f5f6}
+.legend-glyph{flex-shrink:0;overflow:visible}
+.scene-legend li>span{display:flex;flex-direction:column;align-items:flex-start;gap:0;min-width:0}
+.scene-legend li strong{font-size:11.5px;font-weight:600;line-height:15px;color:var(--ink)}
+.scene-legend li small{max-width:100%;font-size:10px;line-height:13px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:700px){.scene-legend{top:56px;right:13px;width:212px}.scene-legend-toggle{padding:6px 10px;font-size:10.5px}}
+/* Layer library and selected-layer header: the operator's own glyph, the one the legend and the scene use. */
+.layer-symbol .legend-glyph{width:26px;height:18px}
+.selected-layer .layer-symbol .legend-glyph{width:32px;height:23px}
+/* The night stage (src/sceneTheme.ts): the 3D view's overlays turn to dark glass with light type. */
+.scene-workspace.night{background:#04080d}
+.scene-workspace.night .scene-heading .eyebrow{color:#5f8798}
+.scene-workspace.night .scene-heading h1{color:#eef7fb;text-shadow:0 0 24px #4cc3ff33}
+.scene-workspace.night .architecture-meta{color:#8fb0be}
+.scene-workspace.night .architecture-meta i{background:#3c5b69}
+.scene-workspace.night .breadcrumb button{color:#9cc2d1}
+.scene-workspace.night .validation-badge{background:#0d241ccc;border-color:#1f5a46;color:#7fe0b4;box-shadow:none}
+.scene-workspace.night .validation-badge.error{background:#36120fcc;border-color:#6b2a24;color:#ff9b8f}
+.scene-workspace.night .scene-legend{background:#07131bd6;box-shadow:0 0 0 1px #4fc3ff24,0 16px 36px #000a}
+.scene-workspace.night .scene-legend-toggle{color:#e6f4fa}
+.scene-workspace.night .scene-legend-toggle small{background:#14303f;color:#8fb0be}
+.scene-workspace.night .scene-legend-toggle svg{color:#8fb0be}
+.scene-workspace.night .scene-legend ul{border-top-color:#ffffff12}
+.scene-workspace.night .scene-legend li:hover{background:#ffffff0d}
+.scene-workspace.night .scene-legend li strong{color:#e6f4fa}
+.scene-workspace.night .scene-legend li small{color:#7f9fae}
+.scene-workspace.night .legend-glyph{filter:drop-shadow(0 0 3px #4cc3ff40)}
+.scene-workspace.night .flow-controls{background:#07131bdb;border-color:#ffffff14;box-shadow:0 16px 36px #000a}
+.scene-workspace.night .flow-controls .icon-button{color:#9cbccb}
+.scene-workspace.night .flow-controls .icon-button:hover{background:#ffffff12;color:#fff}
+.scene-workspace.night .flow-controls .icon-button.active,.scene-workspace.night .flow-direction button.active{background:#173f4d;color:#8fe8ff}
+.scene-workspace.night .flow-direction button{color:#8fb0be}
+.scene-workspace.night .flow-controls select{color:#c7dde6}
+.scene-workspace.night .flow-controls select option{color:#14232b}
+.scene-workspace.night .flow-label{color:#5f8798;border-left-color:#ffffff14}
+.scene-workspace.night .toolbar-separator{background:#ffffff1a}
+.scene-workspace.night .gpu-badge{color:#5f8798}
+.scene-workspace.night .scene-label{background:#06121bd4;box-shadow:0 0 0 1px #5fd0ff29,0 2px 12px #0009;color:#9ab8c6}
+.scene-workspace.night .scene-label strong{color:#eaf6fb}
+.scene-workspace.night .scene-label span{color:#86a6b5}
+.scene-workspace.night .scene-label::before{box-shadow:0 0 7px var(--accent,#8a9aa2)}
+.scene-workspace.night .scene-label.selected{background:#0b1f2b;box-shadow:0 0 0 1.5px #9cecff,0 0 20px #4cc3ff59}
+/* A structure-only model (too large to run here): a tag in the scene heading and a note in the inspector. */
+.structure-only-tag{font-size:10.5px;font-weight:600;line-height:18px;padding:0 8px;border-radius:999px;background:#fff3df;color:#9a6a1c;box-shadow:inset 0 0 0 1px #f0d9ad}
+.scene-workspace.night .structure-only-tag{background:#3a2a0f;color:#ffcf7a;box-shadow:inset 0 0 0 1px #6b4f1f}
+.structure-notice{margin:12px 0}

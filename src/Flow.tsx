@@ -1,52 +1,66 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { RESIDUAL_COLOR } from './flowGeometry';
+import { FLOW_GLOW, FLOW_PULSES, RESIDUAL_COLOR } from './flowGeometry';
+import { flowCurve } from './sceneLayout';
 
+export { flowCurve };
+export { FLOW_GLOW };
 export interface FlowProps { start: THREE.Vector3; end: THREE.Vector3; control1?: THREE.Vector3; control2?: THREE.Vector3; active: boolean; direction: string; speed: number; color: string; intensity?: number; compact?: boolean; opacity?: number; }
 
-export function flowCurve({ start, end, control1, control2, compact = false }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'compact'>) {
-  const d = end.x - start.x, bend = compact ? 0.05 : 0.4;
-  return new THREE.CubicBezierCurve3(start, control1 ?? start.clone().add(new THREE.Vector3(d * 0.36, bend, 0)), control2 ?? end.clone().add(new THREE.Vector3(-d * 0.36, bend, 0)), end);
-}
+/** World units between two pulses, and how fast they travel at 1×, so every edge flows alike whatever its length. */
+const SPACING = { main: 1.7, compact: 0.95 };
+const SPEED = 1.15;
 
-// Each instance follows its curve in the vertex shader, without CPU particle updates.
-// A few evenly spaced pulses close to the curve read as direction of travel; a dense cloud
-// scattered around it read as noise, and as a coil where it passed in front of a block.
-export function ParticleEdge({ start, end, control1, control2, active, direction, speed, color, intensity = 0, compact = false, opacity = 0.85 }: FlowProps) {
+const VERTEX = `varying float vAlong;
+void main() { vAlong = uv.x; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+// A pulse is a bright head with a tail fading behind it. For a point `distance` along the edge, `behind`
+// is how far (as a share of the spacing) the last head has gone past it: 0 at the head, near 1 just
+// before the next head arrives, which is why the head has a sharp front and a soft tail.
+const FRAGMENT = `uniform vec3 uBase; uniform vec3 uPulse; uniform float uOpacity; uniform float uTime; uniform float uDirection;
+uniform float uLength; uniform float uSpacing; uniform float uSpeed; uniform float uTail; uniform float uGlow; uniform float uPulses;
+varying float vAlong;
+void main() {
+  float distance = (uDirection > 0.0 ? vAlong : 1.0 - vAlong) * uLength;
+  float behind = fract((uTime * uSpeed - distance) / uSpacing);
+  float pulse = exp(-behind * uTail) * uPulses;
+  gl_FragColor = vec4(mix(uBase, uPulse * uGlow * 1.25, pulse), max(uOpacity, pulse));
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`;
+
+/**
+ * An edge drawn as a tube that the data flows through: pulses of light, each a bright head with a
+ * fading tail, travel along it at one speed and one spacing in world units, forward or back. A
+ * larger tensor leaves a longer tail. At night the pulses pass the bloom threshold and glow; an
+ * image export draws the tube in its day colour without pulses. `exportColor`/`exportOpacity` are
+ * what the SVG export and the day look use when the live colour differs.
+ */
+export function FlowLine({ start, end, control1, control2, active, direction, speed, color, pulseColor = color, intensity = 0, compact = false, opacity = compact ? 0.75 : 0.72, exportColor = color, exportOpacity = opacity, pulses = true, pulseStrength = 1 }: FlowProps & { pulseColor?: string; exportColor?: string; exportOpacity?: number; pulses?: boolean; pulseStrength?: number }) {
   const clock = useRef(0);
-  const { geometry, material } = useMemo(() => {
-    const base = new THREE.SphereGeometry(compact ? 0.024 : 0.036, 8, 6);
-    const geometry = new THREE.InstancedBufferGeometry(); geometry.index = base.index;
-    geometry.setAttribute('position', base.getAttribute('position').clone());
-    // Larger tensors still flow more densely, within a narrower range.
-    const count = compact ? 6 : 10 + Math.min(10, Math.max(0, Math.floor(intensity / 2)));
-    geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(Float32Array.from({ length: count }, (_, i) => i / count), 1));
-    geometry.setAttribute('aOffset', new THREE.InstancedBufferAttribute(Float32Array.from({ length: count * 2 }, (_, i) => Math.sin(i * 9.13) * (compact ? 0.006 : 0.03)), 2));
-    geometry.instanceCount = count; base.dispose();
+  const { geometry, curve, material } = useMemo(() => {
     const curve = flowCurve({ start, end, control1, control2, compact });
+    const geometry = new THREE.TubeGeometry(curve, 64, compact ? 0.016 : 0.03, 10, false);
     const material = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uStart: { value: start }, uEnd: { value: end }, uControl1: { value: curve.v1 }, uControl2: { value: curve.v2 }, uDirection: { value: 1 }, uOpacity: { value: opacity }, uColor: { value: new THREE.Color(color) } },
-      vertexShader: `attribute float aPhase; attribute vec2 aOffset; uniform float uTime; uniform vec3 uStart; uniform vec3 uEnd; uniform vec3 uControl1; uniform vec3 uControl2; uniform float uDirection; varying float vGlow;
-      void main(){ float t=fract(aPhase+uTime*0.22); if(uDirection<0.0)t=1.0-t; float r=1.0-t; vec3 p=r*r*r*uStart+3.0*r*r*t*uControl1+3.0*r*t*t*uControl2+t*t*t*uEnd; p.yz+=aOffset; vGlow=sin(t*3.14159)*0.5+0.5; gl_Position=projectionMatrix*modelViewMatrix*vec4(p+position,1.0); }`,
-      fragmentShader: `uniform vec3 uColor; uniform float uOpacity; varying float vGlow; void main(){gl_FragColor=vec4(uColor*(0.75+vGlow*0.45),uOpacity);}`,
-      transparent: true, depthWrite: false
+      uniforms: {
+        uBase: { value: new THREE.Color() }, uPulse: { value: new THREE.Color() }, uOpacity: { value: opacity }, uTime: { value: 0 }, uDirection: { value: 1 },
+        uLength: { value: curve.getLength() }, uSpacing: { value: compact ? SPACING.compact : SPACING.main }, uSpeed: { value: SPEED },
+        uTail: { value: compact ? 7 : 7 - Math.min(3.5, Math.max(0, intensity) / 6) }, uGlow: FLOW_GLOW, uPulses: { value: 1 }
+      },
+      vertexShader: VERTEX, fragmentShader: FRAGMENT, transparent: true
     });
-    return { geometry, material };
-  }, [start, end, control1, control2, intensity, color, compact, opacity]);
+    return { geometry, curve, material };
+  }, [start, end, control1, control2, compact, intensity]);
   useEffect(() => () => { geometry.dispose(); material.dispose(); }, [geometry, material]);
-  useFrame((_, delta) => { if (active) clock.current += delta * speed; material.uniforms.uTime.value = clock.current; material.uniforms.uDirection.value = direction === 'forward' ? 1 : -1; });
-  return <mesh raycast={() => {}} geometry={geometry} material={material} frustumCulled={false} />;
-}
-
-export function EdgeLine({ start, end, control1, control2, color, compact = false, opacity = compact ? 0.75 : 0.6 }: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'compact' | 'opacity'>) {
-  const geometry = useMemo(() => {
-    const curve = flowCurve({ start, end, control1, control2, compact });
-    return new THREE.TubeGeometry(curve, 32, compact ? 0.013 : 0.016, 6, false);
-  }, [start, end, control1, control2, compact]);
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  const curve = flowCurve({ start, end, control1, control2, compact });
-  return <mesh raycast={() => {}} geometry={geometry} userData={{ exportCurve: { start: start.toArray(), end: end.toArray(), control1: curve.v1.toArray(), control2: curve.v2.toArray(), color, opacity } }}><meshBasicMaterial color={color} transparent opacity={opacity} /></mesh>;
+  const u = material.uniforms;
+  u.uBase.value.set(color); u.uPulse.value.set(pulseColor); u.uOpacity.value = opacity;
+  useFrame((_, delta) => {
+    if (active) clock.current += delta * speed;
+    u.uTime.value = clock.current; u.uDirection.value = direction === 'forward' ? 1 : -1;
+    u.uPulses.value = pulses ? FLOW_PULSES.value * pulseStrength : 0;
+  });
+  return <mesh raycast={() => {}} geometry={geometry} material={material}
+    userData={{ exportCurve: { start: start.toArray(), end: end.toArray(), control1: curve.v1.toArray(), control2: curve.v2.toArray(), color: exportColor, opacity: exportOpacity }, dayUniforms: { uBase: exportColor, uOpacity: exportOpacity, uPulses: 0 } }} />;
 }
 
 export function FlowArrow(props: Pick<FlowProps, 'start' | 'end' | 'control1' | 'control2' | 'color' | 'direction'>) {
@@ -58,6 +72,7 @@ export function FlowArrow(props: Pick<FlowProps, 'start' | 'end' | 'control1' | 
   return <mesh raycast={() => {}} position={position} quaternion={quaternion} userData={{ exportMesh: true }}><coneGeometry args={[0.055, 0.14, 6]} /><meshBasicMaterial color={props.color} /></mesh>;
 }
 
-export function ResidualFlow(props: Omit<FlowProps, 'color' | 'compact' | 'intensity'>) {
-  return <><EdgeLine {...props} color={RESIDUAL_COLOR} compact /><ParticleEdge {...props} color={RESIDUAL_COLOR} compact /><FlowArrow {...props} color={RESIDUAL_COLOR} /></>;
+/** A residual shortcut: its pink tube with pink pulses, and an arrow toward the addition. */
+export function ResidualFlow(props: Omit<FlowProps, 'color' | 'compact' | 'intensity'> & { pulses?: boolean }) {
+  return <><FlowLine {...props} color={RESIDUAL_COLOR} compact /><FlowArrow {...props} color={RESIDUAL_COLOR} /></>;
 }
