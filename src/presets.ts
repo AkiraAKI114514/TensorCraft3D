@@ -1,7 +1,7 @@
 import { DEFAULTS, type Graph, type Op, type Params } from './types';
 // The full 671B DeepSeek-V3, exactly as the importer builds it from the official model.py and
 // configs/config_671B.json (backend/test_deepseek_reference.py pins the importer to this file).
-import deepseekV3Structure from '../tests/fixtures/deepseek-v3-671b-structure.json';
+import deepseekV3Structure from '../tests/fixtures/deepseek-v3-671b-structure.json' with { type: 'json' };
 
 function sequential(name: string, specs: [Op, Params?, string?][]): Graph {
   const nodes = specs.map(([op, params, label], i) => ({ id: `layer_${i}`, name: label || `${op}_${i}`, op, params: { ...DEFAULTS[op], ...params }, position: { x: i * 210, y: 100 } }));
