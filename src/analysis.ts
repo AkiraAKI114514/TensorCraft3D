@@ -26,6 +26,24 @@ export function einsumShape(equation: unknown, shapes: number[][]): number[] {
   for (const label of output) if (!(label in sizes)) throw new Error('einsum 输出子脚本必须出现在输入中');
   return [...output].map(label => sizes[label]);
 }
+/**
+ * Weights of DeepSeek-style MLA (no biases): the query path (one projection, or a latent with its
+ * RMSNorm), the shared K/V latent plus rotary key, its RMSNorm, the K/V up-projection and the output
+ * projection. Mirrors `latent_attention_parameters` in backend/graph.py.
+ */
+export function latentAttentionParameters(embed: number, heads: number, qLora: number, kvLora: number, nope: number, rope: number, value: number) {
+  const query = qLora ? embed * qLora + qLora + qLora * heads * (nope + rope) : embed * heads * (nope + rope);
+  return query + embed * (kvLora + rope) + kvLora + kvLora * heads * (nope + value) + heads * value * embed;
+}
+export const MOE_SCORE_FUNCTIONS = ['softmax', 'sigmoid'] as const;
+/**
+ * Weights of DeepSeek-style MoE (no biases): the gate's expert-by-dim matrix, three SwiGLU matrices
+ * per routed expert, and one SwiGLU `shared * hidden` wide for the shared experts. The gate's
+ * balancing bias is a buffer, not a trained parameter. Mirrors `moe_parameters` in backend/graph.py.
+ */
+export function moeParameters(dim: number, experts: number, shared: number, hidden: number) {
+  return dim * experts + experts * 3 * dim * hidden + (shared ? 3 * dim * shared * hidden : 0);
+}
 export const shapeText = (shape?: number[]) => shape ? shape.join(' × ') : '—';
 export const formatNumber = (value: number) => value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
 
@@ -192,7 +210,22 @@ function analyzeExpanded(graph: Graph): Analysis {
         const rank = Number(n.op.match(/([123])d$/)?.[1] || 2) + 2; if (output.length !== rank) throw new Error(`${n.op} 需要 ${rank} 维通道输入`);
         const raw = n.params.output_size ?? 1, sizes: number[] = (Array.isArray(raw) ? raw : Array(rank - 2).fill(raw)).map(Number);
         if (sizes.length !== rank - 2 || !sizes.every(v => Number.isInteger(v) && v > 0 && v <= 256)) throw new Error('自适应池化 output_size 无效'); output = [output[0], output[1], ...sizes];
-      } else if (n.op === 'Flatten') output = [output[0], product(output.slice(1))];
+      } else if (n.op === 'Flatten') {
+        // Merges start_dim..end_dim into one axis, as nn.Flatten does; older projects store neither bound.
+        const rank = output.length, first = (integer('start_dim', 1, -rank, rank - 1) + rank) % rank, last = (integer('end_dim', -1, -rank, rank - 1) + rank) % rank;
+        if (first === 0) throw new Error('Flatten 不能展平 batch 维度，start_dim 需从 1 开始');
+        if (last < first) throw new Error('Flatten 的 end_dim 不能在 start_dim 之前');
+        output = [...output.slice(0, first), product(output.slice(first, last + 1)), ...output.slice(last + 1)];
+      } else if (n.op === 'Unflatten') {
+        // Splits one axis into `sizes`, as nn.Unflatten does; one entry may be -1 and takes what is left.
+        const rank = output.length, dim = (integer('dim', -1, -rank, rank - 1) + rank) % rank, raw = n.params.sizes, sizes = (Array.isArray(raw) ? raw : [raw]) as number[];
+        if (dim === 0) throw new Error('Unflatten 不能拆分 batch 维度');
+        if (!sizes.length || sizes.length > 5 || !sizes.every(v => Number.isInteger(v) && (v === -1 || (v >= 1 && v <= 65536))) || sizes.filter(v => v === -1).length > 1) throw new Error('Unflatten sizes 需要 1–5 个正整数，最多一个 -1');
+        if (rank - 1 + sizes.length > 6) throw new Error('Unflatten 输出不能超过 6 维');
+        const known = product(sizes.filter(v => v !== -1));
+        if (sizes.includes(-1) ? output[dim] % known !== 0 : known !== output[dim]) throw new Error(`Unflatten sizes 的乘积必须等于第 ${dim} 维的大小 ${output[dim]}`);
+        output = [...output.slice(0, dim), ...sizes.map(v => v === -1 ? output[dim] / known : v), ...output.slice(dim + 1)];
+      }
       else if (n.op === 'Unsqueeze') { const dim = integer('dim', 0, -output.length - 1, output.length); const index = dim < 0 ? dim + output.length + 1 : dim; output = [...output.slice(0, index), 1, ...output.slice(index)]; }
       else if (n.op === 'Squeeze') {
         const raw = n.params.dim ?? 'all';
@@ -285,6 +318,42 @@ function analyzeExpanded(graph: Graph): Analysis {
           activationBytes += product(output.slice(0, 2)) * ff * 4;
           count += 2 * embed * ff + ff + 5 * embed;
         }
+      } else if (n.op === 'LatentAttention') {
+        // DeepSeek-style Multi-head Latent Attention: self-attention on [B,S,E] that keeps the input
+        // shape. backend/graph.py makes the same calls.
+        if (output.length !== 3) throw new Error('潜在注意力需要三维输入 [B,S,E]');
+        const embed = integer('embed_dim', 64, 1, 4096), heads = integer('num_heads', 4, 1, 16);
+        const qLora = integer('q_lora_rank', 32, 0, 4096), kvLora = integer('kv_lora_rank', 32, 1, 4096);
+        const nope = integer('qk_nope_head_dim', 16, 1, 512), rope = integer('qk_rope_head_dim', 8, 2, 512), value = integer('v_head_dim', 16, 1, 512);
+        if (rope % 2) throw new Error('qk_rope_head_dim 必须是偶数：旋转位置编码成对转动');
+        if (output[2] !== embed) throw new Error(`输入特征维度 ${output[2]} 与 embed_dim ${embed} 不一致`);
+        for (const [key, fallback, upper] of [['rope_theta', 10000, 1e9], ['eps', 1e-6, 1]] as const) {
+          const number = n.params[key] ?? fallback;
+          if (typeof number !== 'number' || !Number.isFinite(number) || number <= 0 || number > upper) throw new Error(`${key} 需要是不超过 ${upper} 的正数`);
+        }
+        integer('causal', 1, 0, 1);
+        const elements = output[0] * heads * output[1] * output[1];
+        if (elements > 16e6) throw new Error('注意力矩阵超过 1600 万元素，请减少序列长度或头数');
+        activationBytes += elements * 4;
+        count = latentAttentionParameters(embed, heads, qLora, kvLora, nope, rope, value);
+      } else if (n.op === 'MoE') {
+        // DeepSeek-style mixture of experts over the last axis; keeps the input shape.
+        // backend/graph.py makes the same calls.
+        if (output.length < 2) throw new Error('MoE 需要至少二维输入 [B,...,F]');
+        const experts = integer('experts', 8, 1, 64), topK = integer('top_k', 2, 1, 8), shared = integer('shared_experts', 1, 0, 4);
+        const hidden = integer('expert_dim', 64, 1, 16384), groups = integer('groups', 1, 1, 64), topkGroups = integer('topk_groups', 1, 1, 64);
+        const bias = integer('gate_bias', 1, 0, 1);
+        if (topK > experts) throw new Error('top_k 不能超过路由专家数 experts');
+        if (experts % groups || topkGroups > groups) throw new Error('experts 必须能被 groups 整除，且 topk_groups 不能超过 groups');
+        if (groups > 1 && topK > topkGroups * (experts / groups)) throw new Error('选中的专家组至少要容纳 top_k 个专家');
+        if (groups > 1 && bias && experts / groups < 2) throw new Error('带门控偏置时按每组最好的两个专家给组打分，每组至少需要两个专家');
+        if (!MOE_SCORE_FUNCTIONS.includes((n.params.score_func ?? 'sigmoid') as typeof MOE_SCORE_FUNCTIONS[number])) throw new Error('score_func 只能是 softmax 或 sigmoid');
+        const scale = n.params.route_scale ?? 1;
+        if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0 || scale > 1000) throw new Error('route_scale 需要是不超过 1000 的正数');
+        const tokens = product(output.slice(0, -1));
+        if (tokens * (topK + shared) * hidden > 16e6) throw new Error('MoE 中间激活超过 1600 万元素');
+        activationBytes += tokens * ((topK + shared) * hidden * 3 + experts) * 4;
+        count = moeParameters(output.at(-1)!, experts, shared, hidden);
       } else if (['Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout'].includes(n.op)) {
         const p = n.params.p ?? 0.3; if (typeof p !== 'number' || p < 0 || p >= 1) throw new Error('Dropout p 需要在 [0,1) 范围内');
       } else if (['PReLU'].includes(n.op)) {
@@ -308,6 +377,12 @@ function analyzeExpanded(graph: Graph): Analysis {
         const factor = n.params.factor;
         if (typeof factor !== 'number' || !Number.isFinite(factor)) throw new Error('Scale 需要有限的数值系数 factor');
         if (Math.abs(factor) > 3.4028234663852886e38) throw new Error('Scale 系数超出 float32 范围');
+      } else if (n.op === 'CausalMask') {
+        // Scores whose key comes after their query become -inf. query_dim/key_dim name the two
+        // position axes (the last two for `q @ k.transpose(-2, -1)`); they must be equally long.
+        const rank = output.length, query = (integer('query_dim', -2, -rank, rank - 1) + rank) % rank, key = (integer('key_dim', -1, -rank, rank - 1) + rank) % rank;
+        if (query === key || query === 0 || key === 0) throw new Error('CausalMask 需要两个不同的非 batch 位置轴');
+        if (output[query] !== output[key]) throw new Error(`CausalMask 的 query 与 key 位置轴必须等长（${output[query]} 与 ${output[key]}）`);
       } else if (n.op === 'Einsum') {
         if (input.length < 1) throw new Error('Einsum 至少需要一个输入');
         output = einsumShape(n.params.equation, input);

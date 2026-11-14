@@ -14,6 +14,7 @@ const folded = () => chain([layer('in', 'Input', { shape: [2, 8] }), layer('stac
   subgraphs: { cell: { id: 'cell', name: 'Cell', origin: 'manual', nodes: [layer('fc', 'Linear', { out_features: 8 }), layer('act', 'Tanh')], edges: [{ id: 's0', source: 'fc', target: 'act' }] } },
 });
 const attention = () => chain([layer('in', 'Input', { shape: [1, 5, 8] }), layer('attn', 'MultiHeadAttention', { attention_type: 'self', embed_dim: 8, num_heads: 2, kv_heads: 2, branches: 1, dropout: 0, causal: 1 }), layer('flat', 'Flatten'), layer('head', 'Linear', { out_features: 2 }), layer('out', 'Output')]);
+const moe = () => chain([layer('in', 'Input', { shape: [1, 6, 8] }), layer('moe', 'MoE', { experts: 4, top_k: 2, shared_experts: 1, expert_dim: 4, score_func: 'sigmoid', route_scale: 1, groups: 1, topk_groups: 1, gate_bias: 1 }), layer('flat', 'Flatten'), layer('head', 'Linear', { out_features: 2 }), layer('out', 'Output')]);
 
 /**
  * What a user does outside the workbench: run the exported code, take the model as trained
@@ -44,7 +45,25 @@ print(json.dumps(results))
 }
 
 describe('offline observation snapshots', () => {
-  const [plain, block, attended] = observe([{ graph: cnn(), sample: [1, 1, 6, 6] }, { graph: folded(), sample: [1, 8], probes: ['layers.stack.0.fc', 'layers.stack.1.fc', 'layers.stack.1.act'] }, { graph: attention(), sample: [1, 5, 8] }]);
+  const [plain, block, attended, routed] = observe([{ graph: cnn(), sample: [1, 1, 6, 6] }, { graph: folded(), sample: [1, 8], probes: ['layers.stack.0.fc', 'layers.stack.1.fc', 'layers.stack.1.act'] }, { graph: attention(), sample: [1, 5, 8] }, { graph: moe(), sample: [1, 6, 8] }]);
+
+  it('carries every MoE layer\'s routing and checks its load against its choices', () => {
+    const snapshot = parseObservationSnapshot(routed.snapshot);
+    // The exported model, its gate bias buffer included, reproduces through the writer.
+    snapshot.tensors.find(tensor => tensor.nodeId === 'out')!.slice.values.flat().forEach((value, index) => expect(value).toBeCloseTo(routed.expected[index], 5));
+    expect(snapshot.routings).toHaveLength(1);
+    const [routing] = snapshot.routings;
+    expect(routing).toMatchObject({ nodeId: 'moe', positions: 6, experts: 4, topK: 2, sharedExperts: 1, scoreFunc: 'sigmoid', positionStart: 0, expertStart: 0 });
+    expect(routing.load.reduce((sum, count) => sum + count, 0)).toBe(12);
+    expect(routing.chosen).toHaveLength(6);
+    const edit = (change: (entry: Record<string, any>) => void) => { const value = JSON.parse(routed.snapshot) as Record<string, any>; change(value.routings[0]); return () => parseObservationSnapshot(JSON.stringify(value)); };
+    expect(edit(entry => { entry.load[0] += 1; })).toThrow('观测快照内容无效：routings[0].load');
+    expect(edit(entry => { entry.chosen[0] = [1, 1]; })).toThrow('观测快照内容无效：routings[0].chosen[0]');
+    expect(edit(entry => { entry.nodeId = 'head'; })).toThrow('观测快照内容无效：routings[0].nodeId');
+    expect(edit(entry => { entry.weights.rowStart = 1; })).toThrow('观测快照内容无效：routings[0].weights');
+    // A file from before routing was captured has none, and is still read.
+    expect(parseObservationSnapshot(JSON.stringify({ ...JSON.parse(routed.snapshot), routings: undefined })).routings).toEqual([]);
+  });
 
   it('reproduces the exported model\'s own output, folded blocks included', () => {
     for (const [result, graph] of [[plain, cnn()], [block, folded()]] as const) {

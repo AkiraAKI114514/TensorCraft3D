@@ -27,16 +27,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .inference import AttentionSelection, InferenceError, _device_name, _execute, _input_tensors, _prepare_graph, _resolve_slices, _validate_attention, describe_parameters
+from .inference import ATTENTION_OPS, AttentionSelection, InferenceError, _device_name, _execute, _input_tensors, _prepare_graph, _resolve_routing, _resolve_slices, _validate_attention, describe_parameters
 
 FORMAT = "tensorcraft-observation"
 VERSION = 1
 # The workbench refuses a larger file before parsing it.
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 MAX_LABEL_LENGTH = 120
-ATTENTION_OPS = ("Transformer", "MultiHeadAttention")
-
-
 def _flatten_inputs(inputs: Any, info: dict[str, Any], torch: Any) -> dict[str, list[Any]]:
     """One sample per Input node, flattened the way the inspector's custom sample is.
 
@@ -133,6 +130,8 @@ def capture_snapshot(graph: dict[str, Any], weights: Any = None, inputs: Any = N
         else:
             selections[node_id] = selection if isinstance(selection, AttentionSelection) else AttentionSelection.model_validate(selection)
     _validate_attention(selections, info, order)
+    # Every MoE layer reports its routing at the top-left window, with every expert's load.
+    routing = _resolve_routing({}, info, order)
     resolved = _resolve_slices(slices or {}, info, by_id)
     device_name = _device_name(device, torch)
     provided = None if inputs is None else _flatten_inputs(inputs, info, torch)
@@ -151,7 +150,7 @@ def capture_snapshot(graph: dict[str, Any], weights: Any = None, inputs: Any = N
             except RuntimeError as error:
                 # Same names, different shapes: the weights belong to another configuration.
                 raise InferenceError(f"weights do not match this graph: {str(error)[:400]}") from error
-        measured = _execute(model, info, by_id, sample, device_name, order, resolved, selections, torch)
+        measured = _execute(model, info, by_id, sample, device_name, order, resolved, selections, torch, routing=routing)
         tensors, attentions = measured["tensors"], measured["attentions"]
         # The weights a run outside the workbench trained are the reason to bring it in, so every
         # layer that has any carries their summaries, at the default leading indices.
@@ -171,6 +170,7 @@ def capture_snapshot(graph: dict[str, Any], weights: Any = None, inputs: Any = N
         "mode": "eval",
         "tensors": tensors,
         "attentions": attentions,
+        "routings": measured["routings"],
         "parameters": parameters,
     }
 

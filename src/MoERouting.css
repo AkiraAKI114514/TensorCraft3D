@@ -1,0 +1,9 @@
+.moe-routing { display: grid; gap: 10px; margin-top: 12px; }
+.moe-routing h3 { margin: 0; font-size: 13px; }
+.moe-load { margin: 0; }
+.moe-load figcaption { font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+.moe-load svg { width: 100%; height: auto; display: block; }
+.moe-load text { font-size: 9px; fill: var(--muted, #687782); }
+.moe-load-bar { fill: #c0743c; }
+.moe-load-mean { stroke: #1d3943; stroke-width: 1; stroke-dasharray: 4 3; }
+.moe-chosen { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }

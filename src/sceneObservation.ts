@@ -15,16 +15,20 @@ export interface SceneObservation {
   weights: 'trained' | 'random-initialized' | 'external';
   createdAt: string;
   tensors: Record<string, TensorSnapshot>;
+  /** Tokens each expert of an MoE layer received, by layer; the expert bars are shaded by it. */
+  loads: Record<string, number[]>;
 }
+
+const loadsOf = (routings: { nodeId: string; load: number[] }[] | undefined) => Object.fromEntries((routings ?? []).map(routing => [routing.nodeId, routing.load]));
 
 export const observationFromReport = (report: InferenceReport, graph: Graph): SceneObservation => ({
   key: report.runId, graphKey: computationKey(graph), source: 'live', weights: report.weights, createdAt: report.createdAt,
-  tensors: Object.fromEntries(report.tensors.map(tensor => [tensor.nodeId, tensor])),
+  tensors: Object.fromEntries(report.tensors.map(tensor => [tensor.nodeId, tensor])), loads: loadsOf(report.routings),
 });
 
 export const observationFromSnapshot = (snapshot: ObservationSnapshot): SceneObservation => ({
   key: snapshot.snapshotId, graphKey: computationKey(snapshot.graph), source: 'offline', weights: snapshot.weights, createdAt: snapshot.createdAt,
-  tensors: Object.fromEntries(snapshot.tensors.map(tensor => [tensor.nodeId, tensor])),
+  tensors: Object.fromEntries(snapshot.tensors.map(tensor => [tensor.nodeId, tensor])), loads: loadsOf(snapshot.routings),
 });
 
 /** Stored for a non-finite element; the block draws it in a colour of its own. Float32, as stored. */

@@ -9,6 +9,12 @@ export const ATTENTION_TYPES = {
 } as const;
 export type AttentionType = keyof typeof ATTENTION_TYPES;
 export const isAttention = (op: string) => op === 'MultiHeadAttention' || op === 'Transformer';
+/**
+ * Layers the Attention Inspector reads. Latent attention (MLA) is its own operator, with no
+ * projection ports and no attention-module geometry, so it is not `isAttention`; it still reports
+ * per-head Q/K/V, scores and probabilities. Mirrors ATTENTION_OPS in backend/inference.py.
+ */
+export const inspectsAttention = (op: string) => isAttention(op) || op === 'LatentAttention';
 export const isCrossAttention = (node: Layer) => isAttention(node.op) && node.params.attention_type === 'cross';
 // Legacy projects omit these parameters. Self/cross default to one KV head per Q head.
 export function attentionConfig(p: Params) {

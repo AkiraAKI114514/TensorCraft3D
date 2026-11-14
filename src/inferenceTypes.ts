@@ -92,6 +92,35 @@ export interface AttentionSnapshot extends AttentionSelection {
 }
 
 /**
+ * The position × expert window of an MoE layer's routing; the load always covers every expert. A
+ * position is one row the layer routes; without tokenizer metadata it is not called a token.
+ */
+export interface RoutingSelection {
+  positionStart: number;
+  expertStart: number;
+}
+
+/**
+ * One MoE layer's routing for the single sample. `scores` are the gate's unbiased scores and
+ * `weights` the weight each token gives each expert (0 where it chose another), both at the
+ * selected window of at most 16 × 16; `chosen` lists the experts each windowed token kept, and
+ * `load` how many tokens every expert received.
+ */
+export interface RoutingSnapshot extends RoutingSelection {
+  nodeId: string;
+  positions: number;
+  experts: number;
+  topK: number;
+  sharedExperts: number;
+  scoreFunc: 'softmax' | 'sigmoid';
+  routeScale: number;
+  scores: AttentionMatrix;
+  weights: AttentionMatrix;
+  chosen: number[][];
+  load: number[];
+}
+
+/**
  * One term of an explained value. `input` is where the layer's input was read (batch axis left
  * out), null where the window lies in the zero padding; `parameter` is the weight it was
  * multiplied by. Pooling has no weights: its term is x ÷ divisor (average) or x itself (max).
@@ -163,6 +192,8 @@ export interface InferenceReport {
   mode: 'eval';
   tensors: TensorSnapshot[];
   attentions: AttentionSnapshot[];
+  /** Routing of every observed MoE layer; an older backend sends none. */
+  routings?: RoutingSnapshot[];
   /** The requested layer's weights and biases; an older backend sends none. */
   parameters?: ParameterSnapshot[];
   /** The requested output value, split into its terms; null when none was requested. */

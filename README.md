@@ -21,7 +21,7 @@ A local **3D neural network workbench**: build visually or import PyTorch code, 
 | **Inspect tensors** | Inspect tensor values, statistics and distributions with single-sample inference; read a slice as a feature map with a channel grid or as a position × feature heatmap, and view Q/K/V, scores and probabilities in Attention Inspector. Open a read-only snapshot measured by your own Python run, with the weights it trained. |
 | **Save and share** | Autosave, undo/redo, project JSON import/export, plus high-resolution PNG and editable SVG diagrams. |
 
-**Templates:** CNN · MLP · Residual CNN · Transformer Encoder · MQA · GQA · Cross-Attention. You can also start with a blank canvas.
+**Templates:** CNN · MLP · Residual CNN · Transformer Encoder · MQA · GQA · Cross-Attention · Gated Decoder Block · DeepSeek-V3-style Decoder (MLA + MoE). You can also start with a blank canvas.
 
 <table>
   <tr>

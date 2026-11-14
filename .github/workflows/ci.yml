@@ -103,6 +103,14 @@ jobs:
           path: dist
       - name: Check Windows startup entry points
         run: ./.venv/Scripts/python.exe -m unittest discover -s tests -p test_startup.py -v
+      - name: Warm the training imports
+        # The first optimizer a server process builds imports torch._dynamo and sympy, about 800
+        # modules, through torch's _disable_dynamo wrapper on add_param_group. torch itself is already
+        # warm here, since the startup check's health requests import it, but these modules would be
+        # read for the first time inside the browser tests' first training. On a hosted runner that
+        # first read took from under 30 s to over 90 s (locally about 1 s) and ran out the training
+        # budget. Importing them once in a throwaway process takes that cost out of the timed tests.
+        run: ./.venv/Scripts/python.exe -c "import torch, torch._dynamo, sympy"
       - name: Run core browser regressions in Microsoft Edge
         id: e2e
         # Run the regressions, then report what failed in the job summary instead of stopping at
