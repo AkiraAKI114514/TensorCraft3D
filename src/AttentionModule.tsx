@@ -77,8 +77,9 @@ function RingPanel({ corners, z, color, dimmed }: { corners: [number, number][];
   }, [corners]);
   useEffect(() => () => { fill.dispose(); rim.dispose(); }, [fill, rim]);
   return <group position={[0, 0, z]}>
-    <mesh raycast={() => {}} geometry={fill} renderOrder={-1}><meshBasicMaterial color={color} transparent opacity={dimmed ? 0.04 : night ? 0.16 : 0.12} side={THREE.DoubleSide} depthWrite={false} /></mesh>
-    <lineLoop raycast={() => {}} geometry={rim}><lineBasicMaterial color={night ? glowOf(color) : inkOf(color)} transparent opacity={dimmed ? 0.15 : 0.6} /></lineLoop>
+    {/* Exports use the day look, whatever the live one. */}
+    <mesh raycast={() => {}} geometry={fill} renderOrder={-1} userData={{ dayMaterial: { opacity: dimmed ? 0.04 : 0.12 } }}><meshBasicMaterial color={color} transparent opacity={dimmed ? 0.04 : night ? 0.16 : 0.12} side={THREE.DoubleSide} depthWrite={false} /></mesh>
+    <lineLoop raycast={() => {}} geometry={rim} userData={{ dayMaterial: { color: inkOf(color) } }}><lineBasicMaterial color={night ? glowOf(color) : inkOf(color)} transparent opacity={dimmed ? 0.15 : 0.6} /></lineLoop>
   </group>;
 }
 function FaceModule({ face, phase, sizes, ...props }: Props & { face: Face; phase: React.RefObject<number>; sizes: Sizes }) {

@@ -67,8 +67,9 @@ export function latentAnatomy([width, height, depth]: Point3, color: string, sha
   const kv: AnatomyPart = { key: 'kv-latent', center: [x(0.24), -lane / 2, 0], size: [latentWidth, latentHeight(shape.kvLora), latentDepth], color: shade(color, 0.18), cells: tensorCells([1, S, shape.kvLora]) };
   const norm = (of: AnatomyPart, key: string): AnatomyPart => ({ key, center: [of.center[0] + latentWidth / 2 + width * 0.035, of.center[1], 0], size: [width * 0.02, of.size[1], latentDepth], color: NORM_COLOR, cells: [1, 1, 1] });
   const kvNorm = norm(kv, 'kv-norm');
+  let qNorm: AnatomyPart | null = null;
   if (query) {
-    const qNorm = norm(query, 'q-norm');
+    qNorm = norm(query, 'q-norm');
     parts.push(query, qNorm);
     links.push(link(input, query), link(query, qNorm));
     labels.push({ text: 'c_Q', position: [query.center[0], query.center[1] + query.size[1] / 2 + 0.16, 0], color });
@@ -87,24 +88,32 @@ export function latentAnatomy([width, height, depth]: Point3, color: string, sha
   const ropeKey: AnatomyPart = { key: 'k-pe', center: [headX, 0, 0], size: [headWidth * 0.9, hub, hub], color: ROPE_COLOR, cells: tensorCells([1, S, shape.rope]) };
   if (drawn > 1) parts.push(ropeKey);
   const scoreX = x(0.76), plate = Math.min(tile * 0.95, 0.26);
+  const output: AnatomyPart = { key: 'output', center: [x(0.93), 0, 0], size: [width * 0.14, height, depth], color, cells: tensorCells([1, S, shape.embed]), output: true };
+  const rightOf = (part: AnatomyPart): Point3 => [part.center[0] + part.size[0] / 2, part.center[1], part.center[2]];
   for (let head = 0; head < drawn; head++) {
     const [y, z] = ring(head), [scoreY, scoreZ] = ring(head, 0.88);
     const nopeHeight = tile * (1 - ropeShare), ropeHeight = tile * ropeShare;
     parts.push({ key: `head-${head}`, center: [headX, y - tile / 2 + nopeHeight / 2, z], size: [headWidth, nopeHeight, tile * 0.55], color: tint(color, 0.18), cells: tensorCells([1, shape.nope]) });
     parts.push({ key: `head-rope-${head}`, center: [headX, y + tile / 2 - ropeHeight / 2, z], size: [headWidth, ropeHeight, tile * 0.55], color: ROPE_COLOR, cells: tensorCells([1, shape.rope]) });
     parts.push({ key: `scores-${head}`, center: [scoreX, scoreY, scoreZ], size: [width * 0.015, plate, plate], color: shade(color, 0.3), cells: tensorCells([1, S, S]) });
-    // A spoke from the shared rotary key to the head, and the head on to its score matrix.
+    // Every head reads both latents, at the middle of its tile; a spoke from the shared rotary key
+    // reaches it too. The head goes on to its score matrix, and that to Wᵒ.
+    // Each leaves its latent's face toward the head, so the links run as a bundle instead of
+    // meeting in one point, where at night their glow piled up into a white spot.
+    const tileLeft: Point3 = [headX - headWidth / 2, y, z], toward = (latent: AnatomyPart): Point3 => {
+      const [x0, y0] = rightOf(latent);
+      return [x0, y0 + y / radius * latent.size[1] * 0.35, z / radius * latent.size[2] * 0.35];
+    };
+    if (qNorm) links.push([toward(qNorm), tileLeft]);
+    links.push([toward(kvNorm), tileLeft]);
     if (drawn > 1) links.push([[headX, 0, 0], [headX, y, z]]);
-    links.push([[headX + headWidth / 2, y, z], [scoreX - width * 0.0075, scoreY, scoreZ]]);
+    links.push([[headX + headWidth / 2, y, z], [scoreX - width * 0.0075, scoreY, scoreZ]], [[scoreX + width * 0.0075, scoreY, scoreZ], [output.center[0] - output.size[0] / 2, scoreY, scoreZ]]);
   }
-  if (drawn === 1) parts.push({ ...ropeKey, center: [headX, -tile / 2 - hub, 0] });
-  const output: AnatomyPart = { key: 'output', center: [x(0.93), 0, 0], size: [width * 0.14, height, depth], color, cells: tensorCells([1, S, shape.embed]), output: true };
+  // A lone head sits at the hub, so its rotary key hangs under it.
+  const rotary: AnatomyPart = drawn === 1 ? { ...ropeKey, center: [headX, -tile / 2 - hub, 0] } : ropeKey;
+  if (drawn === 1) parts.push(rotary);
   parts.push(output);
-  const ringEdge: AnatomyPart = { key: 'ring', center: [headX, 0, 0], size: [headWidth, radius * 2, radius * 2], color, cells: [1, 1, 1] };
-  const scoreRing: AnatomyPart = { key: 'score-ring', center: [scoreX, 0, 0], size: [width * 0.015, radius * 2, radius * 2], color, cells: [1, 1, 1] };
-  // c_Q reaches the heads from above, c_KV from below and through the hub's k_pe.
-  if (query) links.push(link(parts.find(part => part.key === 'q-norm')!, ringEdge, lane / 2, radius * 0.6));
-  links.push(link(kvNorm, ringEdge, -lane / 2, -radius * 0.6), link(kvNorm, ropeKey, -lane / 2, 0), link(scoreRing, output));
+  links.push(link(kvNorm, rotary, kvNorm.center[1], rotary.center[1]));
   const corners = (scale: number) => Array.from({ length: drawn }, (_, head) => ring(head, scale));
   const polygons: AnatomyPolygon[] = drawn > 2 ? [{ key: 'heads', x: headX, corners: corners(1), color }, { key: 'scores', x: scoreX, corners: corners(0.88), color: shade(color, 0.3) }] : [];
   labels.push(
@@ -153,8 +162,16 @@ export function expertAnatomy([width, height, depth]: Point3, color: string, sha
   const combine: AnatomyPart = { key: 'combine', center: [x(0.83), 0, 0], size: [0.2, 0.2, 0.2], color: shade(color, 0.12), cells: [1, 1, 1] };
   const output: AnatomyPart = { key: 'output', center: [x(0.945), 0, 0], size: [width * 0.11, height, depth], color, cells: tensorCells([1, S, shape.embed]), output: true };
   parts.push(combine, output);
-  const bank: AnatomyPart = { key: 'bank', center: [bankX, 0, 0], size: [cube * 1.25, bankHeight, bankDepth], color, cells: [1, 1, 1] };
-  const links: [Point3, Point3][] = [link(input, router), link(router, bank, 0, bankHeight * 0.38), link(router, bank), link(router, bank, 0, -bankHeight * 0.38), link(bank, combine), link(combine, output)];
+  // The router reaches each row of cubes (a group, when there are groups) at its cube nearest the
+  // middle, at most eight rows spread evenly, and each such cube reaches the combine. Links at fixed
+  // heights on the bank's centre ended between cubes whenever the rows or columns were even, as with
+  // DeepSeek-V3's eight groups of eight.
+  const experts = parts.filter(part => part.key.startsWith('expert-'));
+  const reached = Array.from({ length: rows }, (_, row) => experts.slice(row * columns, (row + 1) * columns))
+    .filter(row => row.length).map(row => row.reduce((best, part) => Math.abs(part.center[2]) < Math.abs(best.center[2]) ? part : best));
+  const fanned = reached.length <= 8 ? reached : Array.from({ length: 8 }, (_, index) => reached[Math.round(index * (reached.length - 1) / 7)]);
+  const links: [Point3, Point3][] = [link(input, router), link(combine, output)];
+  for (const target of fanned) links.push(link(router, target, target.center[1] * router.size[1] / bankHeight * 0.9, target.center[1]), link(target, combine, target.center[1], 0));
   for (const part of sharedParts) links.push(link(input, part, input.center[1], part.center[1]), link(part, combine));
   const labels: AnatomyLabel[] = [
     { text: `router · top-${shape.topK}`, position: [router.center[0], router.size[1] / 2 + 0.18, 0], color },
