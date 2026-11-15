@@ -83,12 +83,12 @@ node scripts/record-readme-demo.mjs
 **Requirements:** PyTorch in the service, because the recording trains a model and measures every layer for real; Microsoft Edge, as for the browser tests; and `ffmpeg` on `PATH`.
 
 **What it records:**
-1. The Residual CNN template in the English UI.
+1. The Residual CNN template in the English UI, on the default night stage with the legend folded.
 2. One convolution cut to 8 channels, which the residual add rejects, then Undo.
 3. A training run with the default settings.
 4. Every layer measured on one sample of concentric rings and painted onto the 3D blocks.
 
-**How it records:** Edge runs headless at 1280 × 800. DevTools screencast frames keep their timestamps, so the GIF plays at the speed the session ran. The cursor is drawn by the script, because headless screenshots have none.
+**How it records:** Edge runs headless at 1280 × 800. DevTools screencast frames keep their timestamps, so the GIF plays at the speed the session ran. The cursor is drawn by the script, because headless screenshots have none. The GIF runs at 12 fps after a light temporal denoise: the night stage's glow flickers by a level or two from frame to frame, invisibly, which would otherwise defeat the GIF's frame differencing and nearly double its size.
 
 **Options:** `--out <file.gif>` writes somewhere else. `--keep-frames` keeps the PNG frames and prints their folder.
 
