@@ -7,8 +7,8 @@ timeline's `bpm`, so the music and the picture share one grid:
 - title: an impact, then F, C and G with the bass on the roots;
 - features: Am-F-C-G a bar each with a groove (kick, clap on 2 and 4, hats), a bass on eighths and
   plucked arpeggios; the operator parade doubles the arpeggio and hats and rings a rising bell on
-  each flash; the attention anatomy drops to a breakdown without kick or clap;
-- recap: G under a snare roll and a riser, a kick on each flash;
+  each operator; the attention anatomy drops to a breakdown without kick or clap;
+- recap: G under a snare roll and a riser, a kick on each recap shot;
 - end card: an impact, F then C, ringing out.
 
 Instruments are wavetable oscillators (band-limited by construction), noise shaped with FFT
@@ -34,6 +34,7 @@ PARADE = clips.index('wide_sequence')
 PARADE_END = next(i for i in range(PARADE + 1, len(clips)) if not clips[i].startswith('parade_'))
 BREAK, BREAK_END = clips.index('attn_gqa'), clips.index('ui_import')
 RECAP, OUTRO = len(segments) - 7, len(segments) - 1
+SECTION_STARTS = {'ui_error', 'wide_sequence', 'wide_signal', 'attn_gqa', 'ui_import', 'ui_train', 'ui_inspect', 'ui_export'}
 T = {name: cut[index] for name, index in dict(hero=HERO, groove=GROOVE, parade=PARADE, parade_end=PARADE_END, breakdown=BREAK, breakdown_end=BREAK_END, recap=RECAP, outro=OUTRO).items()}
 
 STEMS = ('pad', 'bass', 'arp', 'bell', 'kick', 'drums', 'fx')
@@ -291,7 +292,7 @@ for i in range(8):
     snare(T['breakdown_end'] - BEAT * 2 + i * BEAT / 4, 0.08 + 0.05 * i)
 riser(T['breakdown_end'], BAR, 0.18)
 
-# Bells: one on each cold-open statement, a rising one on each operator flash, and the end card.
+# Bells: one on each cold-open statement, a rising one on each operator, and the end card.
 OPEN_BELLS = [76, 79, 83]
 for k, i in enumerate(range(0, HERO)):
     bell(OPEN_BELLS[k % 3], cut[i] + 0.02, 0.32, pan=(-0.3, 0.3, 0.0)[k % 3])
@@ -309,8 +310,9 @@ for i in range(1, len(segments)):
     kind = (segments[i - 1].get('trans') or ['fade', 0])[0]
     if i in (HERO, GROOVE, OUTRO) or RECAP < i < OUTRO or PARADE < i < PARADE_END:
         continue
-    if kind in ('fadewhite', 'fadeblack'):
-        crash(cut[i], 0.22); impact(cut[i], 0.35)
+    # A section's first shot gets a cymbal and a soft low hit; dips to black too.
+    if kind == 'fadeblack' or clips[i] in SECTION_STARTS:
+        crash(cut[i], 0.2); impact(cut[i], 0.28)
 roll = int((T['outro'] - T['recap']) / (BEAT / 4))
 for i in range(roll):
     snare(T['recap'] + i * BEAT / 4, 0.06 + 0.32 * (i / max(1, roll - 1)) ** 1.6)

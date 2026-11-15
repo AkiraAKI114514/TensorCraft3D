@@ -13,6 +13,8 @@ const fs = require('fs'), path = require('path'), { spawnSync } = require('child
 const BASE = process.env.TENSORLAB_TEST_URL || 'http://127.0.0.1:8765/';
 const ROOT = __dirname;
 const BUILD = path.resolve(__dirname, '../../artifacts/promo/build');
+// Output size: 1920 x 1080 times PROMO_SCALE (2 = 4K, the default). Layout stays the same; only the pixel density grows.
+const SCALE = Number(process.env.PROMO_SCALE || 2), WIDTH = 1920 * SCALE, HEIGHT = 1080 * SCALE;
 const keepFrames = process.argv.includes('--keep-frames');
 const [lang, ...shots] = process.argv.slice(2).filter(arg => arg !== '--keep-frames');
 if (!['zh', 'en'].includes(lang) || !shots.length) { console.error('usage: node scripts/promo/record.cjs <zh|en> all|<shot>... [--keep-frames]'); process.exit(1); }
@@ -53,8 +55,8 @@ function installCursor() {
 let browser, context, page, errors = [];
 async function open({ ui = false } = {}) {
   browser = await chromium.launch({ channel: 'msedge', headless: true, args: ['--enable-webgl', '--ignore-gpu-blocklist'] });
-  context = ui ? await browser.newContext({ viewport: { width: 1440, height: 810 }, deviceScaleFactor: 4 / 3 })
-    : await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1.5 });
+  context = ui ? await browser.newContext({ viewport: { width: 1440, height: 810 }, deviceScaleFactor: 4 / 3 * SCALE })
+    : await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1.5 * SCALE });
   await context.addInitScript(language => { try { localStorage.setItem('tensorlab-language', language); localStorage.setItem('tensorlab-legend-open', '0'); localStorage.setItem('tensorlab-scene-theme', 'night'); } catch { } }, lang);
   if (ui) await context.addInitScript(installCursor);
   page = await context.newPage();
@@ -146,7 +148,7 @@ async function record(name, action) {
     writes = writes.then(() => fs.promises.writeFile(path.join(dir, file), Buffer.from(data, 'base64')));
     cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
   });
-  await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 94, maxWidth: 1920, maxHeight: 1080, everyNthFrame: 1 });
+  await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 94, maxWidth: WIDTH, maxHeight: HEIGHT, everyNthFrame: 1 });
   await wait(250);
   await action();
   await cdp.send('Page.stopScreencast'); await wait(300); await writes; await cdp.detach(); await writes;
@@ -156,7 +158,7 @@ async function record(name, action) {
   fs.writeFileSync(path.join(dir, 'frames.txt'), lines.join('\n'));
   const out = path.join(BUILD, 'clips', lang, `${name}.mp4`); fs.mkdirSync(path.dirname(out), { recursive: true });
   const r = spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', path.join(dir, 'frames.txt'),
-    '-vf', 'fps=30,scale=1920:1080:flags=lanczos,format=yuv420p', '-c:v', 'libx264', '-preset', 'slow', '-crf', '12', '-movflags', '+faststart', out], { stdio: 'inherit' });
+    '-vf', `fps=30,scale=${WIDTH}:${HEIGHT}:flags=lanczos,format=yuv420p`, '-c:v', 'libx264', '-preset', 'medium', '-crf', '12', '-movflags', '+faststart', out], { stdio: 'inherit' });
   if (r.status !== 0) throw new Error(`${name}: ffmpeg failed; frames kept in ${dir}`);
   if (!keepFrames) fs.rmSync(dir, { recursive: true, force: true });
   const seconds = frames.at(-1).t - frames[0].t;
