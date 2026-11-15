@@ -184,7 +184,11 @@ def master(silent, timeline_path):
         raise SystemExit('score.py failed (it needs numpy: run compose.py with the project Python)')
     target = 'I=-16:TP=-1.5:LRA=11'
     probe = subprocess.run(['ffmpeg', '-hide_banner', '-nostats', '-i', str(wav), '-af', f'loudnorm={target}:print_format=json', '-f', 'null', '-'], capture_output=True, text=True)
-    measured = json.loads(re.search(r'\{[^{}]*\}\s*$', probe.stderr).group(0))
+    # loudnorm prints its measurement as a JSON block; ffmpeg's summary lines may follow it.
+    blocks = re.findall(r'\{[^{}]*"input_i"[^{}]*\}', probe.stderr)
+    if not blocks:
+        raise SystemExit('loudnorm printed no measurement:\n' + probe.stderr[-2000:])
+    measured = json.loads(blocks[-1])
     loudnorm = (f"loudnorm={target}:measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:measured_LRA={measured['input_lra']}"
                 f":measured_thresh={measured['input_thresh']}:offset={measured['target_offset']}:linear=true")
     final = OUT / f'TensorCraft3D-promo-{LANG}-1080p.mp4'
