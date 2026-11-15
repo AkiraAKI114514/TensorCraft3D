@@ -20,7 +20,7 @@ import { flowCurve, isMerge, OVERVIEW_OFFSETS, sceneLayout, type SceneNode } fro
 import { captureSceneImage, exportSceneSvg } from './sceneImageExport';
 import { NIGHT, tensorCells } from './tensorBlock';
 import { blockPaint, type BlockPaint, type SceneObservation } from './sceneObservation';
-import { expertAnatomy, latentAnatomy, type Anatomy, type AnatomyPolygon } from './layerAnatomy';
+import { ANATOMY_OPS, blockAxis, contractionAnatomy, distributionAnatomy, dropoutAnatomy, expertAnatomy, latentAnatomy, maskAnatomy, scaleAnatomy, type Anatomy, type AnatomyPolygon } from './layerAnatomy';
 import { edgeTone, NIGHT_SELECTED_OUTLINE, NodeOutline, paintedBlocks, SELECTED_OUTLINE, TensorBlock } from './TensorBlockMesh';
 import { receptiveField, WINDOW_OPS, type Field } from './receptiveField';
 import { tensorNumber } from './inferenceTypes';
@@ -131,8 +131,10 @@ function AnatomyLink({ from, to, color, flow }: { from: Point3; to: Point3; colo
     opacity={night ? 0.5 : 0.55} exportColor={shadeOf(color, 0.62)} exportOpacity={0.6} />;
 }
 
-function AnatomyBlock({ anatomy, color, glow, paint, outline, showLabels, flow }: { anatomy: Anatomy; color: string; glow: number; paint: BlockPaint | null; outline: string; showLabels: boolean; flow: AnatomyFlow }) {
+function AnatomyBlock({ anatomy, dims, color, glow, paint, outline, showLabels, flow }: { anatomy: Anatomy; dims: [number, number, number]; color: string; glow: number; paint: BlockPaint | null; outline: string; showLabels: boolean; flow: AnatomyFlow }) {
   return <>
+    {/* The whole box takes the click, so one between tiles, steps or heads still selects the layer; never drawn or exported. */}
+    <mesh><boxGeometry args={dims} /><meshBasicMaterial visible={false} /></mesh>
     {anatomy.parts.map(part => <group key={part.key} position={part.center}>
       <TensorBlock dims={part.size} color={part.color} glow={glow} cells={part.cells} paint={part.output ? paint : null} />
       <NodeOutline dims={part.size} color={part.output ? outline : edgeTone(part.color)} />
@@ -146,19 +148,28 @@ function AnatomyBlock({ anatomy, color, glow, paint, outline, showLabels, flow }
 const tintOf = (color: string, amount: number) => `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), amount).getHexString()}`;
 const shadeOf = (color: string, amount: number) => `#${new THREE.Color(color).multiplyScalar(amount).getHexString()}`;
 
-/** The anatomy of a latent attention or MoE layer from its parameters and output, or null for any other layer. */
-function anatomyOf(node: Layer, dims: [number, number, number], color: string, output: number[] | undefined, load?: number[]): Anatomy | null {
+/** The anatomy of a layer drawn as its parts (`ANATOMY_OPS`) from its parameters and shapes, or null for any other layer. */
+function anatomyOf(node: Layer, dims: [number, number, number], color: string, output: number[] | undefined, inputs: number[][] | undefined, load?: number[]): Anatomy | null {
   const value = (name: string, fallback: number) => Number(node.params[name] ?? fallback);
   const embed = output?.at(-1) ?? value('embed_dim', 64), positions = output && output.length > 2 ? product(output.slice(1, -1)) : 1;
+  const rank = output?.length ?? 0, along = (dim: number) => output?.[dim < 0 ? rank + dim : dim];
+  if (node.op === 'CausalMask') return maskAnatomy(dims, color, { positions: along(value('query_dim', -2)) ?? 8, query: blockAxis(rank, value('query_dim', -2)), key: blockAxis(rank, value('key_dim', -1)) });
+  if (node.op === 'Softmax' || node.op === 'LogSoftmax') return distributionAnatomy(dims, color, { bins: along(value('dim', -1)) ?? 8, axis: blockAxis(rank, value('dim', -1)), log: node.op === 'LogSoftmax' });
+  if (node.op === 'Scale') return scaleAnatomy(dims, color, value('factor', 1), tensorCells(output));
+  if (node.op === 'Einsum') return contractionAnatomy(dims, color, { equation: String(node.params.equation ?? ''), operands: inputs ?? [], output });
+  if (node.op === 'Dropout' || node.op === 'AlphaDropout' || node.op === 'Dropout1d' || node.op === 'Dropout2d' || node.op === 'Dropout3d') {
+    return dropoutAnatomy(dims, color, { p: value('p', 0.3), mode: node.op === 'Dropout' ? 'element' : node.op === 'AlphaDropout' ? 'alpha' : 'channel', channels: output?.[1] ?? 4, channelAxis: rank >= 4 ? 0 : blockAxis(rank, 1), seed: node.id });
+  }
   if (node.op === 'LatentAttention') return latentAnatomy(dims, color, { embed, heads: value('num_heads', 4), qLora: value('q_lora_rank', 32), kvLora: value('kv_lora_rank', 32), nope: value('qk_nope_head_dim', 16), rope: value('qk_rope_head_dim', 8), value: value('v_head_dim', 16), positions });
   if (node.op === 'MoE') return expertAnatomy(dims, color, { embed, experts: value('experts', 8), topK: value('top_k', 2), shared: value('shared_experts', 1), groups: value('groups', 1), positions }, load);
   return null;
 }
 
 /**
- * Latent attention and MoE layers past which a model draws each one's parts only where they can be
- * read: zoomed in and in view, or selected. DeepSeek-V3's 119 drew twelve thousand parts at once and
- * ran at a dozen frames a second. A model with fewer always draws them.
+ * Layers drawn as their parts (`ANATOMY_OPS`: latent attention, MoE, masks, softmax, dropouts…)
+ * past which a model draws each one's parts only where they can be read: zoomed in and in view, or
+ * selected. DeepSeek-V3's 119 drew twelve thousand parts at once and ran at a dozen frames a
+ * second. A model with fewer always draws them.
  */
 const ANATOMY_BUDGET = 16;
 const viewFrustum = new THREE.Frustum(), viewProjection = new THREE.Matrix4(), viewSphere = new THREE.Sphere();
@@ -181,18 +192,18 @@ const MERGE_SYMBOL_POSITION = new THREE.Vector3(0, 0.44, 0);
 
 /**
  * A layer other than an attention module, as its tensor: a solid, matte block (a translucent one
- * blended with whatever stood behind it and muddied both colours), or its parts for latent
- * attention and MoE. A merge's small cube stands for the operation, not a tensor, so it has no
- * grid and carries its symbol instead. In a `crowded` model, latent attention and MoE draw their
- * parts only when `selected`, or when `near` and in view; otherwise each is its tensor block.
+ * blended with whatever stood behind it and muddied both colours), or its parts for the operators
+ * drawn as what they do (`ANATOMY_OPS`). A merge's small cube stands for the operation, not a
+ * tensor, so it has no grid and carries its symbol instead. In a `crowded` model, those operators
+ * draw their parts only when `selected`, or when `near` and in view; otherwise each is its block.
  */
-function LayerBody({ node, dims, color, glow, outline, output, paint, load, showLabels, crowded, near, selected, flow }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; output?: number[]; paint: BlockPaint | null; load?: number[]; showLabels: boolean; crowded: boolean; near: boolean; selected: boolean; flow: AnatomyFlow }) {
-  const group = useRef<THREE.Group>(null), parts = node.op === 'LatentAttention' || node.op === 'MoE';
+function LayerBody({ node, dims, color, glow, outline, output, inputs, paint, load, showLabels, crowded, near, selected, flow }: { node: Layer; dims: [number, number, number]; color: string; glow: number; outline: string; output?: number[]; inputs?: number[][]; paint: BlockPaint | null; load?: number[]; showLabels: boolean; crowded: boolean; near: boolean; selected: boolean; flow: AnatomyFlow }) {
+  const group = useRef<THREE.Group>(null), parts = ANATOMY_OPS.has(node.op);
   const inView = useInView(group, Math.hypot(...dims) / 2, parts && crowded && near && !selected);
   const detailed = !crowded || selected || near && inView;
-  const anatomy = useMemo(() => detailed ? anatomyOf(node, dims, color, output, load) : null, [detailed, node, dims, color, output, load]);
+  const anatomy = useMemo(() => detailed ? anatomyOf(node, dims, color, output, inputs, load) : null, [detailed, node, dims, color, output, inputs, load]);
   const symbol = MERGE_SYMBOLS[node.op];
-  return <group ref={group}>{anatomy ? <AnatomyBlock anatomy={anatomy} color={color} glow={glow} paint={paint} outline={outline} showLabels={showLabels} flow={flow} /> : <>
+  return <group ref={group}>{anatomy ? <AnatomyBlock anatomy={anatomy} dims={dims} color={color} glow={glow} paint={paint} outline={outline} showLabels={showLabels} flow={flow} /> : <>
     <TensorBlock dims={dims} color={color} glow={glow} cells={symbol ? [1, 1, 1] : tensorCells(output)} paint={paint} />
     <NodeOutline dims={dims} color={outline} />
     {symbol && <SceneText text={symbol} position={MERGE_SYMBOL_POSITION} color={color} scale={0.38} />}
@@ -420,7 +431,7 @@ function World(props: Props) {
   // Every layer's position, size and ports, the routes between them and the bounds, worked out once.
   const model = useMemo(() => sceneLayout(props.graph, props.analysis, props.expanded), [props.graph, props.analysis, props.expanded]);
   const detail = useDetailTier(model.pitch);
-  const crowded = useMemo(() => props.graph.nodes.filter(node => node.op === 'LatentAttention' || node.op === 'MoE').length > ANATOMY_BUDGET, [props.graph.nodes]);
+  const crowded = useMemo(() => props.graph.nodes.filter(node => ANATOMY_OPS.has(node.op)).length > ANATOMY_BUDGET, [props.graph.nodes]);
   const anatomyFlow = useMemo<AnatomyFlow>(() => ({ playing: props.playing, direction: props.direction, speed: props.speed, pulses: detail !== 'far' }), [props.playing, props.direction, props.speed, detail]);
   // Keep label roots in one DOM container when the canvas event target changes.
   const labelPortal = useMemo(() => ({ current: gl.domElement.parentElement! }), [gl]);
@@ -537,7 +548,7 @@ function World(props: Props) {
       const label = layerLabel(entry, props.selected, props.selectedHead, props.expanded);
       return <group key={n.id} position={pos} name={isAttention(n.op) ? `attention_${n.id}` : n.op === 'Add' ? `add_${n.id}` : `node_${n.id}`} onClick={e => { e.stopPropagation(); props.onSelect(n.id); focus(n.id); }} onPointerOver={e => { e.stopPropagation(); setHover(n.id); document.body.style.cursor = 'pointer'; }} onPointerOut={() => { setHover(null); document.body.style.cursor = ''; }}>
         {isAttention(n.op) ? <AttentionModule node={n} positions={props.analysis.layers[n.id]?.output.at(-2)} selected={selected} selectedHead={selected ? props.selectedHead : null} selectedProjection={selected ? props.selectedProjection : null} onSelectProjection={(port, center) => { props.onSelectProjection(n.id, port); centerView(center, new THREE.Vector3(3.2, 3.8, 3.2), new THREE.Vector3(24, 5, 18)); }} overriddenPorts={props.graph.edges.filter(e => e.target === n.id && isProjectionPort(e.targetPort)).map(e => e.targetPort!)} attachedPorts={props.graph.edges.some(e => e.source === n.id && e.sourcePort || e.target === n.id && isProjectionPort(e.targetPort))} onSelectHead={index => { props.onSelectHead(n.id, index); focus(n.id, index); }} onFocusPart={center => { props.onSelect(n.id); centerView(center, new THREE.Vector3(2.1, 2.4, 2.1), new THREE.Vector3(18, 7, 24)); }} playing={props.playing} rotating={props.rotating} direction={props.direction} speed={props.speed} expanded={props.expanded} error={Boolean(issue)} />
-          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} output={props.analysis.layers[n.id]?.output} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} showLabels={selected || hover === n.id} crowded={crowded} near={detail === 'near'} selected={selected} flow={anatomyFlow} />}
+          : <LayerBody node={n} dims={dims} color={color} glow={issue ? 0.4 : selected ? 0.22 : hover === n.id ? 0.12 : 0} outline={selected ? (theme === 'night' ? NIGHT_SELECTED_OUTLINE : SELECTED_OUTLINE) : edgeTone(color)} output={props.analysis.layers[n.id]?.output} inputs={props.analysis.layers[n.id]?.input} paint={paints[n.id] ?? null} load={props.observation?.loads[n.id]} showLabels={selected || hover === n.id} crowded={crowded} near={detail === 'near'} selected={selected} flow={anatomyFlow} />}
         {/* An attention module is an open frame of small parts; one shadow under its whole footprint
             read as a smudge. A wrapped model's upper bands float above the lowest one, and a shadow
             cast that far down would land on the band below, so only the lowest band casts them. */}

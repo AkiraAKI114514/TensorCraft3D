@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { blockDimensions } from './sceneLayout';
-import { expertAnatomy, latentAnatomy, MAX_DRAWN_EXPERTS, MAX_DRAWN_HEADS, ROPE_COLOR, type Anatomy } from './layerAnatomy';
+import { ANATOMY_OPS, blockAxis, contractionAnatomy, distributionAnatomy, DROPOUT_GRID, dropoutAnatomy, expertAnatomy, latentAnatomy, maskAnatomy, MAX_BINS, MAX_DRAWN_EXPERTS, MAX_DRAWN_HEADS, MAX_DROPOUT_CHANNELS, MAX_MASK_STEPS, ROPE_COLOR, scaleAnatomy, type Anatomy } from './layerAnatomy';
+import { OPS } from './types';
 import type { Point3 } from './flowGeometry';
 
 // Every link starts and ends on a part: on its face, or inside its box.
@@ -99,5 +100,111 @@ describe('mixture-of-experts anatomy', () => {
     expect(experts[2].color).toBe('#2f9e6e');
     expect(experts[0].color).not.toBe('#2f9e6e');
     expect(experts[0].color).toBe(experts[3].color);
+  });
+});
+
+// The smaller operators keep the box the layout gives them: every part inside it, and the parts
+// together reaching all six faces, so an exported node keeps its bounds and centre.
+const reaches = (anatomy: Anatomy, box: Point3) => {
+  for (let axis = 0; axis < 3; axis++) {
+    const low = Math.min(...anatomy.parts.map(part => part.center[axis] - part.size[axis] / 2));
+    const high = Math.max(...anatomy.parts.map(part => part.center[axis] + part.size[axis] / 2));
+    expect(low, `axis ${axis} low`).toBeCloseTo(-box[axis] / 2, 9);
+    expect(high, `axis ${axis} high`).toBeCloseTo(box[axis] / 2, 9);
+  }
+};
+const fits = (anatomy: Anatomy, box: Point3) => {
+  inside(anatomy, box); reaches(anatomy, box); onParts(anatomy);
+  expect(anatomy.parts.filter(part => part.output)).toHaveLength(1);
+};
+
+describe('operators drawn as what they do', () => {
+  it('names only real operators', () => {
+    for (const op of ANATOMY_OPS) expect(OPS).toContain(op);
+  });
+
+  it('maps tensor axes to block axes as tensorCells does', () => {
+    expect([1, 2, 3].map(dim => blockAxis(4, dim))).toEqual([0, 1, 2]);
+    expect([blockAxis(3, 1), blockAxis(3, -1), blockAxis(2, -1), blockAxis(4, 0), blockAxis(5, 1)]).toEqual([2, 1, 1, null, null]);
+  });
+
+  it.each([
+    ['[B, H, S, T] scores', [1, 4, 16, 16], -2, -1, [1, 2]],
+    ['[B, S, H, T] scores', [1, 16, 4, 16], 1, 3, [0, 2]],
+    ['[B, S, T] scores', [1, 12, 12], -2, -1, [2, 1]]
+  ] as const)('draws a causal mask on %s as a staircase in its query × key plane', (_, shape, query, key, [a, b]) => {
+    const box = blockDimensions([...shape], 'CausalMask'), rank = shape.length;
+    const anatomy = maskAnatomy(box, '#b0607a', { positions: shape[query < 0 ? rank + query : query], query: blockAxis(rank, query), key: blockAxis(rank, key) });
+    fits(anatomy, box);
+    const rows = anatomy.parts.filter(part => part.key.startsWith('row-'));
+    expect(rows).toHaveLength(MAX_MASK_STEPS);
+    // Row i sees keys 0..i: its length along the key axis grows by one step per row.
+    rows.forEach((part, i) => {
+      expect(part.cells[b]).toBe(i + 1);
+      expect(part.size[b]).toBeCloseTo(box[b] * (i + 1) / MAX_MASK_STEPS, 9);
+      expect(part.size[a]).toBeLessThanOrEqual(box[a] / MAX_MASK_STEPS + 1e-9);
+      expect(part.size[a]).toBeGreaterThan(box[a] / MAX_MASK_STEPS * 0.85);
+    });
+    expect(anatomy.parts.find(part => part.output)!.key).toBe('masked');
+  });
+
+  it('keeps a short mask to its own number of rows', () => {
+    const box = blockDimensions([1, 4, 4], 'CausalMask');
+    expect(maskAnatomy(box, '#b0607a', { positions: 4, query: 2, key: 1 }).parts.filter(part => part.key.startsWith('row-'))).toHaveLength(4);
+  });
+
+  it.each([['class probabilities', [1, 10], -1], ['attention probabilities', [1, 4, 16, 16], -1], ['a sequence', [1, 16, 64], -1]] as const)('draws softmax over %s as a peaked distribution', (_, shape, dim) => {
+    const box = blockDimensions([...shape], 'Softmax'), rank = shape.length, size = shape[rank + dim];
+    for (const log of [false, true]) {
+      const anatomy = distributionAnatomy(box, '#e8b84b', { bins: size, axis: blockAxis(rank, dim), log });
+      fits(anatomy, box);
+      const bins = anatomy.parts.filter(part => part.key.startsWith('bin-')), length = (blockAxis(rank, dim) ?? 1) === 1 ? 2 : 1;
+      expect(bins).toHaveLength(Math.min(size, MAX_BINS));
+      const lengths = bins.map(part => part.size[length]), longest = lengths.indexOf(Math.max(...lengths)), shortest = lengths.indexOf(Math.min(...lengths));
+      // Softmax: the most likely value stands tallest. LogSoftmax: the valley's floor is there (−log p nearest 0).
+      if (log) expect(shortest).toBe(Math.round((bins.length - 1) * 0.42)); else expect(longest).toBe(Math.round((bins.length - 1) * 0.42));
+    }
+  });
+
+  it.each([[0.25, 'smaller'], [4, 'larger']] as const)('draws a scale by %s as plates growing %s toward the output', (factor, way) => {
+    const box = blockDimensions([1, 16, 64], 'Scale'), anatomy = scaleAnatomy(box, '#879a3f', factor, [1, 16, 16]);
+    fits(anatomy, box);
+    const [input, , output] = anatomy.parts;
+    expect(output.output).toBe(true);
+    if (way === 'smaller') expect(output.size[1]).toBeLessThan(input.size[1]); else expect(output.size[1]).toBeGreaterThan(input.size[1]);
+    expect(anatomy.labels[0].text).toBe(`×${factor}`);
+  });
+
+  it('draws an einsum as its operands meeting at a contraction, then the output', () => {
+    const output = [1, 16, 4, 16], box = blockDimensions(output, 'Einsum');
+    const anatomy = contractionAnatomy(box, '#7a6bb5', { equation: 'bshd,bthd->bsht', operands: [[1, 16, 4, 16], [1, 16, 4, 16]], output });
+    fits(anatomy, box);
+    expect(anatomy.parts.map(part => part.key)).toEqual(['operand-0', 'operand-1', 'contract', 'output']);
+    expect(anatomy.links).toHaveLength(3);
+    expect(anatomy.labels[0].text).toBe('bshd,bthd->bsht');
+  });
+
+  it('drops exactly a share p of a dropout\'s tiles, the same ones every time', () => {
+    const box = blockDimensions([1, 64], 'Dropout'), count = DROPOUT_GRID * DROPOUT_GRID;
+    const element = dropoutAnatomy(box, '#bc8cc8', { p: 0.3, mode: 'element', channels: 64, channelAxis: 1, seed: 'layer_3' });
+    fits(element, box);
+    const kept = element.parts.filter(part => part.key.startsWith('kept-')).map(part => part.key);
+    expect(kept).toHaveLength(count - Math.round(count * 0.3));
+    expect(dropoutAnatomy(box, '#bc8cc8', { p: 0.3, mode: 'element', channels: 64, channelAxis: 1, seed: 'layer_3' }).parts.map(part => part.key)).toEqual(element.parts.map(part => part.key));
+    expect(dropoutAnatomy(box, '#bc8cc8', { p: 0.3, mode: 'element', channels: 64, channelAxis: 1, seed: 'other' }).parts.map(part => part.key)).not.toEqual(element.parts.map(part => part.key));
+    // Alpha dropout keeps every tile; the dropped ones sink and turn grey.
+    const alpha = dropoutAnatomy(box, '#bc8cc8', { p: 0.3, mode: 'alpha', channels: 64, channelAxis: 1, seed: 'layer_3' });
+    fits(alpha, box);
+    expect(alpha.parts.filter(part => part.key.startsWith('alpha-'))).toHaveLength(Math.round(count * 0.3));
+    expect(alpha.parts.filter(part => part.key.startsWith('kept-') || part.key.startsWith('alpha-'))).toHaveLength(count);
+  });
+
+  it.each([['Dropout2d', [1, 16, 32, 32]], ['Dropout1d', [1, 8, 32]], ['Dropout3d', [1, 4, 8, 16, 16]]] as const)('draws %s as whole channels knocked down', (op, shape) => {
+    const box = blockDimensions([...shape], op), rank = shape.length;
+    const anatomy = dropoutAnatomy(box, '#bc8cc8', { p: 0.3, mode: 'channel', channels: shape[1], channelAxis: rank >= 4 ? 0 : blockAxis(rank, 1), seed: 'drop' });
+    fits(anatomy, box);
+    const k = Math.min(shape[1], MAX_DROPOUT_CHANNELS);
+    expect(anatomy.parts).toHaveLength(k);
+    expect(anatomy.parts.filter(part => part.key.startsWith('dropped-'))).toHaveLength(Math.max(1, Math.round(k * 0.3)));
   });
 });

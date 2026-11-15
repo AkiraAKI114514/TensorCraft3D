@@ -197,6 +197,23 @@ The 3D view draws the gate (its grid is positions by experts), one bar per route
 
 The two matrices show a window of at most 16 positions × 16 experts, chosen with **Position start** and **Expert start**; moving the window needs a rerun. Observing every layer for the 3D view carries the routing too, and the expert bars are then shaded by load, from pale (no positions) to the full colour (the busiest bar). Offline snapshots record every MoE layer's routing at the top-left window.
 
+### Operators drawn as what they do
+
+Besides latent attention and MoE, several smaller operators are drawn as what they compute instead of as a plain block. Each stays inside the box the layout gives that layer, so the layout, the routes and image exports keep their places, and exports draw the parts like any block.
+
+- **CausalMask:** the query × key cells it keeps, as a staircase with one bar per query row (at most 8). Each bar is as long as the keys that row may see. Behind the staircase, a dark plate stands for the scores set to −∞. The staircase lies in the plane of the mask's own `query_dim` and `key_dim`, so the score matrix of a `[B, H, S, T]` tensor faces the flow.
+- **Softmax:** the distribution it outputs, one bar per value along `dim` (at most 12), on a base plate. The shape is an illustrative peak that sums to one, not measured values.
+- **LogSoftmax:** the same distribution as its negative log, a valley: the more likely the value, the shorter its bar (log p ≤ 0).
+- **Scale:** three plates that shrink toward the output for a factor under 1, or grow for a factor over 1. The selected layer's label shows the factor.
+- **Einsum:** its operands as thin plates with their own cell grids, meeting at a small contraction node, then the output block. The label shows the equation.
+- **Dropout:** the face as tiles with a share `p` of them missing. The same layer always drops the same tiles.
+- **AlphaDropout:** the same tiles, with the dropped ones kept but sunk and grey, since it sets them to a constant rather than zero.
+- **Dropout1d / 2d / 3d:** the channels as slabs, with a share `p` knocked down to thin dark ones.
+
+The dropout shapes illustrate what training drops; inference keeps every value. Measured values paint the part that stands for the output: the mask's plate, the softmax base, the last scale plate, the einsum output, or the dropout's backing.
+
+When a model has more than 16 layers drawn this way, each one draws its parts only when it is selected, or zoomed in and in view, as with DeepSeek-V3's latent attention and MoE.
+
 ### DeepSeek-V3-style template
 
 The **DeepSeek-V3-style Decoder** template combines the two operators above at a size the workbench can run: three decoder blocks 128 wide, about 730K parameters. DeepSeek-V3 itself has 61 layers 7,168 wide and 671B parameters; the template keeps the structure, not the scale.
