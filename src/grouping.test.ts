@@ -40,6 +40,13 @@ describe('autoGroup', () => {
     expect(graph.nodes.find(n => n.op === 'Group')!.repeat).toBe(5);
   });
 
+  it('leaves a structure-only graph flat, however much it repeats', () => {
+    const graph = { ...repeatedBlocks(6), structureOnly: true as const };
+    const result = autoGroup(graph);
+    expect(result.groups).toBe(0);
+    expect(result.graph).toBe(graph);
+  });
+
   it('leaves a graph with no repetition alone', () => {
     const graph: Graph = { version: 1, name: 'chain', nodes: [node('i', 'Input', { shape: [2, 4] }), node('l', 'Linear', { out_features: 8 }), node('o', 'Output')], edges: [edge('i', 'l'), edge('l', 'o')] };
     expect(autoGroup(graph).groups).toBe(0);
