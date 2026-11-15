@@ -17,6 +17,8 @@ const OPERATORS = (() => {
   return [...list.matchAll(/'(\w+)'/g)].map(m => m[1]).filter(op => !['Input', 'Output', 'Group'].includes(op)).length;
 })();
 const L = (zh, en) => (lang === 'zh' ? zh : en);
+// The release the end card names; set it to the version the video ships with.
+const RELEASE = 'v1.0.0-beta.3';
 
 const FEATURES = {
   f1: [L('01 · 搭建', '01 · BUILD'), L('可视化搭建，形状实时校验', 'Build visually. Shapes check as you go.'), L('点选或拖入算子，连线、改参数，出错的层立刻标红。', 'Click or drag in layers, wire and tune them. A mistake turns red at once.')],
@@ -44,7 +46,7 @@ const CARDS = {
   k4: { seconds: 2.6, kind: 'kicker', text: L('从搭建，到看懂。', 'From building to understanding.') },
   title: { seconds: 5.6, kind: 'title', text: 'TensorCraft3D', sub: L('搭建它。看懂它。运行它。', 'Build it. Understand it. Run it.') },
   ops: { seconds: 3.2, kind: 'counter', value: OPERATORS, unit: L('种算子', 'operators'), sub: L('卷积 · 归一化 · 激活 · 池化 · 注意力 · MLA · MoE', 'Convolution · normalization · activation · pooling · attention · MLA · MoE'), eyebrow: L('02 · 算子', '02 · OPERATORS') },
-  end: { seconds: 6.0, kind: 'end', text: 'TensorCraft3D', sub: L('本地运行 · Windows · PyTorch CPU / CUDA', 'Runs locally · Windows · PyTorch CPU / CUDA'), meta: 'v1.0.0-beta.2', url: 'github.com/AkiraAKI114514/TensorCraft3D' },
+  end: { seconds: 6.0, kind: 'end', text: 'TensorCraft3D', sub: L('本地运行 · Windows · PyTorch CPU / CUDA', 'Runs locally · Windows · PyTorch CPU / CUDA'), meta: RELEASE, url: 'github.com/AkiraAKI114514/TensorCraft3D' },
   mask: { seconds: 1 / FPS, kind: 'mask' }, shadow: { seconds: 1 / FPS, kind: 'shadow' }
 };
 for (const [key, [eyebrow, head, sub]] of Object.entries(FEATURES)) CARDS[key] = { seconds: 4.6, kind: 'feature', eyebrow, head, sub, place: key === 'f3' ? 'lower' : 'top' };
