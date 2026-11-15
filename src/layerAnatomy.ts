@@ -181,3 +181,196 @@ export function expertAnatomy([width, height, depth]: Point3, color: string, sha
   if (shared) labels.push({ text: `shared ×${shape.shared}`, position: [x(0.7), -(shared * step) / 2 - 0.16, 0], color });
   return { parts, links, labels };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Smaller operators drawn as what they do, inside the box the layout already gives them, so the
+// layout, the routes and the image exports keep their places: the causal mask, softmax, scale,
+// einsum and the dropouts. Their parts reach the box's faces where the plain block did, so an
+// exported node keeps its bounds.
+
+/** Operators drawn as their parts (the two large ones above, and these). */
+export const ANATOMY_OPS: ReadonlySet<string> = new Set(['LatentAttention', 'MoE', 'CausalMask', 'Softmax', 'LogSoftmax', 'Scale', 'Einsum', 'Dropout', 'Dropout1d', 'Dropout2d', 'Dropout3d', 'AlphaDropout']);
+
+/**
+ * The block axis (0 x, 1 y, 2 z) a tensor axis is drawn along, as `tensorCells` lays tensors out:
+ * [B, C, H, W] along x, y, z; [B, S, E] with positions along z and features along y; [B, F] along
+ * y. Null for the batch axis or a rank the block does not map.
+ */
+export function blockAxis(rank: number, dim: number): number | null {
+  const d = dim < 0 ? rank + dim : dim;
+  if (d <= 0 || d >= rank) return null;
+  if (rank === 4) return d - 1;
+  if (rank === 3) return d === 1 ? 2 : 1;
+  if (rank === 2) return 1;
+  return null;
+}
+
+type Range = [number, number];
+/** A part spanning `ranges` (min, max) on each axis. */
+const spanning = (key: string, ranges: [Range, Range, Range], color: string, cells: Point3 = [1, 1, 1], output = false): AnatomyPart => ({
+  key, color, cells, ...(output ? { output } : {}),
+  center: ranges.map(([low, high]) => (low + high) / 2) as Point3,
+  size: ranges.map(([low, high]) => high - low) as Point3
+});
+/** Ranges filling the whole box, except `axis`, which spans `range`. */
+const fill = (box: Point3, axis: number, range: Range): [Range, Range, Range] => box.map((size, index) => index === axis ? [...range] : [-size / 2, size / 2]) as [Range, Range, Range];
+const caption = (text: string, box: Point3, color: string): AnatomyLabel => ({ text, position: [0, box[1] / 2 + 0.24, 0], color });
+const short = (value: number) => Number(value.toPrecision(3)).toString();
+
+/** A stable shuffle of 0..count-1 from a layer's id, so a layer drops the same cells on every render. */
+function shuffled(seed: string, count: number) {
+  let state = 2166136261;
+  for (const char of seed) state = Math.imul(state ^ char.charCodeAt(0), 16777619);
+  const next = () => {
+    state = Math.imul(state ^ (state >>> 15), 2246822507);
+    state = Math.imul(state ^ (state >>> 13), 3266489909);
+    return ((state ^= state >>> 16) >>> 0) / 4294967296;
+  };
+  const order = Array.from({ length: count }, (_, index) => index);
+  for (let index = count - 1; index > 0; index--) {
+    const pick = Math.floor(next() * (index + 1));
+    [order[index], order[pick]] = [order[pick], order[index]];
+  }
+  return order;
+}
+
+/** At most this many query rows of a causal mask are drawn. */
+export const MAX_MASK_STEPS = 8;
+export interface MaskShape { positions: number; query: number | null; key: number | null }
+
+/**
+ * A causal mask as the lower triangle it keeps: one bar per query row, as long as the keys that
+ * row may see (key ≤ query), so the bars rise as a staircase; behind them, a dark plate for the
+ * scores the mask sets to −∞. The staircase lies in the plane of the mask's query and key axes,
+ * wherever the block draws them (the score matrix of a [B, H, S, T] tensor faces the flow).
+ */
+export function maskAnatomy(box: Point3, color: string, shape: MaskShape): Anatomy {
+  let a = shape.query ?? 1, b = shape.key ?? 2;
+  if (a === b) { a = 1; b = 2; }
+  const c = 3 - a - b, n = clamp(Math.round(shape.positions) || 2, 2, MAX_MASK_STEPS);
+  const half = box.map(size => size / 2) as Point3, plate = box[c] * 0.16, gap = box[c] * 0.05;
+  const cells = (rows: number, columns: number): Point3 => { const result: Point3 = [1, 1, 1]; result[a] = rows; result[b] = columns; return result; };
+  const parts: AnatomyPart[] = [spanning('masked', fill(box, c, [-half[c], -half[c] + plate]), shade(color, 0.42), cells(n, n), true)];
+  const row = box[a] / n, column = box[b] / n;
+  for (let i = 0; i < n; i++) {
+    const ranges = fill(box, c, [-half[c] + plate + gap, half[c]]);
+    // Query rows run top to bottom when they stand upright, otherwise along their axis; a seam
+    // between rows keeps each one readable, and the outer rows stay flush with the block's faces.
+    const [low, high] = a === 1 ? [half[a] - (i + 1) * row, half[a] - i * row] : [-half[a] + i * row, -half[a] + (i + 1) * row];
+    const first = a === 1 ? i === n - 1 : i === 0, last = a === 1 ? i === 0 : i === n - 1;
+    ranges[a] = [first ? low : low + row * 0.07, last ? high : high - row * 0.07];
+    ranges[b] = [-half[b], -half[b] + (i + 1) * column];
+    parts.push(spanning(`row-${i}`, ranges, mix(tint(color, 0.42), color, i / (n - 1)), cells(1, i + 1)));
+  }
+  return { parts, links: [], labels: [caption('key ≤ query · else −∞', box, color)] };
+}
+
+/** At most this many bins of a softmax are drawn. */
+export const MAX_BINS = 12;
+export interface DistributionShape { bins: number; axis: number | null; log: boolean }
+
+/**
+ * A softmax as the distribution it outputs: one bar per value along its axis, standing on a base
+ * plate at the back or bottom, peaked the way attention or class probabilities usually are and
+ * summing to one. LogSoftmax draws the same distribution as its negative log, a valley: the more
+ * likely a value, the shorter its bar (log p ≤ 0).
+ */
+export function distributionAnatomy(box: Point3, color: string, shape: DistributionShape): Anatomy {
+  const a = shape.axis ?? 1, length = a === 1 ? 2 : 1, n = clamp(Math.round(shape.bins) || 3, 3, MAX_BINS);
+  const peak = (n - 1) * 0.42, sigma = Math.max(0.8, n * 0.16);
+  const weights = Array.from({ length: n }, (_, j) => Math.exp(-0.5 * ((j - peak) / sigma) ** 2) + 0.05);
+  const total = weights.reduce((sum, w) => sum + w, 0), probabilities = weights.map(w => w / total), top = Math.max(...probabilities);
+  const surprise = probabilities.map(p => -Math.log(p)), most = Math.max(...surprise), least = Math.min(...surprise);
+  const half = box.map(size => size / 2) as Point3, base = box[length] * 0.08, room = box[length] - base;
+  const baseCells: Point3 = [1, 1, 1]; baseCells[a] = n;
+  const parts: AnatomyPart[] = [spanning('base', fill(box, length, [-half[length], -half[length] + base]), shade(color, 0.18), baseCells, true)];
+  const slot = box[a] / n;
+  probabilities.forEach((p, j) => {
+    const share = shape.log ? 0.08 + 0.92 * (surprise[j] - least) / Math.max(1e-9, most - least) : 0.06 + 0.94 * p / top;
+    const ranges = fill(box, length, [-half[length] + base, -half[length] + base + room * share]);
+    ranges[a] = [j === 0 ? -half[a] : -half[a] + slot * (j + 0.14), j === n - 1 ? half[a] : -half[a] + slot * (j + 0.86)];
+    parts.push(spanning(`bin-${j}`, ranges, mix(tint(color, 0.6), color, shape.log ? 1 - share : p / top)));
+  });
+  return { parts, links: [], labels: [caption(shape.log ? 'log p ≤ 0' : 'Σ p = 1', box, color)] };
+}
+
+/**
+ * A scale as three plates, each the size of the tensor's values at one step: the input, then
+ * smaller (a factor under 1) or larger (over 1) toward the output, like a zoom. Sizes follow the
+ * square root of the factor, kept readable.
+ */
+export function scaleAnatomy(box: Point3, color: string, factor: number, cells: Point3): Anatomy {
+  const r = clamp(Math.sqrt(Math.abs(factor) || 1), 0.4, 2.5);
+  const sizes = r <= 1 ? [1, (1 + r) / 2, r] : [1 / r, (1 + 1 / r) / 2, 1];
+  const width = box[0], thickness = width * 0.22;
+  const parts = sizes.map((s, index): AnatomyPart => ({
+    key: ['input', 'step', 'output'][index], center: [-width / 2 + thickness / 2 + index * (width - thickness) / 2, 0, 0],
+    size: [thickness, box[1] * s, box[2] * s], color: [tint(color, 0.45), tint(color, 0.22), color][index],
+    cells: index === 2 ? cells : [1, 1, 1], ...(index === 2 ? { output: true } : {})
+  }));
+  return { parts, links: [link(parts[0], parts[1]), link(parts[1], parts[2])], labels: [caption(`×${short(factor)}`, box, color)] };
+}
+
+export interface ContractionShape { equation: string; operands: number[][]; output: number[] | undefined }
+
+/**
+ * An einsum as a contraction: its operands as thin plates on the left (with their own cell
+ * grids), meeting at a small node where the summed index disappears, then the output block.
+ */
+export function contractionAnatomy(box: Point3, color: string, shape: ContractionShape): Anatomy {
+  const [width, height, depth] = box, left = -width / 2;
+  const operands = shape.operands.length ? shape.operands.slice(0, 3) : [[1, 1, 1]], k = operands.length;
+  const gap = height * 0.06, plateHeight = (height - gap * (k - 1)) / k;
+  const plates = operands.map((operand, index): AnatomyPart => {
+    const cells = tensorCells(operand);
+    return { key: `operand-${index}`, center: [left + width * 0.08, height / 2 - plateHeight / 2 - index * (plateHeight + gap), 0], size: [width * 0.16, plateHeight, depth * 0.86], color: tint(color, index % 2 ? 0.25 : 0.48), cells: [1, cells[1], cells[2]] };
+  });
+  const knot = Math.min(0.16, width * 0.14, height * 0.2);
+  const node: AnatomyPart = { key: 'contract', center: [left + width * 0.36, 0, 0], size: [knot, knot, knot], color: shade(color, 0.2), cells: [1, 1, 1] };
+  const output: AnatomyPart = { key: 'output', center: [left + width * 0.75, 0, 0], size: [width * 0.5, height, depth], color, cells: tensorCells(shape.output), output: true };
+  const equation = shape.equation.length > 28 ? `${shape.equation.slice(0, 27)}…` : shape.equation;
+  return { parts: [...plates, node, output], links: [...plates.map(plate => link(plate, node, plate.center[1], 0)), link(node, output)], labels: [caption(equation, box, color)] };
+}
+
+export interface DropoutShape { p: number; mode: 'element' | 'channel' | 'alpha'; channels: number; channelAxis: number | null; seed: string }
+/** Tiles per side of an element dropout's face, and the most channel slabs drawn. */
+export const DROPOUT_GRID = 6, MAX_DROPOUT_CHANNELS = 10;
+
+/**
+ * A dropout as what it zeroes in training. Element dropout: the face as a grid of tiles with a
+ * share p of them missing, over a dark plate; alpha dropout keeps those tiles, sunk and grey,
+ * since it sets them to a constant rather than zero. Channel dropout (1d/2d/3d): the channels as
+ * slabs, a share p of them knocked down to thin dark ones. A layer always drops the same cells.
+ */
+export function dropoutAnatomy(box: Point3, color: string, shape: DropoutShape): Anatomy {
+  const rate = clamp(shape.p, 0.08, 0.7), half = box.map(size => size / 2) as Point3;
+  const text = `${shape.mode === 'alpha' ? 'α-dropout ' : ''}p = ${short(shape.p)}${shape.mode === 'channel' ? ' · whole channels' : ''}`;
+  if (shape.mode === 'channel') {
+    const axis = shape.channelAxis ?? 0, k = clamp(Math.round(shape.channels) || 3, 3, MAX_DROPOUT_CHANNELS);
+    const gap = box[axis] * 0.04, slab = (box[axis] - gap * (k - 1)) / k;
+    const dropped = new Set(shuffled(shape.seed, k).slice(0, Math.max(1, Math.round(k * rate))));
+    const parts = Array.from({ length: k }, (_, index): AnatomyPart => {
+      const start = -half[axis] + index * (slab + gap);
+      if (!dropped.has(index)) return spanning(`channel-${index}`, fill(box, axis, [start, start + slab]), index % 2 ? tint(color, 0.12) : color, [1, 1, 1], index === k - 1);
+      // A dropped channel shrinks to a thin dark slab, flush with the outer face when it is the first or last.
+      const thin = slab * 0.28, at = index === 0 ? start : index === k - 1 ? start + slab - thin : start + (slab - thin) / 2;
+      return spanning(`dropped-${index}`, fill(box, axis, [at, at + thin]), shade(color, 0.45), [1, 1, 1], index === k - 1);
+    });
+    return { parts, links: [], labels: [caption(text, box, color)] };
+  }
+  const plate = box[0] * 0.18, gap = box[0] * 0.06, count = DROPOUT_GRID * DROPOUT_GRID;
+  const dropped = new Set(shuffled(shape.seed, count).slice(0, Math.round(count * rate)));
+  const parts: AnatomyPart[] = [spanning('backing', fill(box, 0, [-half[0], -half[0] + plate]), shade(color, 0.48), [1, DROPOUT_GRID, DROPOUT_GRID], true)];
+  // Tiles keep a seam between them; the outer ones stay flush with the block's faces.
+  const tile = (i: number, extent: number): Range => {
+    const cell = extent / DROPOUT_GRID, low = -extent / 2 + i * cell, high = low + cell;
+    return [i === 0 ? low : low + cell * 0.06, i === DROPOUT_GRID - 1 ? high : high - cell * 0.06];
+  };
+  for (let index = 0; index < count; index++) {
+    const row = Math.floor(index / DROPOUT_GRID), column = index % DROPOUT_GRID, off = dropped.has(index);
+    if (off && shape.mode === 'element') continue;
+    const depthRange: Range = off ? [-half[0] + plate, -half[0] + plate + gap * 1.5] : [-half[0] + plate + gap, half[0]];
+    parts.push(spanning(`${off ? 'alpha' : 'kept'}-${index}`, [depthRange, tile(DROPOUT_GRID - 1 - row, box[1]), tile(column, box[2])], off ? mix(color, '#9aa3ad', 0.7) : (row + column) % 2 ? tint(color, 0.1) : color));
+  }
+  return { parts, links: [], labels: [caption(text, box, color)] };
+}

@@ -9,7 +9,7 @@ import { WINDOW_OPS } from './receptiveField';
  * and what the legend says about it. The scene, the legend and the layer library all draw an
  * operator in its family's colour (`COLORS`), so one table decides how an operator looks everywhere.
  */
-export type Glyph = 'tensor' | 'slab' | 'membrane' | 'table' | 'waist' | 'experts' | 'heads' | 'residual' | 'merge' | 'shape' | 'io' | 'group' | 'flow' | 'kernel';
+export type Glyph = 'tensor' | 'slab' | 'membrane' | 'table' | 'waist' | 'experts' | 'heads' | 'residual' | 'merge' | 'shape' | 'io' | 'group' | 'flow' | 'kernel' | 'contract' | 'scale' | 'mask';
 export interface OperatorFamily {
   id: string;
   /** Legend name (a zh-CN message key). */
@@ -30,9 +30,9 @@ export const FAMILIES: readonly OperatorFamily[] = [
   { id: 'attention', name: '多头注意力', note: 'Q · K · V 投影，各头独立打分', glyph: 'heads', ops: ['MultiHeadAttention'] },
   { id: 'transformer', name: 'Transformer 编码层', note: '注意力 + 前馈，各带残差', glyph: 'heads', ops: ['Transformer'] },
   { id: 'latent', name: 'MLA 多头潜在注意力', note: 'KV 低秩压缩 · 解耦 RoPE', glyph: 'waist', ops: ['LatentAttention'] },
-  { id: 'einsum', name: '张量收缩', glyph: 'merge', ops: ['Einsum'] },
-  { id: 'scale', name: '缩放', glyph: 'slab', ops: ['Scale'] },
-  { id: 'mask', name: '因果掩码', note: '遮住之后的位置', glyph: 'slab', ops: ['CausalMask'] },
+  { id: 'einsum', name: '张量收缩', glyph: 'contract', ops: ['Einsum'] },
+  { id: 'scale', name: '缩放', glyph: 'scale', ops: ['Scale'] },
+  { id: 'mask', name: '因果掩码', note: '遮住之后的位置', glyph: 'mask', ops: ['CausalMask'] },
   { id: 'moe', name: 'MoE 混合专家', note: '门控选 top-k 路由专家 + 共享专家', glyph: 'experts', ops: ['MoE'] },
   { id: 'linear', name: '全连接', glyph: 'tensor', ops: ['Linear', 'Bilinear'] },
   { id: 'activation', name: '激活', glyph: 'membrane', ops: ['ReLU', 'GELU', 'Sigmoid', 'Tanh', 'SiLU', 'LeakyReLU', 'ELU', 'SELU', 'Softplus', 'Softmax', 'LogSoftmax', 'PReLU', 'Hardsigmoid', 'Hardswish', 'Mish', 'Softsign'] },

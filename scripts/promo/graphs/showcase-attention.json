@@ -1,0 +1,475 @@
+{
+ "version": 1,
+ "name": "Attention by hand",
+ "nodes": [
+  {
+   "id": "tokens",
+   "name": "Input",
+   "op": "Input",
+   "params": {
+    "shape": [
+     1,
+     16
+    ],
+    "dtype": "int64"
+   },
+   "position": {
+    "x": 0,
+    "y": 260
+   }
+  },
+  {
+   "id": "embed",
+   "name": "Embedding",
+   "op": "Embedding",
+   "params": {
+    "num_embeddings": 100,
+    "embedding_dim": 64
+   },
+   "position": {
+    "x": 210,
+    "y": 260
+   }
+  },
+  {
+   "id": "q",
+   "name": "Linear Q",
+   "op": "Linear",
+   "params": {
+    "out_features": 64,
+    "bias": 0
+   },
+   "position": {
+    "x": 420,
+    "y": 60
+   }
+  },
+  {
+   "id": "k",
+   "name": "Linear K",
+   "op": "Linear",
+   "params": {
+    "out_features": 64,
+    "bias": 0
+   },
+   "position": {
+    "x": 420,
+    "y": 260
+   }
+  },
+  {
+   "id": "v",
+   "name": "Linear V",
+   "op": "Linear",
+   "params": {
+    "out_features": 64,
+    "bias": 0
+   },
+   "position": {
+    "x": 420,
+    "y": 460
+   }
+  },
+  {
+   "id": "qh",
+   "name": "Unflatten",
+   "op": "Unflatten",
+   "params": {
+    "dim": -1,
+    "sizes": [
+     4,
+     16
+    ]
+   },
+   "position": {
+    "x": 630,
+    "y": 60
+   }
+  },
+  {
+   "id": "kh",
+   "name": "Unflatten",
+   "op": "Unflatten",
+   "params": {
+    "dim": -1,
+    "sizes": [
+     4,
+     16
+    ]
+   },
+   "position": {
+    "x": 630,
+    "y": 260
+   }
+  },
+  {
+   "id": "vh",
+   "name": "Unflatten",
+   "op": "Unflatten",
+   "params": {
+    "dim": -1,
+    "sizes": [
+     4,
+     16
+    ]
+   },
+   "position": {
+    "x": 630,
+    "y": 460
+   }
+  },
+  {
+   "id": "scores",
+   "name": "Einsum QKᵀ",
+   "op": "Einsum",
+   "params": {
+    "equation": "bshd,bthd->bsht"
+   },
+   "position": {
+    "x": 840,
+    "y": 160
+   }
+  },
+  {
+   "id": "scale",
+   "name": "Scale",
+   "op": "Scale",
+   "params": {
+    "factor": 0.25
+   },
+   "position": {
+    "x": 1050,
+    "y": 160
+   }
+  },
+  {
+   "id": "mask",
+   "name": "CausalMask",
+   "op": "CausalMask",
+   "params": {
+    "query_dim": 1,
+    "key_dim": 3
+   },
+   "position": {
+    "x": 1260,
+    "y": 160
+   }
+  },
+  {
+   "id": "softmax",
+   "name": "Softmax",
+   "op": "Softmax",
+   "params": {
+    "dim": -1
+   },
+   "position": {
+    "x": 1470,
+    "y": 160
+   }
+  },
+  {
+   "id": "weighted",
+   "name": "Einsum ·V",
+   "op": "Einsum",
+   "params": {
+    "equation": "bsht,bthd->bshd"
+   },
+   "position": {
+    "x": 1680,
+    "y": 260
+   }
+  },
+  {
+   "id": "merge",
+   "name": "Flatten",
+   "op": "Flatten",
+   "params": {
+    "start_dim": 2,
+    "end_dim": -1
+   },
+   "position": {
+    "x": 1890,
+    "y": 260
+   }
+  },
+  {
+   "id": "proj",
+   "name": "Linear O",
+   "op": "Linear",
+   "params": {
+    "out_features": 64,
+    "bias": 1
+   },
+   "position": {
+    "x": 2100,
+    "y": 260
+   }
+  },
+  {
+   "id": "residual",
+   "name": "Add",
+   "op": "Add",
+   "params": {},
+   "position": {
+    "x": 2310,
+    "y": 260
+   }
+  },
+  {
+   "id": "gate",
+   "name": "Linear gate",
+   "op": "Linear",
+   "params": {
+    "out_features": 64,
+    "bias": 1
+   },
+   "position": {
+    "x": 2520,
+    "y": 160
+   }
+  },
+  {
+   "id": "up",
+   "name": "Linear up",
+   "op": "Linear",
+   "params": {
+    "out_features": 64,
+    "bias": 1
+   },
+   "position": {
+    "x": 2520,
+    "y": 360
+   }
+  },
+  {
+   "id": "act",
+   "name": "SiLU",
+   "op": "SiLU",
+   "params": {},
+   "position": {
+    "x": 2730,
+    "y": 160
+   }
+  },
+  {
+   "id": "mul",
+   "name": "Multiply",
+   "op": "Multiply",
+   "params": {},
+   "position": {
+    "x": 2940,
+    "y": 260
+   }
+  },
+  {
+   "id": "norm",
+   "name": "Divide",
+   "op": "Divide",
+   "params": {},
+   "position": {
+    "x": 3150,
+    "y": 260
+   }
+  },
+  {
+   "id": "cat",
+   "name": "Concat",
+   "op": "Concat",
+   "params": {
+    "dim": 2
+   },
+   "position": {
+    "x": 3360,
+    "y": 260
+   }
+  },
+  {
+   "id": "last",
+   "name": "Select",
+   "op": "Select",
+   "params": {
+    "dim": 1,
+    "index": -1
+   },
+   "position": {
+    "x": 3570,
+    "y": 260
+   }
+  },
+  {
+   "id": "head",
+   "name": "Linear",
+   "op": "Linear",
+   "params": {
+    "out_features": 10,
+    "bias": 1
+   },
+   "position": {
+    "x": 3780,
+    "y": 260
+   }
+  },
+  {
+   "id": "out",
+   "name": "Output",
+   "op": "Output",
+   "params": {},
+   "position": {
+    "x": 3990,
+    "y": 260
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "tokens-embed",
+   "source": "tokens",
+   "target": "embed"
+  },
+  {
+   "id": "embed-q",
+   "source": "embed",
+   "target": "q"
+  },
+  {
+   "id": "embed-k",
+   "source": "embed",
+   "target": "k"
+  },
+  {
+   "id": "embed-v",
+   "source": "embed",
+   "target": "v"
+  },
+  {
+   "id": "q-qh",
+   "source": "q",
+   "target": "qh"
+  },
+  {
+   "id": "k-kh",
+   "source": "k",
+   "target": "kh"
+  },
+  {
+   "id": "v-vh",
+   "source": "v",
+   "target": "vh"
+  },
+  {
+   "id": "qh-scores",
+   "source": "qh",
+   "target": "scores"
+  },
+  {
+   "id": "kh-scores",
+   "source": "kh",
+   "target": "scores"
+  },
+  {
+   "id": "scores-scale",
+   "source": "scores",
+   "target": "scale"
+  },
+  {
+   "id": "scale-mask",
+   "source": "scale",
+   "target": "mask"
+  },
+  {
+   "id": "mask-softmax",
+   "source": "mask",
+   "target": "softmax"
+  },
+  {
+   "id": "softmax-weighted",
+   "source": "softmax",
+   "target": "weighted"
+  },
+  {
+   "id": "vh-weighted",
+   "source": "vh",
+   "target": "weighted"
+  },
+  {
+   "id": "weighted-merge",
+   "source": "weighted",
+   "target": "merge"
+  },
+  {
+   "id": "merge-proj",
+   "source": "merge",
+   "target": "proj"
+  },
+  {
+   "id": "proj-residual",
+   "source": "proj",
+   "target": "residual"
+  },
+  {
+   "id": "embed-residual",
+   "source": "embed",
+   "target": "residual"
+  },
+  {
+   "id": "residual-gate",
+   "source": "residual",
+   "target": "gate"
+  },
+  {
+   "id": "residual-up",
+   "source": "residual",
+   "target": "up"
+  },
+  {
+   "id": "gate-act",
+   "source": "gate",
+   "target": "act"
+  },
+  {
+   "id": "act-mul",
+   "source": "act",
+   "target": "mul"
+  },
+  {
+   "id": "up-mul",
+   "source": "up",
+   "target": "mul"
+  },
+  {
+   "id": "mul-norm",
+   "source": "mul",
+   "target": "norm"
+  },
+  {
+   "id": "residual-norm",
+   "source": "residual",
+   "target": "norm"
+  },
+  {
+   "id": "norm-cat",
+   "source": "norm",
+   "target": "cat"
+  },
+  {
+   "id": "residual-cat",
+   "source": "residual",
+   "target": "cat"
+  },
+  {
+   "id": "cat-last",
+   "source": "cat",
+   "target": "last"
+  },
+  {
+   "id": "last-head",
+   "source": "last",
+   "target": "head"
+  },
+  {
+   "id": "head-out",
+   "source": "head",
+   "target": "out"
+  }
+ ]
+}

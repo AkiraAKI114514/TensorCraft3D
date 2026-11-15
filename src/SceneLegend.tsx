@@ -44,6 +44,12 @@ export function LegendGlyph({ glyph, color, secondary }: { glyph: Glyph; color: 
       // A shortcut arching over the layers it skips, onto its addition.
       case 'residual': return <><path d="M3 18C3 3 25 3 25 15" fill="none" stroke={color} strokeWidth={1.6} strokeLinecap="round" /><path d="M22.4 12.6L25 16.2L27.4 12.4" fill="none" stroke={color} strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round" /><Box x={22} y={22} w={5} h={5} d={4} color={color} /></>;
       case 'merge': return <><Box x={13} y={19} w={7} h={7} d={6} color={color} /></>;
+      // Operand plates meeting at a contraction node, then the output block.
+      case 'contract': return <><Box x={3} y={11.5} w={2.5} h={7} d={6} color={tone(color, 0.48)} /><Box x={3} y={21} w={2.5} h={7} d={6} color={tone(color, 0.25)} /><path d="M6.5 8.5L12 14M6.5 18L12 14M14.5 14L18 14" stroke={tone(color, -0.2)} strokeWidth={0.9} fill="none" /><rect x={11.5} y={12.6} width={3} height={3} fill={tone(color, -0.2)} /><Box x={18} y={21} w={8} h={14} d={8} color={color} /></>;
+      // Three plates shrinking toward the output, like a zoom.
+      case 'scale': return <><Box x={5} y={21} w={3} h={15} d={10} color={tone(color, 0.45)} /><Box x={13} y={19.5} w={3} h={12} d={8} color={tone(color, 0.22)} /><Box x={21} y={18} w={3} h={9} d={6} color={color} /></>;
+      // The kept lower triangle as a staircase, the masked scores dark behind it.
+      case 'mask': return <><Box x={8} y={21} w={16} h={16} d={2} color={tone(color, -0.45)} />{[0, 1, 2, 3].map(i => <Box key={i} x={8} y={9 + i * 4} w={4 * (i + 1)} h={4} d={5} color={tone(color, 0.36 - i * 0.12)} />)}</>;
       case 'group': return <><Box x={7} y={21} w={8} h={11} d={7} color={tone(color, 0.3)} /><Box x={17} y={21} w={8} h={11} d={7} color={color} /></>;
       case 'flow': return <><path d="M2 14C10 8 22 20 30 12" fill="none" stroke={tone(color, 0.55)} strokeWidth={1.2} />{[4, 10, 16, 22].map(x => <circle key={x} cx={x + 2} cy={13 - Math.sin((x - 2) / 28 * Math.PI * 1.6) * 3.4} r={1.4} fill={color} />)}<path d="M28 9.6L31.6 11.6L28.6 14.6" fill="none" stroke={color} strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" /></>;
       case 'kernel': return <><rect x={4} y={6} width={9} height={9} fill={tone(color, 0.75)} stroke={color} strokeWidth={1.1} /><path d="M13 6L25 11M13 15L25 15" stroke={color} strokeWidth={0.8} opacity={0.75} /><rect x={25} y={10} width={5} height={5} fill={color} /></>;
