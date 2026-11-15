@@ -58,20 +58,23 @@ EDL = [
     S('ui_error', 0.35, None, frame='ui', speed=1.2, trans=FLASH),
     # 02 Operators: the counter over a wide shot, then one fly-in per operator.
     S('wide_sequence', 0.4, 3.5, cards=[('ops', 0.15)], trans=QUICK),
-    S('parade_vision_c0_0', 0.15, 1.0, cards=[('op_conv2d', 0.0)], trans=QUICK),
-    S('parade_vision_c0_3', 0.15, 0.95, cards=[('op_maxpool', 0.0)], trans=QUICK),
-    S('parade_vision_c0_12', 0.15, 0.95, cards=[('op_convt', 0.0)], trans=QUICK),
-    S('parade_signal_c1_0', 0.15, 0.95, cards=[('op_conv3d', 0.0)], trans=QUICK),
-    S('parade_signal_bilinear', 0.15, 0.95, cards=[('op_bilinear', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_1', 0.15, 0.95, cards=[('op_transformer', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_4', 0.15, 0.95, cards=[('op_mla', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_5', 0.15, 0.95, cards=[('op_moe', 0.0)], trans=QUICK),
-    S('parade_attention_scores', 0.15, 0.95, cards=[('op_einsum', 0.0)], trans=QUICK),
-    S('parade_attention_mask', 0.15, 1.0, cards=[('op_mask', 0.0)], trans=FLASH),
+    S('parade_vision_c0_0', 0.5, 1.05, cards=[('op_conv2d', 0.0)], trans=QUICK),
+    S('parade_vision_c0_3', 0.5, 1.0, cards=[('op_maxpool', 0.0)], trans=QUICK),
+    S('parade_vision_c0_10', 0.5, 1.0, cards=[('op_dropout2d', 0.0)], trans=QUICK),
+    S('parade_sequence_c0_1', 0.5, 1.0, cards=[('op_transformer', 0.0)], trans=QUICK),
+    S('parade_sequence_c0_4', 0.5, 1.0, cards=[('op_mla', 0.0)], trans=QUICK),
+    S('parade_sequence_c0_5', 0.5, 1.0, cards=[('op_moe', 0.0)], trans=QUICK),
+    S('parade_attention_scores', 0.5, 1.0, cards=[('op_einsum', 0.0)], trans=QUICK),
+    S('parade_attention_scale', 0.5, 1.0, cards=[('op_scale', 0.0)], trans=QUICK),
+    S('parade_attention_mask', 0.5, 1.0, cards=[('op_mask', 0.0)], trans=QUICK),
+    S('parade_attention_softmax', 0.5, 1.0, cards=[('op_softmax', 0.0)], trans=QUICK),
+    S('parade_signal_alpha', 0.5, 1.0, cards=[('op_alpha', 0.0)], trans=QUICK),
+    S('parade_vision_c0_19', 0.5, 1.05, cards=[('op_logsoftmax', 0.0)], trans=FLASH),
     S('wide_signal', 0.6, 2.6, trans=FLASH),
     # 03 Anatomy
-    S('attn_gqa', 0.4, 3.8, cards=[('f3', 0.2)], trans=SOFT),
-    S('attn_cross', 0.6, 2.6, trans=FLASH),
+    S('attn_gqa', 0.4, 3.6, cards=[('f3', 0.2)], trans=SOFT),
+    S('attn_by_hand', 0.5, 3.4, trans=SOFT),
+    S('attn_cross', 0.6, 2.2, trans=FLASH),
     # 04 Import, 05 Train
     S('ui_import', 0.35, None, frame='ui', speed=1.35, cards=[('f4', 0.15)], trans=FLASH),
     S('ui_train', 0.35, None, frame='ui', speed=1.3, cards=[('f5', 0.15)], trans=FLASH),
@@ -86,11 +89,12 @@ EDL = [
     S('parade_sequence_c0_5', 1.2, 0.45, trans=QUICK),
     S('rings', 2.4, 0.5, trans=QUICK),
     S('attn_gqa', 3.0, 0.5, trans=QUICK),
-    S('wide_signal', 3.4, 0.5, trans=QUICK),
+    S('parade_attention_softmax', 1.2, 0.5, trans=QUICK),
     S('open_pulses', 2.6, 0.5, trans=FLASH),
     S('outro', 0.3, 6.2, cards=[('end', 0.7)], trans=None),
 ]
-GLOBAL_CARDS = [('k4', 26, 0.05)]  # (card, segment index, offset into it)
+# (card, segment index, offset into it): the recap's statement starts with its six flashbacks, before the end card.
+GLOBAL_CARDS = [('k4', len(EDL) - 7, 0.05)]
 
 
 def card_inputs(cards):

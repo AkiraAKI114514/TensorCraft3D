@@ -209,6 +209,11 @@ SHOTS.attn_gqa = async () => {
   await open(); await load('gqa'); await select('layer_1'); await cine(true, false); await focusSelected(); await wait(1800); await zoomBy(-300);
   await record('attn_gqa', () => move({ ms: 6000, orbit: [-150, 0], curve: linear })); await close();
 };
+// Attention written out by hand: Einsum QKᵀ, Scale, CausalMask and Softmax, each drawn as what it does.
+SHOTS.attn_by_hand = async () => {
+  await open(); await load(showcase('attention')); await select('mask'); await cine(true, true); await focusSelected(); await wait(1800); await zoomBy(200);
+  await record('attn_by_hand', () => move({ ms: 6000, orbit: [-70, 0], curve: linear })); await close();
+};
 SHOTS.attn_cross = async () => {
   await open(); await load('cross_attention'); await select('layer_1'); await cine(true, false); await focusSelected(); await wait(1800); await zoomBy(-300);
   await record('attn_cross', () => move({ ms: 5000, orbit: [130, 0], curve: linear })); await close();
@@ -222,14 +227,19 @@ SHOTS.wide_sequence = async () => {
   await record('wide_sequence', () => move({ ms: 6000, orbit: [70, 0], curve: linear })); await close();
 };
 // One fly-in per operator: from the overview to the layer, then a small drift.
-const PARADE = [['vision', 'c0_0'], ['vision', 'c0_3'], ['vision', 'c0_11'], ['vision', 'c0_12'], ['signal', 'c1_0'], ['signal', 'bilinear'],
-  ['sequence', 'c0_1'], ['sequence', 'c0_4'], ['sequence', 'c0_5'], ['sequence', 'c0_7'], ['sequence', 'c0_16'], ['attention', 'scores'], ['attention', 'mask'], ['attention', 'mul']];
+// Grouped by graph so each opens once; the operators drawn as what they do (Dropout2d, LogSoftmax,
+// Einsum, Scale, CausalMask, Softmax, AlphaDropout) are among them.
+const PARADE = [['vision', 'c0_0'], ['vision', 'c0_3'], ['vision', 'c0_10'], ['vision', 'c0_19'], ['sequence', 'c0_1'], ['sequence', 'c0_4'], ['sequence', 'c0_5'],
+  ['attention', 'scores'], ['attention', 'scale'], ['attention', 'mask'], ['attention', 'softmax'], ['signal', 'alpha']];
 SHOTS.parade = async () => {
   let current = null;
   for (const [graphName, id] of PARADE) {
     if (graphName !== current) { if (current) await close(); await open(); await load(showcase(graphName)); current = graphName; }
     await cine(false); await select(id); await cine(true, true); await resetView(); await wait(900);
-    await record(`parade_${graphName}_${id}`, async () => { await focusSelected(); await hold(1300); await move({ ms: 1500, orbit: [-70, 0], curve: linear }); });
+    const c = await centre(); await page.mouse.move(c.x, c.y);
+    // The flight lands on a framing shared with the neighbours; ten quick wheel steps as it lands
+    // carry it on into a close-up, so each operator fills its flash.
+    await record(`parade_${graphName}_${id}`, async () => { await focusSelected(); await hold(380); for (let i = 0; i < 10; i++) { await page.mouse.wheel(0, -120); await wait(40); } await hold(900); await move({ ms: 1500, orbit: [-70, 0], curve: linear }); });
   }
   await close();
 };
@@ -328,7 +338,7 @@ SHOTS.ui_export = async () => {
   });
   await close();
 };
-const ALL_3D = ['open_pulses', 'open_mla', 'open_moe', 'hero', 'outro', 'attn_gqa', 'attn_cross', 'wide_signal', 'wide_sequence', 'parade', 'rings'];
+const ALL_3D = ['open_pulses', 'open_mla', 'open_moe', 'hero', 'outro', 'attn_gqa', 'attn_by_hand', 'attn_cross', 'wide_signal', 'wide_sequence', 'parade', 'rings'];
 const ALL_UI = ['ui_build', 'ui_error', 'ui_import', 'ui_train', 'ui_inspect', 'ui_attention', 'ui_export'];
 SHOTS.all = async () => { for (const name of [...ALL_3D, ...ALL_UI]) { try { await SHOTS[name](); } catch (error) { console.error(`${lang}/${name} failed: ${error.stack || error}`); process.exitCode = 1; try { await close(); } catch { } } } };
 

@@ -20,7 +20,7 @@ const L = (zh, en) => (lang === 'zh' ? zh : en);
 
 const FEATURES = {
   f1: [L('01 · 搭建', '01 · BUILD'), L('可视化搭建，形状实时校验', 'Build visually. Shapes check as you go.'), L('点选或拖入算子，连线、改参数，出错的层立刻标红。', 'Click or drag in layers, wire and tune them. A mistake turns red at once.')],
-  f3: [L('03 · 结构', '03 · ANATOMY'), L('注意力与专家，拆开来看', 'Attention and experts, opened up.'), L('Q/K/V 围成多边形，MLA 与 MoE 画出内部结构。', 'Q/K/V heads as polygons. MLA and MoE drawn as their parts.')],
+  f3: [L('03 · 结构', '03 · ANATOMY'), L('注意力与专家，拆开来看', 'Attention and experts, opened up.'), L('Q/K/V 围成多边形；MLA、MoE、掩码与 Softmax 都画出它们做的事。', 'Q/K/V heads as polygons. MLA, MoE, masks and softmax drawn as what they do.')],
   f4: [L('04 · 导入', '04 · IMPORT'), L('导入 PyTorch 代码', 'Bring your PyTorch code.'), L('静态解析结构与参数，不执行上传的代码。', 'Parsed statically. Your code is never executed.')],
   f5: [L('05 · 训练', '05 · TRAIN'), L('本地真实训练', 'Train for real, locally.'), L('CPU 或 CUDA，损失与准确率实时更新。', 'On CPU or CUDA, with live loss and accuracy.')],
   f6: [L('06 · 观测', '06 · OBSERVE'), L('每一层的真实数值', 'Real values, in every layer.'), L('跑一个样本，把每层实测的数值画到三维方块上。', 'Run one sample and paint what every layer measured onto its block.')],
@@ -32,6 +32,8 @@ const OPS = {
   op_convt: ['ConvTranspose2d', L('转置卷积', 'Transposed convolution')], op_conv3d: ['Conv3d', L('三维卷积', '3D convolution')], op_bilinear: ['Bilinear', L('双线性层', 'Bilinear layer')],
   op_transformer: ['Transformer', L('编码层 · 注意力 + FFN', 'Encoder · attention + FFN')], op_mla: ['LatentAttention', L('多头潜在注意力 · MLA', 'Multi-head latent attention')],
   op_moe: ['MoE', L('混合专家 · top-k 路由', 'Mixture of experts · top-k')], op_glu: ['GLU', L('门控线性单元', 'Gated linear unit')], op_unflatten: ['Unflatten', L('维度拆分', 'Axis split')],
+  op_dropout2d: ['Dropout2d', L('通道随机失活', 'Channel dropout')], op_logsoftmax: ['LogSoftmax', L('对数概率', 'Log probabilities')],
+  op_scale: ['Scale', L('缩放 · 1/√d', 'Scaling · 1/√d')], op_softmax: ['Softmax', L('注意力概率', 'Attention probabilities')], op_alpha: ['AlphaDropout', L('α 随机失活', 'Alpha dropout')],
   op_einsum: ['Einsum', L('爱因斯坦求和', 'Einstein summation')], op_mask: ['CausalMask', L('因果掩码', 'Causal mask')], op_multiply: ['Multiply', L('逐元素乘', 'Elementwise product')]
 };
 
