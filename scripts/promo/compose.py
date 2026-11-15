@@ -42,10 +42,14 @@ def S(clip, start, dur=None, *, frame='full', speed=1.0, cards=(), trans=('fade'
     return dict(clip=clip, start=start, dur=dur, frame=frame, speed=speed, cards=list(cards), trans=trans, tail=tail)
 
 
-FLASH = ('fadewhite', 0.2)
-QUICK = ('fadewhite', 0.12)
-DIP = ('fadeblack', 0.6)
-SOFT = ('fade', 0.35)
+# Transitions last an even number of frames, so a cut (a transition's midpoint) lands on a frame.
+FLASH = ('fadewhite', 6 / FPS)
+QUICK = ('fadewhite', 4 / FPS)
+DIP = ('fadeblack', 18 / FPS)
+SOFT = ('fade', 10 / FPS)
+# The edit and the score share one tempo: every cut lands on a beat of 120 BPM.
+BPM = 120
+BEAT = 60 / BPM
 
 EDL = [
     # Cold open: three macro shots, one statement each, then the title.
@@ -105,10 +109,33 @@ def card_inputs(cards):
     return args, chains
 
 
-def render_segment(i, seg, background):
+def available(seg):
+    return (length(CLIPS / f"{seg['clip']}.mp4") - seg['start'] - seg['tail']) / seg['speed']
+
+
+def plan():
+    """Each segment's length, adjusted so the cut into the next one (the transition's midpoint) lands
+    on the nearest beat it can reach with the footage it has. Returns (durations, cut times)."""
+    durations, cuts, start = [], [0.0], 0.0
+    for i, seg in enumerate(EDL):
+        room = available(seg)
+        want = min(seg['dur'], room) if seg['dur'] else room
+        if i < len(EDL) - 1:
+            half = seg['trans'][1] / 2
+            cut = round((start + want - half) / BEAT) * BEAT
+            if cut - start + half > room + 1e-6:
+                cut = int((start + room - half) / BEAT + 1e-9) * BEAT
+            while cut - start - half < 0.4:
+                cut += BEAT
+            want = cut - start + half
+            cuts.append(cut)
+            start = cut - half
+        durations.append(round(want * FPS) / FPS)
+    return durations, cuts
+
+
+def render_segment(i, seg, background, dur):
     clip = CLIPS / f"{seg['clip']}.mp4"
-    available = (length(clip) - seg['start'] - seg['tail']) / seg['speed']
-    dur = round(min(seg['dur'], available) if seg['dur'] else available, 3)
     out = WORK / f'seg_{i:02d}.mp4'
     inputs = ['-ss', f"{seg['start']:.3f}", '-i', str(clip)]
     graph = [f"[0:v]setpts=(PTS-STARTPTS)/{seg['speed']},fps={FPS},format=rgba[base0]"]
@@ -145,9 +172,10 @@ def background_loop():
 
 def main():
     background = background_loop()
+    durations, cuts = plan()
     segments = []
     for i, seg in enumerate(EDL):
-        path, dur = render_segment(i, seg, background)
+        path, dur = render_segment(i, seg, background, durations[i])
         segments.append((path, dur, seg['trans']))
         print(f'seg {i:02d} {seg["clip"]:<28} {dur:6.2f}s')
     # Join with xfade; record where each segment starts in the cut.
@@ -174,7 +202,7 @@ def main():
     graph.append(f'[{label}]fade=t=in:st=0:d=0.6,fade=t=out:st={total - 1.2:.3f}:d=1.2,format=yuv420p[v]')
     silent = WORK / 'promo-silent.mp4'
     ff(inputs + card_args + ['-filter_complex', ';'.join(graph), '-map', '[v]', '-r', str(FPS), '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(silent)])
-    timeline = {'total': total, 'segments': [{'clip': EDL[i]['clip'], 'start': starts[i], 'dur': segments[i][1], 'trans': segments[i][2]} for i in range(len(segments))]}
+    timeline = {'total': total, 'bpm': BPM, 'segments': [{'clip': EDL[i]['clip'], 'start': starts[i], 'cut': cuts[i], 'dur': segments[i][1], 'trans': segments[i][2]} for i in range(len(segments))]}
     timeline_path = WORK / 'timeline.json'
     timeline_path.write_text(json.dumps(timeline, indent=1), encoding='utf-8')
     print(f'{silent}: {total:.2f} s')

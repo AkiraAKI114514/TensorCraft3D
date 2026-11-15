@@ -131,11 +131,20 @@ node scripts/promo/cards.cjs en
 - **`graphs/`** holds four showcase models that between them use every layer operator. `src/promoShowcase.test.ts` keeps them free of shape errors.
 - **`cards.cjs`** renders the title cards frame by frame as transparent PNGs. The operator count on the counter card is read from `OPS` in `src/types.ts`.
 - **`compose.py`** cuts the clips together:
+  - every cut lands on a beat of 120 BPM: each segment is lengthened or shortened to the nearest beat its footage allows;
   - 3D shots run full-frame;
   - UI shots are framed at 75 % over blurred footage of the night stage;
   - title cards are overlaid on the shots.
 
-  Then `score.py` synthesizes a soundtrack timed to the cut: pad chords per section, a pulse under the features, impacts on the flash cuts. Nothing is sampled. Finally `compose.py` normalizes the score and muxes it in.
+  Then `score.py` synthesizes a soundtrack on the same beats, so music and picture share one grid:
+  - the cold open: an open A minor pad and a soft bell on each statement;
+  - the title: F, C and G;
+  - the features: Am–F–C–G a bar each, over a kick, a clap on 2 and 4, hats, a bass and plucked arpeggios;
+  - the operator parade: doubled arpeggios and a rising bell on each flash;
+  - the attention section: a breakdown;
+  - the recap: a snare roll and a riser into the end card's F and C.
+
+  Nothing is sampled. Finally `compose.py` normalizes the score and muxes it in.
 
 ## The workbench
 
