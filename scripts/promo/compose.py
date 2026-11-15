@@ -42,10 +42,14 @@ def S(clip, start, dur=None, *, frame='full', speed=1.0, cards=(), trans=('fade'
     return dict(clip=clip, start=start, dur=dur, frame=frame, speed=speed, cards=list(cards), trans=trans, tail=tail)
 
 
-FLASH = ('fadewhite', 0.2)
-QUICK = ('fadewhite', 0.12)
-DIP = ('fadeblack', 0.6)
-SOFT = ('fade', 0.35)
+# Transitions last an even number of frames, so a cut (a transition's midpoint) lands on a frame.
+FLASH = ('fadewhite', 6 / FPS)
+QUICK = ('fadewhite', 4 / FPS)
+DIP = ('fadeblack', 18 / FPS)
+SOFT = ('fade', 10 / FPS)
+# The edit and the score share one tempo: every cut lands on a beat of 120 BPM.
+BPM = 120
+BEAT = 60 / BPM
 
 EDL = [
     # Cold open: three macro shots, one statement each, then the title.
@@ -58,20 +62,23 @@ EDL = [
     S('ui_error', 0.35, None, frame='ui', speed=1.2, trans=FLASH),
     # 02 Operators: the counter over a wide shot, then one fly-in per operator.
     S('wide_sequence', 0.4, 3.5, cards=[('ops', 0.15)], trans=QUICK),
-    S('parade_vision_c0_0', 0.15, 1.0, cards=[('op_conv2d', 0.0)], trans=QUICK),
-    S('parade_vision_c0_3', 0.15, 0.95, cards=[('op_maxpool', 0.0)], trans=QUICK),
-    S('parade_vision_c0_12', 0.15, 0.95, cards=[('op_convt', 0.0)], trans=QUICK),
-    S('parade_signal_c1_0', 0.15, 0.95, cards=[('op_conv3d', 0.0)], trans=QUICK),
-    S('parade_signal_bilinear', 0.15, 0.95, cards=[('op_bilinear', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_1', 0.15, 0.95, cards=[('op_transformer', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_4', 0.15, 0.95, cards=[('op_mla', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_5', 0.15, 0.95, cards=[('op_moe', 0.0)], trans=QUICK),
-    S('parade_attention_scores', 0.15, 0.95, cards=[('op_einsum', 0.0)], trans=QUICK),
-    S('parade_attention_mask', 0.15, 1.0, cards=[('op_mask', 0.0)], trans=FLASH),
+    S('parade_vision_c0_0', 0.5, 1.05, cards=[('op_conv2d', 0.0)], trans=QUICK),
+    S('parade_vision_c0_3', 0.5, 1.0, cards=[('op_maxpool', 0.0)], trans=QUICK),
+    S('parade_vision_c0_10', 0.5, 1.0, cards=[('op_dropout2d', 0.0)], trans=QUICK),
+    S('parade_sequence_c0_1', 0.5, 1.0, cards=[('op_transformer', 0.0)], trans=QUICK),
+    S('parade_sequence_c0_4', 0.5, 1.0, cards=[('op_mla', 0.0)], trans=QUICK),
+    S('parade_sequence_c0_5', 0.5, 1.0, cards=[('op_moe', 0.0)], trans=QUICK),
+    S('parade_attention_scores', 0.5, 1.0, cards=[('op_einsum', 0.0)], trans=QUICK),
+    S('parade_attention_scale', 0.5, 1.0, cards=[('op_scale', 0.0)], trans=QUICK),
+    S('parade_attention_mask', 0.5, 1.0, cards=[('op_mask', 0.0)], trans=QUICK),
+    S('parade_attention_softmax', 0.5, 1.0, cards=[('op_softmax', 0.0)], trans=QUICK),
+    S('parade_signal_alpha', 0.5, 1.0, cards=[('op_alpha', 0.0)], trans=QUICK),
+    S('parade_vision_c0_19', 0.5, 1.05, cards=[('op_logsoftmax', 0.0)], trans=FLASH),
     S('wide_signal', 0.6, 2.6, trans=FLASH),
     # 03 Anatomy
-    S('attn_gqa', 0.4, 3.8, cards=[('f3', 0.2)], trans=SOFT),
-    S('attn_cross', 0.6, 2.6, trans=FLASH),
+    S('attn_gqa', 0.4, 3.6, cards=[('f3', 0.2)], trans=SOFT),
+    S('attn_by_hand', 0.5, 3.4, trans=SOFT),
+    S('attn_cross', 0.6, 2.2, trans=FLASH),
     # 04 Import, 05 Train
     S('ui_import', 0.35, None, frame='ui', speed=1.35, cards=[('f4', 0.15)], trans=FLASH),
     S('ui_train', 0.35, None, frame='ui', speed=1.3, cards=[('f5', 0.15)], trans=FLASH),
@@ -86,11 +93,12 @@ EDL = [
     S('parade_sequence_c0_5', 1.2, 0.45, trans=QUICK),
     S('rings', 2.4, 0.5, trans=QUICK),
     S('attn_gqa', 3.0, 0.5, trans=QUICK),
-    S('wide_signal', 3.4, 0.5, trans=QUICK),
+    S('parade_attention_softmax', 1.2, 0.5, trans=QUICK),
     S('open_pulses', 2.6, 0.5, trans=FLASH),
     S('outro', 0.3, 6.2, cards=[('end', 0.7)], trans=None),
 ]
-GLOBAL_CARDS = [('k4', 26, 0.05)]  # (card, segment index, offset into it)
+# (card, segment index, offset into it): the recap's statement starts with its six flashbacks, before the end card.
+GLOBAL_CARDS = [('k4', len(EDL) - 7, 0.05)]
 
 
 def card_inputs(cards):
@@ -101,10 +109,33 @@ def card_inputs(cards):
     return args, chains
 
 
-def render_segment(i, seg, background):
+def available(seg):
+    return (length(CLIPS / f"{seg['clip']}.mp4") - seg['start'] - seg['tail']) / seg['speed']
+
+
+def plan():
+    """Each segment's length, adjusted so the cut into the next one (the transition's midpoint) lands
+    on the nearest beat it can reach with the footage it has. Returns (durations, cut times)."""
+    durations, cuts, start = [], [0.0], 0.0
+    for i, seg in enumerate(EDL):
+        room = available(seg)
+        want = min(seg['dur'], room) if seg['dur'] else room
+        if i < len(EDL) - 1:
+            half = seg['trans'][1] / 2
+            cut = round((start + want - half) / BEAT) * BEAT
+            if cut - start + half > room + 1e-6:
+                cut = int((start + room - half) / BEAT + 1e-9) * BEAT
+            while cut - start - half < 0.4:
+                cut += BEAT
+            want = cut - start + half
+            cuts.append(cut)
+            start = cut - half
+        durations.append(round(want * FPS) / FPS)
+    return durations, cuts
+
+
+def render_segment(i, seg, background, dur):
     clip = CLIPS / f"{seg['clip']}.mp4"
-    available = (length(clip) - seg['start'] - seg['tail']) / seg['speed']
-    dur = round(min(seg['dur'], available) if seg['dur'] else available, 3)
     out = WORK / f'seg_{i:02d}.mp4'
     inputs = ['-ss', f"{seg['start']:.3f}", '-i', str(clip)]
     graph = [f"[0:v]setpts=(PTS-STARTPTS)/{seg['speed']},fps={FPS},format=rgba[base0]"]
@@ -141,9 +172,10 @@ def background_loop():
 
 def main():
     background = background_loop()
+    durations, cuts = plan()
     segments = []
     for i, seg in enumerate(EDL):
-        path, dur = render_segment(i, seg, background)
+        path, dur = render_segment(i, seg, background, durations[i])
         segments.append((path, dur, seg['trans']))
         print(f'seg {i:02d} {seg["clip"]:<28} {dur:6.2f}s')
     # Join with xfade; record where each segment starts in the cut.
@@ -170,7 +202,7 @@ def main():
     graph.append(f'[{label}]fade=t=in:st=0:d=0.6,fade=t=out:st={total - 1.2:.3f}:d=1.2,format=yuv420p[v]')
     silent = WORK / 'promo-silent.mp4'
     ff(inputs + card_args + ['-filter_complex', ';'.join(graph), '-map', '[v]', '-r', str(FPS), '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(silent)])
-    timeline = {'total': total, 'segments': [{'clip': EDL[i]['clip'], 'start': starts[i], 'dur': segments[i][1], 'trans': segments[i][2]} for i in range(len(segments))]}
+    timeline = {'total': total, 'bpm': BPM, 'segments': [{'clip': EDL[i]['clip'], 'start': starts[i], 'cut': cuts[i], 'dur': segments[i][1], 'trans': segments[i][2]} for i in range(len(segments))]}
     timeline_path = WORK / 'timeline.json'
     timeline_path.write_text(json.dumps(timeline, indent=1), encoding='utf-8')
     print(f'{silent}: {total:.2f} s')
