@@ -167,7 +167,7 @@ def render_segment(i, seg, background, dur):
 
 def background_loop():
     """The UI segments float over the hero shot, blurred and darkened."""
-    out = WORK / 'ui-background.mp4'
+    out = WORK / f'ui-background-{WIDTH}.mp4'  # per size: a cached 1080p backdrop shrank 4K UI segments
     if not out.exists():
         ff(['-i', str(CLIPS / 'open_mla.mp4'), '-vf', f'scale=960:540,gblur=sigma=22,scale={WIDTH}:{HEIGHT}:flags=bicubic,eq=brightness=-0.02:saturation=1.35,vignette=PI/5',
             '-c:v', 'libx264', '-crf', '16', '-preset', 'medium', '-an', str(out)])
