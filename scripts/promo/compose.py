@@ -5,7 +5,7 @@ r"""Composes the promo video from the recorded shots and title cards (see docs/w
 Segments are rendered one by one (trim, speed, framing, per-segment cards), then joined with xfade
 transitions; global cards are laid over the joined cut. score.py then synthesizes the soundtrack for
 that timeline (it needs numpy, hence the project's Python), a two-pass linear loudnorm brings it to
--16 LUFS, and it is muxed in. Writes artifacts/promo/TensorCraft3D-promo-<lang>-1080p.mp4 and a 720p
+-16 LUFS, and it is muxed in. Writes artifacts/promo/TensorCraft3D-promo-<lang>-4k.mp4 (PROMO_SCALE 1: -1080p) and a 720p
 preview; intermediate files stay in artifacts/promo/build.
 """
 import json, re, subprocess, sys
@@ -22,7 +22,10 @@ CLIPS = BUILD / 'clips' / LANG
 TITLES = BUILD / 'titles' / LANG
 WORK = BUILD / 'work' / LANG
 WORK.mkdir(parents=True, exist_ok=True)
-UI_W, UI_H, UI_X, UI_Y = 1440, 810, 240, 222
+# 1920 x 1080 times PROMO_SCALE (2 = 4K, the default), as the shots and cards were rendered.
+SCALE = int(__import__('os').environ.get('PROMO_SCALE', '2'))
+WIDTH, HEIGHT = 1920 * SCALE, 1080 * SCALE
+UI_W, UI_H, UI_X, UI_Y = 1440 * SCALE, 810 * SCALE, 240 * SCALE, 222 * SCALE
 
 
 def ff(args, quiet=True):
@@ -43,8 +46,9 @@ def S(clip, start, dur=None, *, frame='full', speed=1.0, cards=(), trans=('fade'
 
 
 # Transitions last an even number of frames, so a cut (a transition's midpoint) lands on a frame.
-FLASH = ('fadewhite', 6 / FPS)
-QUICK = ('fadewhite', 4 / FPS)
+# No white flashes: a plain cut (two frames, so it still lands on a frame) or a short crossfade.
+CUT = ('fade', 2 / FPS)
+MIX = ('fade', 8 / FPS)
 DIP = ('fadeblack', 18 / FPS)
 SOFT = ('fade', 10 / FPS)
 # The edit and the score share one tempo: every cut lands on a beat of 120 BPM.
@@ -53,48 +57,48 @@ BEAT = 60 / BPM
 
 EDL = [
     # Cold open: three macro shots, one statement each, then the title.
-    S('open_pulses', 0.4, 3.1, cards=[('k1', 0.15)], trans=FLASH),
-    S('open_mla', 0.6, 3.0, cards=[('k2', 0.1)], trans=FLASH),
+    S('open_pulses', 0.4, 3.1, cards=[('k1', 0.15)], trans=MIX),
+    S('open_mla', 0.6, 3.0, cards=[('k2', 0.1)], trans=MIX),
     S('open_moe', 0.6, 2.9, cards=[('k3', 0.1)], trans=DIP),
-    S('hero', 0.3, 5.9, cards=[('title', 0.5)], trans=FLASH),
+    S('hero', 0.3, 5.9, cards=[('title', 0.5)], trans=MIX),
     # 01 Build
     S('ui_build', 0.35, 7.0, frame='ui', speed=1.4, cards=[('f1', 0.15)], trans=SOFT),
-    S('ui_error', 0.35, None, frame='ui', speed=1.2, trans=FLASH),
+    S('ui_error', 0.35, None, frame='ui', speed=1.2, trans=MIX),
     # 02 Operators: the counter over a wide shot, then one fly-in per operator.
-    S('wide_sequence', 0.4, 3.5, cards=[('ops', 0.15)], trans=QUICK),
-    S('parade_vision_c0_0', 0.5, 1.05, cards=[('op_conv2d', 0.0)], trans=QUICK),
-    S('parade_vision_c0_3', 0.5, 1.0, cards=[('op_maxpool', 0.0)], trans=QUICK),
-    S('parade_vision_c0_10', 0.5, 1.0, cards=[('op_dropout2d', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_1', 0.5, 1.0, cards=[('op_transformer', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_4', 0.5, 1.0, cards=[('op_mla', 0.0)], trans=QUICK),
-    S('parade_sequence_c0_5', 0.5, 1.0, cards=[('op_moe', 0.0)], trans=QUICK),
-    S('parade_attention_scores', 0.5, 1.0, cards=[('op_einsum', 0.0)], trans=QUICK),
-    S('parade_attention_scale', 0.5, 1.0, cards=[('op_scale', 0.0)], trans=QUICK),
-    S('parade_attention_mask', 0.5, 1.0, cards=[('op_mask', 0.0)], trans=QUICK),
-    S('parade_attention_softmax', 0.5, 1.0, cards=[('op_softmax', 0.0)], trans=QUICK),
-    S('parade_signal_alpha', 0.5, 1.0, cards=[('op_alpha', 0.0)], trans=QUICK),
-    S('parade_vision_c0_19', 0.5, 1.05, cards=[('op_logsoftmax', 0.0)], trans=FLASH),
-    S('wide_signal', 0.6, 2.6, trans=FLASH),
+    S('wide_sequence', 0.4, 3.5, cards=[('ops', 0.15)], trans=CUT),
+    S('parade_vision_c0_0', 0.5, 1.05, cards=[('op_conv2d', 0.0)], trans=CUT),
+    S('parade_vision_c0_3', 0.5, 1.0, cards=[('op_maxpool', 0.0)], trans=CUT),
+    S('parade_vision_c0_10', 0.5, 1.0, cards=[('op_dropout2d', 0.0)], trans=CUT),
+    S('parade_sequence_c0_1', 0.5, 1.0, cards=[('op_transformer', 0.0)], trans=CUT),
+    S('parade_sequence_c0_4', 0.5, 1.0, cards=[('op_mla', 0.0)], trans=CUT),
+    S('parade_sequence_c0_5', 0.5, 1.0, cards=[('op_moe', 0.0)], trans=CUT),
+    S('parade_attention_scores', 0.5, 1.0, cards=[('op_einsum', 0.0)], trans=CUT),
+    S('parade_attention_scale', 0.5, 1.0, cards=[('op_scale', 0.0)], trans=CUT),
+    S('parade_attention_mask', 0.5, 1.0, cards=[('op_mask', 0.0)], trans=CUT),
+    S('parade_attention_softmax', 0.5, 1.0, cards=[('op_softmax', 0.0)], trans=CUT),
+    S('parade_signal_alpha', 0.5, 1.0, cards=[('op_alpha', 0.0)], trans=CUT),
+    S('parade_vision_c0_19', 0.5, 1.05, cards=[('op_logsoftmax', 0.0)], trans=MIX),
+    S('wide_signal', 0.6, 2.6, trans=MIX),
     # 03 Anatomy
     S('attn_gqa', 0.4, 3.6, cards=[('f3', 0.2)], trans=SOFT),
     S('attn_by_hand', 0.5, 3.4, trans=SOFT),
-    S('attn_cross', 0.6, 2.2, trans=FLASH),
+    S('attn_cross', 0.6, 2.2, trans=MIX),
     # 04 Import, 05 Train
-    S('ui_import', 0.35, None, frame='ui', speed=1.35, cards=[('f4', 0.15)], trans=FLASH),
-    S('ui_train', 0.35, None, frame='ui', speed=1.3, cards=[('f5', 0.15)], trans=FLASH),
+    S('ui_import', 0.35, None, frame='ui', speed=1.35, cards=[('f4', 0.15)], trans=MIX),
+    S('ui_train', 0.35, None, frame='ui', speed=1.3, cards=[('f5', 0.15)], trans=MIX),
     # 06 Observe
     S('ui_inspect', 0.35, None, frame='ui', speed=1.4, cards=[('f6', 0.15)], trans=SOFT),
-    S('rings', 0.6, 4.0, trans=FLASH),
-    S('ui_attention', 0.35, None, frame='ui', speed=1.25, cards=[('f6b', 0.15)], trans=FLASH),
+    S('rings', 0.6, 4.0, trans=MIX),
+    S('ui_attention', 0.35, None, frame='ui', speed=1.25, cards=[('f6b', 0.15)], trans=MIX),
     # 07 Export
     S('ui_export', 0.35, None, frame='ui', speed=1.3, cards=[('f7', 0.15)], trans=DIP),
     # Flashback recap, then the end card.
-    S('open_mla', 3.6, 0.5, trans=QUICK),
-    S('parade_sequence_c0_5', 1.2, 0.45, trans=QUICK),
-    S('rings', 2.4, 0.5, trans=QUICK),
-    S('attn_gqa', 3.0, 0.5, trans=QUICK),
-    S('parade_attention_softmax', 1.2, 0.5, trans=QUICK),
-    S('open_pulses', 2.6, 0.5, trans=FLASH),
+    S('open_mla', 3.6, 0.5, trans=CUT),
+    S('parade_sequence_c0_5', 1.2, 0.45, trans=CUT),
+    S('rings', 2.4, 0.5, trans=CUT),
+    S('attn_gqa', 3.0, 0.5, trans=CUT),
+    S('parade_attention_softmax', 1.2, 0.5, trans=CUT),
+    S('open_pulses', 2.6, 0.5, trans=MIX),
     S('outro', 0.3, 6.2, cards=[('end', 0.7)], trans=None),
 ]
 # (card, segment index, offset into it): the recap's statement starts with its six flashbacks, before the end card.
@@ -165,7 +169,7 @@ def background_loop():
     """The UI segments float over the hero shot, blurred and darkened."""
     out = WORK / 'ui-background.mp4'
     if not out.exists():
-        ff(['-i', str(CLIPS / 'open_mla.mp4'), '-vf', 'scale=960:540,gblur=sigma=22,scale=1920:1080:flags=bicubic,eq=brightness=-0.02:saturation=1.35,vignette=PI/5',
+        ff(['-i', str(CLIPS / 'open_mla.mp4'), '-vf', f'scale=960:540,gblur=sigma=22,scale={WIDTH}:{HEIGHT}:flags=bicubic,eq=brightness=-0.02:saturation=1.35,vignette=PI/5',
             '-c:v', 'libx264', '-crf', '16', '-preset', 'medium', '-an', str(out)])
     return out
 
@@ -201,7 +205,7 @@ def main():
         label = f'go{n}'
     graph.append(f'[{label}]fade=t=in:st=0:d=0.6,fade=t=out:st={total - 1.2:.3f}:d=1.2,format=yuv420p[v]')
     silent = WORK / 'promo-silent.mp4'
-    ff(inputs + card_args + ['-filter_complex', ';'.join(graph), '-map', '[v]', '-r', str(FPS), '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(silent)])
+    ff(inputs + card_args + ['-filter_complex', ';'.join(graph), '-map', '[v]', '-r', str(FPS), '-c:v', 'libx264', '-preset', 'slow', '-crf', '16', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(silent)])
     timeline = {'total': total, 'bpm': BPM, 'segments': [{'clip': EDL[i]['clip'], 'start': starts[i], 'cut': cuts[i], 'dur': segments[i][1], 'trans': segments[i][2]} for i in range(len(segments))]}
     timeline_path = WORK / 'timeline.json'
     timeline_path.write_text(json.dumps(timeline, indent=1), encoding='utf-8')
@@ -223,7 +227,7 @@ def master(silent, timeline_path):
     measured = json.loads(blocks[-1])
     loudnorm = (f"loudnorm={target}:measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:measured_LRA={measured['input_lra']}"
                 f":measured_thresh={measured['input_thresh']}:offset={measured['target_offset']}:linear=true")
-    final = OUT / f'TensorCraft3D-promo-{LANG}-1080p.mp4'
+    final = OUT / f"TensorCraft3D-promo-{LANG}-{'4k' if SCALE == 2 else f'{1080 * SCALE}p'}.mp4"
     ff(['-i', str(silent), '-i', str(wav), '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-af', f'{loudnorm},aresample=48000',
         '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', str(final)])
     preview = OUT / f'TensorCraft3D-promo-{LANG}-720p-preview.mp4'

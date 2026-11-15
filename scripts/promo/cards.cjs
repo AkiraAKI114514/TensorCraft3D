@@ -20,33 +20,34 @@ const L = (zh, en) => (lang === 'zh' ? zh : en);
 // The release the end card names; set it to the version the video ships with.
 const RELEASE = 'v1.0.0-beta.3';
 
+// Plain wording, few punctuation marks: no separators, no full stops at the end of a line.
 const FEATURES = {
-  f1: [L('01 · 搭建', '01 · BUILD'), L('可视化搭建，形状实时校验', 'Build visually. Shapes check as you go.'), L('点选或拖入算子，连线、改参数，出错的层立刻标红。', 'Click or drag in layers, wire and tune them. A mistake turns red at once.')],
-  f3: [L('03 · 结构', '03 · ANATOMY'), L('注意力与专家，拆开来看', 'Attention and experts, opened up.'), L('Q/K/V 围成多边形；MLA、MoE、掩码与 Softmax 都画出它们做的事。', 'Q/K/V heads as polygons. MLA, MoE, masks and softmax drawn as what they do.')],
-  f4: [L('04 · 导入', '04 · IMPORT'), L('导入 PyTorch 代码', 'Bring your PyTorch code.'), L('静态解析结构与参数，不执行上传的代码。', 'Parsed statically. Your code is never executed.')],
-  f5: [L('05 · 训练', '05 · TRAIN'), L('本地真实训练', 'Train for real, locally.'), L('CPU 或 CUDA，损失与准确率实时更新。', 'On CPU or CUDA, with live loss and accuracy.')],
-  f6: [L('06 · 观测', '06 · OBSERVE'), L('每一层的真实数值', 'Real values, in every layer.'), L('跑一个样本，把每层实测的数值画到三维方块上。', 'Run one sample and paint what every layer measured onto its block.')],
-  f6b: [L('06 · 观测', '06 · OBSERVE'), L('看清每一个注意力头', 'See every attention head.'), L('同一分支的所有头一屏比较，再看详细的分数矩阵。', 'Compare every head of a branch at a glance, then read the scores.')],
-  f7: [L('07 · 导出', '07 · EXPORT'), L('导出代码与图像', 'Export code and diagrams.'), L('可运行的 PyTorch 代码，以及 PNG 与 SVG 图。', 'Runnable PyTorch, plus PNG and SVG diagrams.')]
+  f1: [L('01 搭建', '01 BUILD'), L('像搭积木一样搭模型', 'Build a model block by block'), L('参数改错了，出问题的层会直接变红', 'Get a shape wrong and the layers it breaks turn red')],
+  f3: [L('03 结构', '03 INSIDE'), L('把注意力拆开来看', 'Open up attention'), L('每个注意力头和每个专家都画了出来', 'Every attention head and every expert drawn out')],
+  f4: [L('04 导入', '04 IMPORT'), L('直接导入 PyTorch 代码', 'Import your PyTorch code'), L('只读取结构，不会执行代码', 'Read for its structure and never executed')],
+  f5: [L('05 训练', '05 TRAIN'), L('在本地真正训练一遍', 'Train it for real on your own machine'), L('CPU 和 CUDA 都可以', 'On CPU or CUDA')],
+  f6: [L('06 观测', '06 OBSERVE'), L('看看每一层算出了什么', 'See what every layer computes'), L('喂进一个样本，真实数值会画在方块上', 'Feed in one sample and its real values appear on the blocks')],
+  f6b: [L('06 观测', '06 OBSERVE'), L('比较每一个注意力头', 'Compare every attention head'), L('同一分支的所有头放在一起看', 'All heads of a branch side by side')],
+  f7: [L('07 导出', '07 EXPORT'), L('导出代码和图片', 'Export code and figures'), L('可运行的 PyTorch 代码和 PNG SVG 图片', 'Runnable PyTorch code plus PNG and SVG figures')]
 };
 const OPS = {
   op_conv2d: ['Conv2d', L('卷积', 'Convolution')], op_maxpool: ['MaxPool2d', L('池化', 'Pooling')], op_upsample: ['Upsample', L('上采样', 'Resampling')],
   op_convt: ['ConvTranspose2d', L('转置卷积', 'Transposed convolution')], op_conv3d: ['Conv3d', L('三维卷积', '3D convolution')], op_bilinear: ['Bilinear', L('双线性层', 'Bilinear layer')],
-  op_transformer: ['Transformer', L('编码层 · 注意力 + FFN', 'Encoder · attention + FFN')], op_mla: ['LatentAttention', L('多头潜在注意力 · MLA', 'Multi-head latent attention')],
-  op_moe: ['MoE', L('混合专家 · top-k 路由', 'Mixture of experts · top-k')], op_glu: ['GLU', L('门控线性单元', 'Gated linear unit')], op_unflatten: ['Unflatten', L('维度拆分', 'Axis split')],
+  op_transformer: ['Transformer', L('编码层 注意力加前馈', 'Encoder with attention and feed-forward')], op_mla: ['LatentAttention', L('多头潜在注意力', 'Multi-head latent attention')],
+  op_moe: ['MoE', L('混合专家', 'Mixture of experts')], op_glu: ['GLU', L('门控线性单元', 'Gated linear unit')], op_unflatten: ['Unflatten', L('维度拆分', 'Axis split')],
   op_dropout2d: ['Dropout2d', L('通道随机失活', 'Channel dropout')], op_logsoftmax: ['LogSoftmax', L('对数概率', 'Log probabilities')],
-  op_scale: ['Scale', L('缩放 · 1/√d', 'Scaling · 1/√d')], op_softmax: ['Softmax', L('注意力概率', 'Attention probabilities')], op_alpha: ['AlphaDropout', L('α 随机失活', 'Alpha dropout')],
+  op_scale: ['Scale', L('缩放 1/√d', 'Scaling by 1/√d')], op_softmax: ['Softmax', L('注意力概率', 'Attention probabilities')], op_alpha: ['AlphaDropout', L('α 随机失活', 'Alpha dropout')],
   op_einsum: ['Einsum', L('爱因斯坦求和', 'Einstein summation')], op_mask: ['CausalMask', L('因果掩码', 'Causal mask')], op_multiply: ['Multiply', L('逐元素乘', 'Elementwise product')]
 };
 
 const CARDS = {
-  k1: { seconds: 2.9, kind: 'kicker', text: L('每一层。', 'Every layer.') },
-  k2: { seconds: 2.7, kind: 'kicker', text: L('每一次计算。', 'Every computation.') },
-  k3: { seconds: 2.5, kind: 'kicker', text: L('都看得见。', 'Made visible.') },
-  k4: { seconds: 2.6, kind: 'kicker', text: L('从搭建，到看懂。', 'From building to understanding.') },
-  title: { seconds: 5.6, kind: 'title', text: 'TensorCraft3D', sub: L('搭建它。看懂它。运行它。', 'Build it. Understand it. Run it.') },
-  ops: { seconds: 3.2, kind: 'counter', value: OPERATORS, unit: L('种算子', 'operators'), sub: L('卷积 · 归一化 · 激活 · 池化 · 注意力 · MLA · MoE', 'Convolution · normalization · activation · pooling · attention · MLA · MoE'), eyebrow: L('02 · 算子', '02 · OPERATORS') },
-  end: { seconds: 6.0, kind: 'end', text: 'TensorCraft3D', sub: L('本地运行 · Windows · PyTorch CPU / CUDA', 'Runs locally · Windows · PyTorch CPU / CUDA'), meta: RELEASE, url: 'github.com/AkiraAKI114514/TensorCraft3D' },
+  k1: { seconds: 2.9, kind: 'kicker', text: L('从一个张量开始', 'It starts with a tensor') },
+  k2: { seconds: 2.7, kind: 'kicker', text: L('一层一层搭起来', 'Built layer by layer') },
+  k3: { seconds: 2.5, kind: 'kicker', text: L('看数据怎么流过去', 'Watch the data flow through') },
+  k4: { seconds: 2.6, kind: 'kicker', text: L('从搭建到看懂', 'From building to understanding') },
+  title: { seconds: 5.6, kind: 'title', text: 'TensorCraft3D', sub: L('本地运行的神经网络三维工作台', 'A local 3D workbench for neural networks') },
+  ops: { seconds: 3.2, kind: 'counter', value: OPERATORS, unit: L('种算子', 'operators'), sub: L('从卷积到注意力，再到 MLA 和 MoE', 'From convolutions to attention, MLA and MoE'), eyebrow: L('02 算子', '02 OPERATORS') },
+  end: { seconds: 6.0, kind: 'end', text: 'TensorCraft3D', sub: L('在你自己的电脑上运行', 'Runs on your own machine'), meta: RELEASE, url: 'github.com/AkiraAKI114514/TensorCraft3D' },
   mask: { seconds: 1 / FPS, kind: 'mask' }, shadow: { seconds: 1 / FPS, kind: 'shadow' }
 };
 for (const [key, [eyebrow, head, sub]] of Object.entries(FEATURES)) CARDS[key] = { seconds: 4.6, kind: 'feature', eyebrow, head, sub, place: key === 'f3' ? 'lower' : 'top' };
@@ -57,7 +58,7 @@ const LATIN = `"Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", san
 const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;width:1920px;height:1080px;background:transparent;overflow:hidden}
 #stage{position:absolute;inset:0;font-family:${FONT};color:#fff;-webkit-font-smoothing:antialiased}
-.glow{text-shadow:0 0 34px rgba(120,220,255,.35),0 2px 18px rgba(0,0,0,.55)}
+.glow{text-shadow:0 2px 16px rgba(0,0,0,.55)}
 </style></head><body><div id="stage"></div></body></html>`;
 
 // Each kind builds its DOM once, then `frame(t)` sets every animated property for time t (seconds).
@@ -73,17 +74,17 @@ function setup(card) {
     const box = el('div', 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center');
     const t = el('div', `font-size:${window.LANG === 'zh' ? 118 : 124}px;font-weight:650;letter-spacing:-0.01em;white-space:nowrap`, card.text, box); t.className = 'glow';
     return time => { const a = smooth(0.05, 0.9, time) * (1 - smooth(T - 0.55, T - 0.05, time)); const p = outExpo(Math.min(1, time / 1.1));
-      scrim.style.opacity = a; t.style.opacity = a; t.style.filter = `blur(${(1 - p) * 16 + smooth(T - 0.55, T - 0.05, time) * 10}px)`;
-      t.style.letterSpacing = `${(1 - p) * 0.28 - 0.01}em`; t.style.transform = `scale(${1.04 - 0.04 * p + 0.012 * time / T})`; };
+      scrim.style.opacity = a; t.style.opacity = a; t.style.filter = `blur(${(1 - p) * 4}px)`;
+      t.style.transform = `translateY(${(1 - p) * 14}px)`; };
   }
   if (card.kind === 'title') {
     const scrim = halo(70, 58);
     const box = el('div', 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px');
-    const t = el('div', `font-family:${window.LATIN};font-size:164px;font-weight:700;letter-spacing:-0.035em;background:linear-gradient(100deg,#7fe9ff 0%,#ffffff 38%,#ffffff 52%,#b7a5ff 100%);background-size:240% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 0 30px rgba(110,210,255,.35))`, card.text, box);
+    const t = el('div', `font-family:${window.LATIN};font-size:164px;font-weight:700;letter-spacing:-0.035em;color:#fff;text-shadow:0 3px 24px rgba(0,0,0,.5)`, card.text, box);
     const s = el('div', 'font-size:46px;font-weight:500;color:rgba(235,245,255,.86);letter-spacing:0.02em', card.sub, box); s.className = 'glow';
     return time => { const a = smooth(0.1, 1.2, time) * (1 - smooth(T - 0.6, T - 0.05, time)); const p = outExpo(Math.min(1, time / 1.4));
       scrim.style.opacity = a; t.style.opacity = a; t.style.transform = `translateY(${(1 - p) * 26}px) scale(${0.97 + 0.03 * p})`; t.style.backgroundPosition = `${100 - (time / T) * 100}% 0`;
-      t.style.filter = `blur(${(1 - p) * 12}px) drop-shadow(0 0 30px rgba(110,210,255,.35))`;
+      t.style.filter = `blur(${(1 - p) * 5}px)`;
       const b = smooth(1.0, 1.9, time) * (1 - smooth(T - 0.6, T - 0.05, time)); s.style.opacity = b; s.style.transform = `translateY(${(1 - smooth(1.0, 2.0, time)) * 18}px)`; };
   }
   if (card.kind === 'feature') {
@@ -113,23 +114,23 @@ function setup(card) {
   }
   if (card.kind === 'op') {
     const box = el('div', 'position:absolute;left:110px;bottom:104px');
-    const bar = el('div', 'width:0;height:5px;background:linear-gradient(90deg,#64f0d8,#7ab8ff);border-radius:3px;margin-bottom:18px;box-shadow:0 0 18px rgba(100,240,216,.7)', undefined, box);
+    const bar = el('div', 'width:0;height:5px;background:#5fd3c0;border-radius:3px;margin-bottom:18px', undefined, box);
     const n = el('div', `font-family:${window.LATIN};font-size:104px;font-weight:700;letter-spacing:-0.03em;line-height:1;white-space:nowrap`, card.name, box); n.className = 'glow';
     const f = el('div', 'font-size:30px;font-weight:500;color:rgba(200,236,248,.85);margin-top:12px;letter-spacing:0.02em', card.family, box); f.className = 'glow';
     return time => { const p = outExpo(Math.min(1, time / 0.32)), out = 1 - smooth(T - 0.16, T, time);
       bar.style.width = `${180 * p}px`; bar.style.opacity = out;
-      n.style.opacity = p * out; n.style.transform = `translateX(${(1 - p) * -60}px) skewX(${(1 - p) * -8}deg)`; n.style.filter = `blur(${(1 - p) * 8}px)`;
+      n.style.opacity = p * out; n.style.transform = `translateX(${(1 - p) * -30}px)`;
       f.style.opacity = smooth(0.12, 0.35, time) * out; f.style.transform = `translateX(${(1 - smooth(0.12, 0.45, time)) * -30}px)`; };
   }
   if (card.kind === 'end') {
     const scrim = halo(72, 66);
     const box = el('div', 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px');
-    const t = el('div', `font-family:${window.LATIN};font-size:150px;font-weight:700;letter-spacing:-0.035em;background:linear-gradient(100deg,#7fe9ff 0%,#ffffff 40%,#ffffff 55%,#b7a5ff 100%);background-size:220% 100%;-webkit-background-clip:text;background-clip:text;color:transparent`, card.text, box);
+    const t = el('div', `font-family:${window.LATIN};font-size:150px;font-weight:700;letter-spacing:-0.035em;color:#fff;text-shadow:0 3px 24px rgba(0,0,0,.5)`, card.text, box);
     const s = el('div', 'font-size:38px;font-weight:500;color:rgba(235,245,255,.88)', card.sub, box); s.className = 'glow';
     const m = el('div', `font-family:${window.LATIN};font-size:26px;font-weight:600;letter-spacing:.3em;color:#7fe3d1;margin-top:20px`, card.meta, box);
     const u = el('div', `font-family:${window.LATIN};font-size:30px;font-weight:500;color:rgba(235,245,255,.75);letter-spacing:.02em`, card.url, box); u.className = 'glow';
     return time => { const p = outExpo(Math.min(1, time / 1.4));
-      scrim.style.opacity = smooth(0, 1.0, time); t.style.opacity = smooth(0.1, 1.1, time); t.style.transform = `scale(${0.96 + 0.04 * p})`; t.style.filter = `blur(${(1 - p) * 12}px) drop-shadow(0 0 30px rgba(110,210,255,.35))`; t.style.backgroundPosition = `${100 - (time / T) * 100}% 0`;
+      scrim.style.opacity = smooth(0, 1.0, time); t.style.opacity = smooth(0.1, 1.1, time); t.style.transform = `scale(${0.96 + 0.04 * p})`; t.style.filter = `blur(${(1 - p) * 5}px)`;
       [s, m, u].forEach((e, i) => { const d = 0.9 + i * 0.25; e.style.opacity = smooth(d, d + 0.6, time); e.style.transform = `translateY(${(1 - smooth(d, d + 0.8, time)) * 16}px)`; }); };
   }
   if (card.kind === 'mask') { el('div', 'position:absolute;left:0;top:0;width:1440px;height:810px;background:#fff;border-radius:22px'); return () => {}; }
@@ -139,7 +140,8 @@ function setup(card) {
 
 (async () => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+  // Laid out at 1920 x 1080 and rendered at PROMO_SCALE times the pixels (2 = 4K, the default), like the shots.
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: Number(process.env.PROMO_SCALE || 2) });
   await page.setContent(HTML); await page.evaluate(([lang, latin]) => { window.LANG = lang; window.LATIN = latin; }, [lang, LATIN]);
   await page.addScriptTag({ content: `window.smooth=${smooth};\nwindow.outExpo=${outExpo};\nwindow.setup=${setup};` });
   await page.evaluate(() => document.fonts.ready);

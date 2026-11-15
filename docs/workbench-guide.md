@@ -96,10 +96,10 @@ node scripts/record-readme-demo.mjs
 
 ### Promo video
 
-`scripts/promo/` produces an 86-second promo video in Chinese and in English, filmed from a local build on the night stage. The video has five parts:
+`scripts/promo/` produces a promo video of about 90 seconds in Chinese and in English, filmed from a local build on the night stage. The video has five parts:
 1. A cold open.
 2. The title.
-3. Seven feature sections joined by flash cuts: build, operators, attention anatomy, import, training, observation and export.
+3. Seven feature sections: build, operators, attention anatomy, import, training, observation and export. Shots meet in plain cuts or short crossfades, with no white flashes.
 4. A flashback recap.
 5. An end card.
 
@@ -117,7 +117,7 @@ node scripts/promo/cards.cjs en
 .\.venv\Scripts\python.exe scripts/promo/compose.py en
 ```
 
-**Output:** `artifacts/promo/TensorCraft3D-promo-<lang>-1080p.mp4` (1920 × 1080, 30 fps, H.264 and AAC at -16 LUFS) and a 720p preview. Intermediate files stay in `artifacts/promo/build`, about 2 GB for both languages. Recording and composing take roughly 20 minutes per language.
+**Output:** `artifacts/promo/TensorCraft3D-promo-<lang>-4k.mp4` (3840 × 2160, 30 fps, H.264 and AAC at -16 LUFS) and a 720p preview. Shots and cards are rendered at twice the pixel density of their 1920 × 1080 layout; set `PROMO_SCALE=1` for a 1080p video instead. Intermediate files stay in `artifacts/promo/build`, several GB for both languages at 4K.
 
 **Requirements:** the same as the GIF. That is PyTorch in the service, since some shots train and measure for real; Microsoft Edge; and `ffmpeg` on `PATH`. In addition:
 - `compose.py` runs with the project Python, because the soundtrack is synthesized with numpy.
@@ -140,7 +140,7 @@ node scripts/promo/cards.cjs en
   - the cold open: an open A minor pad and a soft bell on each statement;
   - the title: F, C and G;
   - the features: Am–F–C–G a bar each, over a kick, a clap on 2 and 4, hats, a bass and plucked arpeggios;
-  - the operator parade: doubled arpeggios and a rising bell on each flash;
+  - the operator parade: doubled arpeggios and a rising bell on each operator;
   - the attention section: a breakdown;
   - the recap: a snare roll and a riser into the end card's F and C.
 
