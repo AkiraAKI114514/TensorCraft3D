@@ -1,0 +1,493 @@
+{
+ "version": 1,
+ "name": "Sequence operators",
+ "nodes": [
+  {
+   "id": "in0",
+   "name": "Input",
+   "op": "Input",
+   "params": {
+    "shape": [
+     1,
+     16,
+     64
+    ]
+   },
+   "position": {
+    "x": 0,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_0",
+   "name": "LayerNorm",
+   "op": "LayerNorm",
+   "params": {
+    "normalized_shape": 64,
+    "eps": 1e-05,
+    "elementwise_affine": 1
+   },
+   "position": {
+    "x": 210,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_1",
+   "name": "Transformer",
+   "op": "Transformer",
+   "params": {
+    "attention_type": "self",
+    "embed_dim": 64,
+    "num_heads": 4,
+    "kv_heads": 4,
+    "branches": 1,
+    "ff_dim": 128,
+    "dropout": 0.1
+   },
+   "position": {
+    "x": 420,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_2",
+   "name": "MultiHeadAttention",
+   "op": "MultiHeadAttention",
+   "params": {
+    "attention_type": "grouped_query",
+    "embed_dim": 64,
+    "num_heads": 4,
+    "kv_heads": 2,
+    "branches": 1,
+    "dropout": 0.1
+   },
+   "position": {
+    "x": 630,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_3",
+   "name": "RMSNorm",
+   "op": "RMSNorm",
+   "params": {
+    "normalized_shape": 64,
+    "eps": 1e-05,
+    "elementwise_affine": 1
+   },
+   "position": {
+    "x": 840,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_4",
+   "name": "LatentAttention",
+   "op": "LatentAttention",
+   "params": {
+    "embed_dim": 64,
+    "num_heads": 4,
+    "q_lora_rank": 32,
+    "kv_lora_rank": 32,
+    "qk_nope_head_dim": 16,
+    "qk_rope_head_dim": 8,
+    "v_head_dim": 16,
+    "rope_theta": 10000,
+    "causal": 1,
+    "eps": 1e-06
+   },
+   "position": {
+    "x": 1050,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_5",
+   "name": "MoE",
+   "op": "MoE",
+   "params": {
+    "experts": 8,
+    "top_k": 2,
+    "shared_experts": 1,
+    "expert_dim": 64,
+    "score_func": "sigmoid",
+    "route_scale": 1,
+    "groups": 1,
+    "topk_groups": 1,
+    "gate_bias": 1
+   },
+   "position": {
+    "x": 1260,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_6",
+   "name": "Linear",
+   "op": "Linear",
+   "params": {
+    "out_features": 128,
+    "bias": 1
+   },
+   "position": {
+    "x": 1470,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_7",
+   "name": "GLU",
+   "op": "GLU",
+   "params": {
+    "dim": -1
+   },
+   "position": {
+    "x": 1680,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_8",
+   "name": "Tanh",
+   "op": "Tanh",
+   "params": {},
+   "position": {
+    "x": 1890,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_9",
+   "name": "Scale",
+   "op": "Scale",
+   "params": {
+    "factor": 0.5
+   },
+   "position": {
+    "x": 2100,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_10",
+   "name": "ConstantAdd",
+   "op": "ConstantAdd",
+   "params": {
+    "shape": [
+     1
+    ],
+    "values": [
+     0
+    ]
+   },
+   "position": {
+    "x": 2310,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_11",
+   "name": "ConstantMul",
+   "op": "ConstantMul",
+   "params": {
+    "shape": [
+     1
+    ],
+    "values": [
+     1
+    ]
+   },
+   "position": {
+    "x": 2520,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_12",
+   "name": "Sigmoid",
+   "op": "Sigmoid",
+   "params": {},
+   "position": {
+    "x": 2730,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_13",
+   "name": "Mish",
+   "op": "Mish",
+   "params": {},
+   "position": {
+    "x": 2940,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_14",
+   "name": "Identity",
+   "op": "Identity",
+   "params": {},
+   "position": {
+    "x": 3150,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_15",
+   "name": "Dropout",
+   "op": "Dropout",
+   "params": {
+    "p": 0.3
+   },
+   "position": {
+    "x": 3360,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_16",
+   "name": "Unflatten",
+   "op": "Unflatten",
+   "params": {
+    "dim": -1,
+    "sizes": [
+     4,
+     -1
+    ]
+   },
+   "position": {
+    "x": 3570,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_17",
+   "name": "Flatten",
+   "op": "Flatten",
+   "params": {
+    "start_dim": 2,
+    "end_dim": -1
+   },
+   "position": {
+    "x": 3780,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_18",
+   "name": "Unsqueeze",
+   "op": "Unsqueeze",
+   "params": {
+    "dim": 1
+   },
+   "position": {
+    "x": 3990,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_19",
+   "name": "Squeeze",
+   "op": "Squeeze",
+   "params": {
+    "dim": 1
+   },
+   "position": {
+    "x": 4200,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_20",
+   "name": "Slice",
+   "op": "Slice",
+   "params": {
+    "dim": 1,
+    "start": 0,
+    "end": 8,
+    "step": 1
+   },
+   "position": {
+    "x": 4410,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_21",
+   "name": "Reduce",
+   "op": "Reduce",
+   "params": {
+    "op": "mean",
+    "dim": 1,
+    "keepdim": 0
+   },
+   "position": {
+    "x": 4620,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_22",
+   "name": "Linear",
+   "op": "Linear",
+   "params": {
+    "out_features": 10,
+    "bias": 1
+   },
+   "position": {
+    "x": 4830,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_23",
+   "name": "Softmax",
+   "op": "Softmax",
+   "params": {
+    "dim": -1
+   },
+   "position": {
+    "x": 5040,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_24",
+   "name": "Output",
+   "op": "Output",
+   "params": {},
+   "position": {
+    "x": 5250,
+    "y": 100
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "e0",
+   "source": "in0",
+   "target": "c0_0"
+  },
+  {
+   "id": "e1",
+   "source": "c0_0",
+   "target": "c0_1"
+  },
+  {
+   "id": "e2",
+   "source": "c0_1",
+   "target": "c0_2"
+  },
+  {
+   "id": "e3",
+   "source": "c0_2",
+   "target": "c0_3"
+  },
+  {
+   "id": "e4",
+   "source": "c0_3",
+   "target": "c0_4"
+  },
+  {
+   "id": "e5",
+   "source": "c0_4",
+   "target": "c0_5"
+  },
+  {
+   "id": "e6",
+   "source": "c0_5",
+   "target": "c0_6"
+  },
+  {
+   "id": "e7",
+   "source": "c0_6",
+   "target": "c0_7"
+  },
+  {
+   "id": "e8",
+   "source": "c0_7",
+   "target": "c0_8"
+  },
+  {
+   "id": "e9",
+   "source": "c0_8",
+   "target": "c0_9"
+  },
+  {
+   "id": "e10",
+   "source": "c0_9",
+   "target": "c0_10"
+  },
+  {
+   "id": "e11",
+   "source": "c0_10",
+   "target": "c0_11"
+  },
+  {
+   "id": "e12",
+   "source": "c0_11",
+   "target": "c0_12"
+  },
+  {
+   "id": "e13",
+   "source": "c0_12",
+   "target": "c0_13"
+  },
+  {
+   "id": "e14",
+   "source": "c0_13",
+   "target": "c0_14"
+  },
+  {
+   "id": "e15",
+   "source": "c0_14",
+   "target": "c0_15"
+  },
+  {
+   "id": "e16",
+   "source": "c0_15",
+   "target": "c0_16"
+  },
+  {
+   "id": "e17",
+   "source": "c0_16",
+   "target": "c0_17"
+  },
+  {
+   "id": "e18",
+   "source": "c0_17",
+   "target": "c0_18"
+  },
+  {
+   "id": "e19",
+   "source": "c0_18",
+   "target": "c0_19"
+  },
+  {
+   "id": "e20",
+   "source": "c0_19",
+   "target": "c0_20"
+  },
+  {
+   "id": "e21",
+   "source": "c0_20",
+   "target": "c0_21"
+  },
+  {
+   "id": "e22",
+   "source": "c0_21",
+   "target": "c0_22"
+  },
+  {
+   "id": "e23",
+   "source": "c0_22",
+   "target": "c0_23"
+  },
+  {
+   "id": "e24",
+   "source": "c0_23",
+   "target": "c0_24"
+  }
+ ]
+}

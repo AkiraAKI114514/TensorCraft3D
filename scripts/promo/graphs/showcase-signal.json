@@ -1,0 +1,608 @@
+{
+ "version": 1,
+ "name": "Signal and volume operators",
+ "nodes": [
+  {
+   "id": "in0",
+   "name": "Input",
+   "op": "Input",
+   "params": {
+    "shape": [
+     1,
+     4,
+     32
+    ]
+   },
+   "position": {
+    "x": 0,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_0",
+   "name": "Conv1d",
+   "op": "Conv1d",
+   "params": {
+    "out_channels": 16,
+    "kernel_size": 3,
+    "stride": 1,
+    "padding": 1,
+    "bias": 1
+   },
+   "position": {
+    "x": 210,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_1",
+   "name": "BatchNorm1d",
+   "op": "BatchNorm1d",
+   "params": {},
+   "position": {
+    "x": 420,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_2",
+   "name": "ELU",
+   "op": "ELU",
+   "params": {
+    "alpha": 1
+   },
+   "position": {
+    "x": 630,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_3",
+   "name": "MaxPool1d",
+   "op": "MaxPool1d",
+   "params": {
+    "kernel_size": 2,
+    "stride": 2,
+    "padding": 0
+   },
+   "position": {
+    "x": 840,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_4",
+   "name": "InstanceNorm1d",
+   "op": "InstanceNorm1d",
+   "params": {},
+   "position": {
+    "x": 1050,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_5",
+   "name": "ConvTranspose1d",
+   "op": "ConvTranspose1d",
+   "params": {
+    "out_channels": 8,
+    "kernel_size": 4,
+    "stride": 2,
+    "padding": 1,
+    "bias": 1
+   },
+   "position": {
+    "x": 1260,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_6",
+   "name": "AvgPool1d",
+   "op": "AvgPool1d",
+   "params": {
+    "kernel_size": 2,
+    "stride": 2,
+    "padding": 0
+   },
+   "position": {
+    "x": 1470,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_7",
+   "name": "Dropout1d",
+   "op": "Dropout1d",
+   "params": {
+    "p": 0.3
+   },
+   "position": {
+    "x": 1680,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_8",
+   "name": "AdaptiveAvgPool1d",
+   "op": "AdaptiveAvgPool1d",
+   "params": {
+    "output_size": 4
+   },
+   "position": {
+    "x": 1890,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_9",
+   "name": "AdaptiveMaxPool1d",
+   "op": "AdaptiveMaxPool1d",
+   "params": {
+    "output_size": 2
+   },
+   "position": {
+    "x": 2100,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_10",
+   "name": "Softplus",
+   "op": "Softplus",
+   "params": {
+    "beta": 1,
+    "threshold": 20
+   },
+   "position": {
+    "x": 2310,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_11",
+   "name": "Flatten",
+   "op": "Flatten",
+   "params": {
+    "start_dim": 1,
+    "end_dim": -1
+   },
+   "position": {
+    "x": 2520,
+    "y": 100
+   }
+  },
+  {
+   "id": "c0_12",
+   "name": "Linear",
+   "op": "Linear",
+   "params": {
+    "out_features": 16,
+    "bias": 1
+   },
+   "position": {
+    "x": 2730,
+    "y": 100
+   }
+  },
+  {
+   "id": "in1",
+   "name": "Input",
+   "op": "Input",
+   "params": {
+    "shape": [
+     1,
+     2,
+     8,
+     16,
+     16
+    ]
+   },
+   "position": {
+    "x": 0,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_0",
+   "name": "Conv3d",
+   "op": "Conv3d",
+   "params": {
+    "out_channels": 8,
+    "kernel_size": 3,
+    "stride": 1,
+    "padding": 1,
+    "bias": 1
+   },
+   "position": {
+    "x": 210,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_1",
+   "name": "BatchNorm3d",
+   "op": "BatchNorm3d",
+   "params": {},
+   "position": {
+    "x": 420,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_2",
+   "name": "SELU",
+   "op": "SELU",
+   "params": {},
+   "position": {
+    "x": 630,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_3",
+   "name": "MaxPool3d",
+   "op": "MaxPool3d",
+   "params": {
+    "kernel_size": 2,
+    "stride": 2,
+    "padding": 0
+   },
+   "position": {
+    "x": 840,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_4",
+   "name": "InstanceNorm3d",
+   "op": "InstanceNorm3d",
+   "params": {},
+   "position": {
+    "x": 1050,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_5",
+   "name": "ConvTranspose3d",
+   "op": "ConvTranspose3d",
+   "params": {
+    "out_channels": 4,
+    "kernel_size": 4,
+    "stride": 2,
+    "padding": 1,
+    "bias": 1
+   },
+   "position": {
+    "x": 1260,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_6",
+   "name": "AvgPool3d",
+   "op": "AvgPool3d",
+   "params": {
+    "kernel_size": 2,
+    "stride": 2,
+    "padding": 0
+   },
+   "position": {
+    "x": 1470,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_7",
+   "name": "Dropout3d",
+   "op": "Dropout3d",
+   "params": {
+    "p": 0.3
+   },
+   "position": {
+    "x": 1680,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_8",
+   "name": "AdaptiveAvgPool3d",
+   "op": "AdaptiveAvgPool3d",
+   "params": {
+    "output_size": 2
+   },
+   "position": {
+    "x": 1890,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_9",
+   "name": "AdaptiveMaxPool3d",
+   "op": "AdaptiveMaxPool3d",
+   "params": {
+    "output_size": 1
+   },
+   "position": {
+    "x": 2100,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_10",
+   "name": "Flatten",
+   "op": "Flatten",
+   "params": {
+    "start_dim": 1,
+    "end_dim": -1
+   },
+   "position": {
+    "x": 2310,
+    "y": 320
+   }
+  },
+  {
+   "id": "c1_11",
+   "name": "Linear",
+   "op": "Linear",
+   "params": {
+    "out_features": 16,
+    "bias": 1
+   },
+   "position": {
+    "x": 2520,
+    "y": 320
+   }
+  },
+  {
+   "id": "bilinear",
+   "name": "Bilinear",
+   "op": "Bilinear",
+   "params": {
+    "in2_features": 16,
+    "out_features": 32,
+    "bias": 1
+   },
+   "position": {
+    "x": 2940,
+    "y": 210
+   }
+  },
+  {
+   "id": "softsign",
+   "name": "Softsign",
+   "op": "Softsign",
+   "params": {},
+   "position": {
+    "x": 3150,
+    "y": 210
+   }
+  },
+  {
+   "id": "prelu",
+   "name": "PReLU",
+   "op": "PReLU",
+   "params": {
+    "num_parameters": 1,
+    "init": 0.25
+   },
+   "position": {
+    "x": 3360,
+    "y": 210
+   }
+  },
+  {
+   "id": "hardsigmoid",
+   "name": "Hardsigmoid",
+   "op": "Hardsigmoid",
+   "params": {},
+   "position": {
+    "x": 3570,
+    "y": 210
+   }
+  },
+  {
+   "id": "alpha",
+   "name": "AlphaDropout",
+   "op": "AlphaDropout",
+   "params": {
+    "p": 0.3
+   },
+   "position": {
+    "x": 3780,
+    "y": 210
+   }
+  },
+  {
+   "id": "head",
+   "name": "Linear",
+   "op": "Linear",
+   "params": {
+    "out_features": 10,
+    "bias": 1
+   },
+   "position": {
+    "x": 3990,
+    "y": 210
+   }
+  },
+  {
+   "id": "out",
+   "name": "Output",
+   "op": "Output",
+   "params": {},
+   "position": {
+    "x": 4200,
+    "y": 210
+   }
+  }
+ ],
+ "edges": [
+  {
+   "id": "e0",
+   "source": "in0",
+   "target": "c0_0"
+  },
+  {
+   "id": "e1",
+   "source": "c0_0",
+   "target": "c0_1"
+  },
+  {
+   "id": "e2",
+   "source": "c0_1",
+   "target": "c0_2"
+  },
+  {
+   "id": "e3",
+   "source": "c0_2",
+   "target": "c0_3"
+  },
+  {
+   "id": "e4",
+   "source": "c0_3",
+   "target": "c0_4"
+  },
+  {
+   "id": "e5",
+   "source": "c0_4",
+   "target": "c0_5"
+  },
+  {
+   "id": "e6",
+   "source": "c0_5",
+   "target": "c0_6"
+  },
+  {
+   "id": "e7",
+   "source": "c0_6",
+   "target": "c0_7"
+  },
+  {
+   "id": "e8",
+   "source": "c0_7",
+   "target": "c0_8"
+  },
+  {
+   "id": "e9",
+   "source": "c0_8",
+   "target": "c0_9"
+  },
+  {
+   "id": "e10",
+   "source": "c0_9",
+   "target": "c0_10"
+  },
+  {
+   "id": "e11",
+   "source": "c0_10",
+   "target": "c0_11"
+  },
+  {
+   "id": "e12",
+   "source": "c0_11",
+   "target": "c0_12"
+  },
+  {
+   "id": "e13",
+   "source": "in1",
+   "target": "c1_0"
+  },
+  {
+   "id": "e14",
+   "source": "c1_0",
+   "target": "c1_1"
+  },
+  {
+   "id": "e15",
+   "source": "c1_1",
+   "target": "c1_2"
+  },
+  {
+   "id": "e16",
+   "source": "c1_2",
+   "target": "c1_3"
+  },
+  {
+   "id": "e17",
+   "source": "c1_3",
+   "target": "c1_4"
+  },
+  {
+   "id": "e18",
+   "source": "c1_4",
+   "target": "c1_5"
+  },
+  {
+   "id": "e19",
+   "source": "c1_5",
+   "target": "c1_6"
+  },
+  {
+   "id": "e20",
+   "source": "c1_6",
+   "target": "c1_7"
+  },
+  {
+   "id": "e21",
+   "source": "c1_7",
+   "target": "c1_8"
+  },
+  {
+   "id": "e22",
+   "source": "c1_8",
+   "target": "c1_9"
+  },
+  {
+   "id": "e23",
+   "source": "c1_9",
+   "target": "c1_10"
+  },
+  {
+   "id": "e24",
+   "source": "c1_10",
+   "target": "c1_11"
+  },
+  {
+   "id": "b0",
+   "source": "c0_12",
+   "target": "bilinear"
+  },
+  {
+   "id": "b1",
+   "source": "c1_11",
+   "target": "bilinear"
+  },
+  {
+   "id": "t0",
+   "source": "bilinear",
+   "target": "softsign"
+  },
+  {
+   "id": "t1",
+   "source": "softsign",
+   "target": "prelu"
+  },
+  {
+   "id": "t2",
+   "source": "prelu",
+   "target": "hardsigmoid"
+  },
+  {
+   "id": "t3",
+   "source": "hardsigmoid",
+   "target": "alpha"
+  },
+  {
+   "id": "t4",
+   "source": "alpha",
+   "target": "head"
+  },
+  {
+   "id": "t5",
+   "source": "head",
+   "target": "out"
+  }
+ ]
+}

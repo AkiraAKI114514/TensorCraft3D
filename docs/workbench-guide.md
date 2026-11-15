@@ -94,6 +94,49 @@ node scripts/record-readme-demo.mjs
 
 **When it refuses to write:** a missing service or `ffmpeg`, or any page error, stops the script before it writes the GIF.
 
+### Promo video
+
+`scripts/promo/` produces an 86-second promo video in Chinese and in English, filmed from a local build on the night stage. The video has five parts:
+1. A cold open.
+2. The title.
+3. Seven feature sections joined by flash cuts: build, operators, attention anatomy, import, training, observation and export.
+4. A flashback recap.
+5. An end card.
+
+Run the steps in order, with the service running as for the GIF:
+
+```powershell
+npm run build
+.\.venv\Scripts\python.exe run.py --no-browser
+# In another terminal; set $env:TENSORLAB_TEST_URL first if run.py chose another port
+node scripts/promo/record.cjs zh all
+node scripts/promo/record.cjs en all
+node scripts/promo/cards.cjs zh
+node scripts/promo/cards.cjs en
+.\.venv\Scripts\python.exe scripts/promo/compose.py zh
+.\.venv\Scripts\python.exe scripts/promo/compose.py en
+```
+
+**Output:** `artifacts/promo/TensorCraft3D-promo-<lang>-1080p.mp4` (1920 × 1080, 30 fps, H.264 and AAC at -16 LUFS) and a 720p preview. Intermediate files stay in `artifacts/promo/build`, about 2 GB for both languages. Recording and composing take roughly 20 minutes per language.
+
+**Requirements:** the same as the GIF. That is PyTorch in the service, since some shots train and measure for real; Microsoft Edge; and `ffmpeg` on `PATH`. In addition:
+- `compose.py` runs with the project Python, because the soundtrack is synthesized with numpy.
+- The title cards use Segoe UI Variable, and Noto Sans SC for Chinese (Microsoft YaHei UI if it is missing).
+
+**The steps:**
+- **`record.cjs`** films each shot in the given language's UI. It sets the shot up off camera, then records DevTools screencast frames with their timestamps and encodes them to a 30 fps clip. With `--keep-frames` it keeps the raw frames; by default it deletes them after encoding.
+  - **3D shots** pin the scene over the whole window and hide its overlays with injected CSS; the app is unchanged.
+  - **English shots** rename the templates' Chinese layers.
+  - **Camera moves** are orbits and pans only. The 3D view's orbit controls zoom a fixed 5 % per wheel event, so a shot is framed with a few wheel steps before it starts, never zoomed while recording.
+- **`graphs/`** holds four showcase models that between them use every layer operator. `src/promoShowcase.test.ts` keeps them free of shape errors.
+- **`cards.cjs`** renders the title cards frame by frame as transparent PNGs. The operator count on the counter card is read from `OPS` in `src/types.ts`.
+- **`compose.py`** cuts the clips together:
+  - 3D shots run full-frame;
+  - UI shots are framed at 75 % over blurred footage of the night stage;
+  - title cards are overlaid on the shots.
+
+  Then `score.py` synthesizes a soundtrack timed to the cut: pad chords per section, a pulse under the features, impacts on the flash cuts. Nothing is sampled. Finally `compose.py` normalizes the score and muxes it in.
+
 ## The workbench
 
 - The **?** button in the header opens a getting-started checklist of five steps: pick a template, select a layer, run one sample, train, export. It ticks a step when you do it yourself, in any order, and remembers the progress in this browser (`tensorcraft-guide`). Each step's button only navigates — it switches the view or tab, or opens a dialog — and never starts inference or training.
