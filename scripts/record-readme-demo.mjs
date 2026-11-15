@@ -13,7 +13,8 @@
 // - a training run with the default settings;
 // - every layer measured on one sample of concentric rings and painted onto the 3D blocks,
 //   then a focus on the selected layer and a short orbit.
-// The cursor is an overlay drawn for the recording, because headless screenshots have none.
+// It records the default night stage with its legend folded, so the model fills the scene. The
+// cursor is an overlay drawn for the recording, because headless screenshots have none.
 import { chromium } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -26,7 +27,8 @@ const args = process.argv.slice(2);
 const outIndex = args.indexOf('--out');
 const keepFrames = args.includes('--keep-frames');
 const baseURL = process.env.TENSORLAB_TEST_URL || 'http://127.0.0.1:8765';
-const WIDTH = 1280, HEIGHT = 800, FPS = 15, LAST_FRAME_SECONDS = 1.2;
+// The night stage's light pulses and glow change much of every frame, so the GIF runs at 12 fps.
+const WIDTH = 1280, HEIGHT = 800, FPS = 12, LAST_FRAME_SECONDS = 1.2;
 
 function fail(message) {
   console.error(message);
@@ -99,7 +101,7 @@ try {
   const context = await browser.newContext({ viewport: { width: WIDTH, height: HEIGHT }, deviceScaleFactor: 1 });
   const page = await context.newPage();
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => { try { localStorage.setItem('tensorlab-language', 'en'); } catch { /* Documents without storage. */ } });
+  await page.addInitScript(() => { try { localStorage.setItem('tensorlab-language', 'en'); localStorage.setItem('tensorlab-legend-open', '0'); } catch { /* Documents without storage. */ } });
   await page.addInitScript(keepExportedSvg);
   await page.addInitScript(installCursor);
 
@@ -238,7 +240,10 @@ lines.push(`file '${frames.at(-1).file}'`);
 const list = path.join(framesDir, 'frames.txt');
 fs.writeFileSync(list, lines.join('\n'));
 fs.mkdirSync(path.dirname(out), { recursive: true });
-const filter = `fps=${FPS},split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`;
+// The glow flickers by a level or two across most of the stage from frame to frame, invisibly, but
+// enough to defeat the GIF's frame differencing; a light temporal denoise steadies it.
+const denoise = 'atadenoise=0a=0.02:0b=0.04:1a=0.02:1b=0.04:2a=0.02:2b=0.04';
+const filter = `fps=${FPS},${denoise},split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`;
 const encoded = spawnSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-vf', filter, '-loop', '0', out], { stdio: 'inherit' });
 if (encoded.status !== 0) fail(`ffmpeg failed; the frames are kept in ${framesDir}`);
 if (keepFrames) console.log(`Frames kept in ${framesDir}`);

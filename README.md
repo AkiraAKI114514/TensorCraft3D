@@ -6,7 +6,7 @@ A local **3D neural network workbench**: build visually or import PyTorch code, 
 
 **[▶ Try the online demo](https://akiraaki114514.github.io/TensorCraft3D/)** — building, shape checks, the 3D and topology views and code/diagram export run right in the browser. Training and tensor inspection need the local Python service ([quick start](#-quick-start-windows)).
 
-[![A session in the TensorCraft3D workbench: a convolution in a residual CNN is cut to 8 channels, the residual add rejects it and the layers after it turn red; undo, a 30-epoch training run, then every layer is measured on one ring-pattern sample and the values are painted onto the 3D blocks](docs/images/workbench-demo.gif)](https://akiraaki114514.github.io/TensorCraft3D/)
+[![A session in the TensorCraft3D workbench on its night stage: a convolution in a residual CNN is cut to 8 channels, the residual add rejects it and the layers after it turn red; undo, a 30-epoch training run, then every layer is measured on one ring-pattern sample and the values are painted onto the 3D blocks](docs/images/workbench-demo.gif)](https://akiraaki114514.github.io/TensorCraft3D/)
 
 <sub>Recorded on a local install at real speed: a shape error caught while editing, a training run, then every layer measured on one sample and painted onto the 3D blocks.</sub>
 
@@ -15,22 +15,28 @@ A local **3D neural network workbench**: build visually or import PyTorch code, 
 | Feature | What you get |
 | --- | --- |
 | **Build visually** | Drag in layers, wire nodes and edit parameters. See shapes and parameter counts update, with checks for invalid connections. |
-| **Explore in 3D** | Explore CNNs, MLPs, residual networks and Transformers in 3D and topology views, including Attention's Q/K/V, heads and shared projections. |
-| **Use your code** | Import supported PyTorch source, preview and edit its structure, then export a runnable `nn.Module`. |
-| **Train for real** | Train on synthetic data or a local CSV using CPU / CUDA. Track real loss, accuracy and risk warnings, plus the selected layer's own gradient-norm curve. |
-| **Inspect tensors** | Inspect tensor values, statistics and distributions with single-sample inference; read a slice as a feature map with a channel grid or as a position × feature heatmap, and view Q/K/V, scores and probabilities in Attention Inspector. Open a read-only snapshot measured by your own Python run, with the weights it trained. |
+| **Explore in 3D** | Explore CNNs, MLPs, residual networks, Transformers and DeepSeek-style decoders in 3D and topology views. Data flows as pulses of light on a night stage (or a day one); attention heads stand as polygons of Q/K/V projections, MLA and MoE layers show their parts, and long models wrap into rows. |
+| **Use your code** | Import supported PyTorch source, DeepSeek-V3's official `model.py` included (the full 671B for its structure), preview and edit it, then export a runnable `nn.Module`. |
+| **Train for real** | Train on synthetic data or a local CSV using CPU / CUDA. Track real loss, accuracy and risk warnings, plus the selected layer's own gradient-norm curve and each layer's weight distribution per epoch. |
+| **Inspect tensors** | Run one sample and read any layer: values, statistics and distributions, a slice as a feature map with a channel grid or as a position × feature heatmap, the weights it ran with, one output value split into its measured terms, and gradients from one backward pass. Compare every attention head at a glance, see where an MoE layer routes, and paint every layer's measured values onto the 3D blocks. Open a read-only snapshot measured by your own Python run, with the weights it trained. |
 | **Save and share** | Autosave, undo/redo, project JSON import/export, plus high-resolution PNG and editable SVG diagrams. |
 
 **Templates:** CNN · MLP · Residual CNN · Transformer Encoder · MQA · GQA · Cross-Attention · Gated Decoder Block · DeepSeek-V3-style Decoder (MLA + MoE). You can also start with a blank canvas.
 
 <table>
   <tr>
+    <td colspan="2"><img src="docs/images/deepseek-decoder-night.png" alt="The DeepSeek-V3-style Decoder template on the 3D view's night stage, wrapped onto two rows: latent attention and mixture-of-experts layers drawn as their parts, residual paths arching over each block, and pulses of light along the edges"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><sub>The DeepSeek-V3-style Decoder on the night stage: MLA and MoE drawn as their parts, data flowing as pulses of light</sub></td>
+  </tr>
+  <tr>
     <td width="68%"><img src="docs/images/export-transformer.png" alt="Exported diagram of a two-layer Transformer encoder: Q/K/V projections, LayerNorm, FFN and both residual paths, wrapped onto two rows"></td>
-    <td><img src="docs/images/channel-grid.png" alt="Channel grid from the Tensor Inspector: the measured feature maps of a convolution's sixteen channels on one shared colour scale" width="234"></td>
+    <td><img src="docs/images/channel-grid.png" alt="Channel grid from the Tensor Inspector: the measured feature maps of a trained convolution's sixteen channels for a sample of concentric rings, on one shared colour scale" width="234"></td>
   </tr>
   <tr>
     <td align="center"><sub>A diagram exported from the Transformer Encoder template</sub></td>
-    <td align="center"><sub>Measured feature maps, one tile per channel</sub></td>
+    <td align="center"><sub>Measured feature maps of a ring-pattern sample, one tile per channel</sub></td>
   </tr>
 </table>
 
@@ -48,18 +54,20 @@ powershell -ExecutionPolicy Bypass -File .\start.ps1
 
 Opens at **http://127.0.0.1:8765**, or an available port if busy. After setup, double-click `start.cmd` to launch; close the terminal to stop.
 
+**No Node.js?** Download the ZIP from [Releases](https://github.com/AkiraAKI114514/TensorCraft3D/releases): it includes the built frontend, so Python 3.10+ is enough to run `start.cmd`. Its `QUICKSTART.txt` shows how to add the training backend.
+
 For editing and 3D only, omit `-Training`. CUDA training needs a compatible NVIDIA driver and CUDA-enabled PyTorch. [CUDA setup](docs/workbench-guide.md#local-cuda-diagnostics-and-setup)
 
 ## 🎯 Try it in four steps
 
-1. **Pick a template:** open Residual CNN or Transformer, rotate and zoom, then click a layer to explore.
+1. **Pick a template:** open Residual CNN, Transformer or the DeepSeek-V3-style Decoder, rotate and zoom, then click a layer to explore.
 2. **Make it yours:** add layers, edit parameters and wire nodes. Watch shapes and structure update.
 3. **Run computation:** start training to track metrics, or open Tensor Inspector for single-sample inference.
 4. **Take it with you:** export PyTorch code for further development, or PNG / SVG diagrams for presentations.
 
 ## Good to know
 
-- **Animation is illustrative:** particles and weight colors are schematics; training metrics and explicitly requested tensor observations come from real PyTorch computation.
+- **Animation is illustrative:** the light pulses and weight colors are schematic; training metrics, explicitly requested tensor observations and the measured colouring you turn on come from real PyTorch computation.
 - **Structure, not weights:** source import parses supported static structures and constants, without executing uploaded code or loading original trainable weights.
 - **Weights stay in memory:** only the latest successfully trained model is retained; restarting the backend clears it. Exported code and JSON do not include trained weights.
 - **The online demo is static:** GitHub Pages has no Python service, so training, inference and PyTorch import only work in a local install. Projects in the demo are saved in your own browser.
