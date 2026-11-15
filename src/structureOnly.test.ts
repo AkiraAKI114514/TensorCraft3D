@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { analyze, analyzeLevel, formatNumber, moeParameters, validateGraph } from './analysis';
+import { analyze, analyzeLevel, formatNumber, moeParameters, STRUCTURE_LIMITS, validateGraph } from './analysis';
 import { graphAt } from './subgraph';
 import { legendRows } from './operatorStyle';
 import { manualGroup } from './grouping';
 import { PRESETS } from './presets';
 
 // The importer's graph for DeepSeek-V3's own configuration (backend/test_deepseek_reference.py pins
-// the importer to this file): 61 layers folded into a dense block ×3 and an MoE block ×58.
+// the importer to this file): all 61 layers flat in one graph, 384 nodes.
 const full = () => validateGraph(JSON.parse(readFileSync(new URL('../tests/fixtures/deepseek-v3-671b-structure.json', import.meta.url), 'utf8')));
 
 describe('structure-only models', () => {
@@ -21,33 +21,53 @@ describe('structure-only models', () => {
     expect(analysis.layers[output].output).toEqual([1, 129280]);
     // One note says why nothing runs; nothing is an error.
     expect(analysis.diagnostics.map(d => [d.level, d.code])).toEqual([['info', 'VIEW_ONLY']]);
-    const blocks = graph.nodes.filter(node => node.op === 'Group').map(node => [node.repeat, analysis.layers[node.id].output]);
-    expect(blocks).toEqual([[3, [1, 16, 7168]], [58, [1, 16, 7168]]]);
+    // Every layer in one view: no folded block, all 61 attention layers and 58 MoE layers at the model width.
+    expect(graph.nodes).toHaveLength(384);
+    expect(graph.subgraphs).toBeUndefined();
+    const layers = (op: string) => graph.nodes.filter(node => node.op === op);
+    expect([layers('LatentAttention').length, layers('MoE').length, layers('Group').length]).toEqual([61, 58, 0]);
+    expect(new Set([...layers('LatentAttention'), ...layers('MoE')].map(node => analysis.layers[node.id].output.join('×')))).toEqual(new Set(['1×16×7168']));
   });
 
   it('holds the same graph to the local limits once it is no longer marked', () => {
     const { structureOnly: _, ...runnable } = full(), analysis = analyze(runnable);
     expect(analysis.valid).toBe(false);
     expect(analysis.diagnostics.some(d => d.level === 'error')).toBe(true);
+    // Nor may a project that runs hold 384 layers.
+    expect(() => validateGraph(runnable)).toThrow('128 层');
   });
 
-  it('keeps a block of a structure-only model structure-only, with 128 heads and 256 experts', () => {
-    const graph = full(), block = graphAt(graph, ['moe_layers']), analysis = analyze(block);
+  it('holds a structure-only graph to its own, larger bounds', () => {
+    const graph = full(), filler = graph.nodes.find(node => node.op === 'RMSNorm')!;
+    const extra = Array.from({ length: STRUCTURE_LIMITS.nodes - graph.nodes.length + 1 }, (_, index) => ({ ...filler, id: `extra_${index}` }));
+    expect(() => validateGraph({ ...graph, nodes: [...graph.nodes, ...extra] })).toThrow('512 层');
+    expect(() => validateGraph({ ...graph, nodes: [...graph.nodes, ...extra.slice(1)] })).not.toThrow();
+  });
+
+  it('keeps 128 heads and 256 experts in every layer of the full model', () => {
+    const graph = full(), analysis = analyze(graph);
+    // 256 routed and 1 shared SwiGLU expert of 7168 → 2048 → 7168, and the 256 × 7168 gate: about 11.3B.
+    const experts = graph.nodes.filter(node => node.op === 'MoE');
+    expect(new Set(experts.map(node => analysis.layers[node.id].parameters))).toEqual(new Set([moeParameters(7168, 256, 1, 2048)]));
+    expect(moeParameters(7168, 256, 1, 2048)).toBe(257 * 3 * 7168 * 2048 + 256 * 7168);
+    expect(new Set(graph.nodes.filter(node => node.op === 'LatentAttention').map(node => node.params.num_heads))).toEqual(new Set([128]));
+    expect(new Set(experts.map(node => `${node.params.experts}/${node.params.groups}`))).toEqual(new Set(['256/8']));
+    expect(legendRows(graph, analysis).map(row => row.key)).toEqual(expect.arrayContaining(['latent', 'moe', 'residual']));
+  });
+
+  it('keeps a block grouped out of a structure-only model structure-only', () => {
+    // A block needs one entry; a layer's attention half, norm and MLA, has one.
+    const graph = full(), half = graph.nodes.filter(node => ['layers.3.attn_norm', 'layers.3.attn'].includes(node.name)).map(node => node.id);
+    expect(half).toHaveLength(2);
+    const grouped = manualGroup(graph, half);
+    if ('error' in grouped) throw new Error(grouped.error);
+    const instance = grouped.graph.nodes.find(node => node.id === grouped.id)!, block = graphAt(grouped.graph, [instance.subgraph!]);
     expect(block.structureOnly).toBe(true);
-    // A level is analysed without the tensor that enters it, so its own note is what the flag adds.
-    expect(analysis.diagnostics.filter(d => d.code === 'VIEW_ONLY')).toHaveLength(1);
     // Drilled into, the block is analysed with what enters it: every layer has its shape, nothing is an error.
-    const level = analyzeLevel(graph, ['moe_layers']);
+    const level = analyzeLevel(grouped.graph, [instance.subgraph!]);
     expect(level.valid).toBe(true);
     expect(level.diagnostics.filter(d => d.level === 'error')).toEqual([]);
     expect(level.diagnostics.map(d => d.code)).toContain('VIEW_ONLY');
-    expect(block.nodes.map(node => level.layers[node.id].output)).toEqual(block.nodes.map(() => [1, 16, 7168]));
-    // 256 routed and 1 shared SwiGLU expert of 7168 → 2048 → 7168, and the 256 × 7168 gate: about 11.3B.
-    expect(level.layers[block.nodes.find(node => node.op === 'MoE')!.id].parameters).toBe(moeParameters(7168, 256, 1, 2048));
-    expect(moeParameters(7168, 256, 1, 2048)).toBe(257 * 3 * 7168 * 2048 + 256 * 7168);
-    const params = (op: string) => block.nodes.find(node => node.op === op)!.params;
-    expect([params('LatentAttention').num_heads, params('MoE').experts, params('MoE').groups]).toEqual([128, 256, 8]);
-    expect(legendRows(block, analysis).map(row => row.key)).toEqual(expect.arrayContaining(['latent', 'moe', 'residual']));
   });
 
   it('analyses a drilled-in block of an ordinary model with what enters it, too', () => {

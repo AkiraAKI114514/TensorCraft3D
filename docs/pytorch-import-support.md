@@ -112,10 +112,10 @@ DeepSeek-V3's official [`inference/model.py`](https://github.com/deepseek-ai/Dee
 - **What it reproduces:** the single-device bf16 forward from position 0. At that point the KV cache holds just the current sequence, so the result equals the cache-free computation the graph runs, in float32. The "naive" and "absorb" attention implementations compute the same function.
 - **Refused for a runnable import:** `dtype="fp8"`, `max_seq_len > original_seq_len` (YaRN changes the rotary frequencies and the softmax scale), and a `tokens` shape longer than `max_seq_len`.
 - **The full model, for its structure:** a configuration past the workbench's limits (128 nodes, 50M parameters, width 4096, 16 heads, 64 experts and the other local bounds) imports for its structure alone instead of being refused. Appending DeepSeek-V3's own configuration (the values of `configs/config_671B.json`) gives the 671B model:
-  - the dense layers and the MoE layers each fold into one repeated block (`layers.0–2` ×3, `layers.3–60` ×58), each starting with an `Identity` that stands for the block's input;
-  - the graph is marked `structureOnly`: the workbench shows its structure, every shape and the parameter count (671.03B), and drilled into a block, its layers' shapes; it is never trained, run, observed or exported as Python, and the backend refuses to build it;
+  - all 61 layers are laid out in one graph, nothing folded: 384 nodes and 508 edges, past the 128-node budget of a runnable graph (a structure-only graph may hold 512 nodes and 1,024 edges), wrapped every 24 layers in the topology view;
+  - the graph is marked `structureOnly`: the workbench shows its structure, every shape and the parameter count (671.03B); it is never trained, run, observed or exported as Python, and the backend refuses to build it;
   - FP8 weights and YaRN are noted rather than refused, since neither changes a shape or a parameter count;
-  - a configuration past even the structural bounds is refused (more than 1024 heads or experts, a width over 65,536, over 1,000,000 vocabulary entries, or more than 1024 layers in a block).
+  - a configuration past even the structural bounds is refused (more than 1024 heads or experts, a width over 65,536, over 1,000,000 vocabulary entries, or more layers than 512 nodes hold).
   `tests/fixtures/deepseek-v3-671b-structure.json` is that graph; the backend test pins the importer to it, and `src/structureOnly.test.ts` analyses it.
 - **Weights:** as with every import, checkpoint weights are not loaded.
 

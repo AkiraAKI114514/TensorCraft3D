@@ -3,6 +3,10 @@ import { blockDimensions } from './sceneLayout';
 import { expertAnatomy, latentAnatomy, MAX_DRAWN_EXPERTS, MAX_DRAWN_HEADS, ROPE_COLOR, type Anatomy } from './layerAnatomy';
 import type { Point3 } from './flowGeometry';
 
+// Every link starts and ends on a part: on its face, or inside its box.
+const onParts = (anatomy: Anatomy) => anatomy.links.forEach(([from, to], index) => [from, to].forEach(point =>
+  expect(anatomy.parts.some(part => part.center.every((centre, axis) => Math.abs(point[axis] - centre) <= part.size[axis] / 2 + 1e-9)), `link ${index} at ${point.map(value => value.toFixed(3))}`).toBe(true)));
+
 const inside = (anatomy: Anatomy, box: Point3) => {
   for (const part of anatomy.parts) for (let axis = 0; axis < 3; axis++) {
     expect(Math.abs(part.center[axis]) + part.size[axis] / 2, `${part.key} axis ${axis}`).toBeLessThanOrEqual(box[axis] / 2 + 1e-9);
@@ -58,6 +62,13 @@ describe('latent attention anatomy', () => {
     expect(keys).not.toContain('q-latent');
     expect(keys).toContain('kv-latent');
   });
+
+  it.each([['template', templateLatent], ['DeepSeek-V3', fullLatent], ['one head', { ...templateLatent, heads: 1 }], ['one query projection', { ...templateLatent, qLora: 0 }]] as const)('links only parts in the %s layer: every head reads both latents, every score matrix reaches Wᵒ', (_, shape) => {
+    const anatomy = latentAnatomy(blockDimensions([1, 16, shape.embed], 'LatentAttention'), '#5470b4', shape);
+    onParts(anatomy);
+    const drawn = Math.min(MAX_DRAWN_HEADS, shape.heads), output = anatomy.parts.find(part => part.key === 'output')!;
+    expect(anatomy.links.filter(([, to]) => to[0] === output.center[0] - output.size[0] / 2)).toHaveLength(drawn);
+  });
 });
 
 describe('mixture-of-experts anatomy', () => {
@@ -72,6 +83,14 @@ describe('mixture-of-experts anatomy', () => {
     expect(experts).toHaveLength(MAX_DRAWN_EXPERTS);
     expect(new Set(experts.map(part => part.center[1].toFixed(6))).size).toBe(8);
     expect(anatomy.labels.map(label => label.text)).toEqual(expect.arrayContaining(['router · top-8', '256 experts · 8 groups (1 cube = 4)', 'shared ×1']));
+  });
+
+  it.each([[8, 1, 1], [7, 1, 0], [64, 4, 2], [256, 8, 1], [64, 64, 1], [16, 2, 1]])('links only parts with %i experts in %i groups and %i shared: the router reaches every row at a cube', (experts, groups, shared) => {
+    const anatomy = expertAnatomy(blockDimensions([1, 16, 7168], 'MoE'), '#2f9e6e', { embed: 7168, experts, topK: 2, shared, groups, positions: 16 });
+    onParts(anatomy);
+    const router = anatomy.parts.find(part => part.key === 'router')!, rows = new Set(anatomy.parts.filter(part => part.key.startsWith('expert-')).map(part => part.center[1].toFixed(6)));
+    const fanned = anatomy.links.filter(([from]) => from[0] === router.center[0] + router.size[0] / 2);
+    expect(fanned).toHaveLength(Math.min(8, rows.size));
   });
 
   it('shades experts by their measured load, the busiest in the full colour', () => {

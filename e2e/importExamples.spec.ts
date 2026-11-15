@@ -96,15 +96,15 @@ test('imports the full 671B DeepSeek-V3 for its structure, and never trains it, 
   await page.getByRole('button', { name: 'Graph JSON', exact: true }).click();
   await expect(page.getByRole('button', { name: '下载 .json', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
-  // Inside the MoE block every layer has its shape: the level is analysed with what enters it.
+  // Every layer is in one view, nothing folded: the project holds all 384 nodes, the topology draws them.
   const graph = await page.evaluate(() => JSON.parse(localStorage.getItem('tensorlab-project')!) as Graph);
   expect(graph.structureOnly).toBe(true);
-  const block = graph.nodes.find(node => node.subgraph === 'moe_layers')!;
-  expect(block.repeat).toBe(58);
+  expect(graph.nodes).toHaveLength(384);
+  expect(graph.nodes.filter(node => node.op === 'MoE')).toHaveLength(58);
+  expect(graph.nodes.some(node => node.op === 'Group')).toBe(false);
   await page.getByRole('button', { name: '拓扑图', exact: true }).click();
-  await page.locator(`.react-flow__node[data-id="${block.id}"]`).click();
-  await page.getByRole('button', { name: '进入结构块', exact: true }).click();
-  await expect(page.locator('.validation-badge')).toContainText('形状校验通过');
-  await expect(page.locator('.structure-only-tag')).toBeVisible();
+  await expect(page.locator('.react-flow__node')).toHaveCount(384);
+  await page.locator(`.react-flow__node[data-id="${graph.nodes.find(node => node.name === 'layers.60.ffn')!.id}"]`).click();
+  await expect(page.locator('.selected-layer h2')).toHaveText('MoE');
   expect(errors).toEqual([]);
 });

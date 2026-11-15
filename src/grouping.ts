@@ -119,6 +119,9 @@ function candidateBlocks(graph: Graph, order: string[]): Block[] {
  */
 export function autoGroup(graph: Graph): { graph: Graph; groups: number } {
   if (graph.nodes.some(isGroup)) return { graph, groups: 0 };
+  // 仅结构模型（完整 DeepSeek-V3 等）按设计平铺在一张图里，不折成块；
+  // 几百个节点上的重复块搜索还要好几百毫秒，导入对话框会一直停在「正在解析」。
+  if (graph.structureOnly) return { graph, groups: 0 };
   // 权重共享的层签名完全相同，看起来正是「重复的块」；但折成块实例后每个实例各有一份权重，
   // 共享就丢了。宁可不分：图里有共享时整体不做自动分组。
   if (graph.nodes.some(node => node.shares !== undefined)) return { graph, groups: 0 };

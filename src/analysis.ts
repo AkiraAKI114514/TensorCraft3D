@@ -47,11 +47,20 @@ export function moeParameters(dim: number, experts: number, shared: number, hidd
 export const shapeText = (shape?: number[]) => shape ? shape.join(' × ') : '—';
 export const formatNumber = (value: number) => value >= 1e9 ? `${(value / 1e9).toFixed(2)}B` : value >= 1e6 ? `${(value / 1e6).toFixed(2)}M` : value >= 1e3 ? `${(value / 1e3).toFixed(1)}K` : String(value);
 
+/** Layers and connections a graph may hold. */
+export const GRAPH_LIMITS = { nodes: 128, edges: 512 };
+/**
+ * A structure-only graph is never run, so it may hold every layer of a full model in one view
+ * (DeepSeek-V3's 61 layers are 384 nodes); backend/deepseek_reference.py imports to these bounds.
+ */
+export const STRUCTURE_LIMITS = { nodes: 512, edges: 1024 };
+
 export function validateGraph(value: unknown): Graph {
   const g = value as Graph;
   if (!g || g.version !== 1 || typeof g.name !== 'string' || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) throw new Error('不是有效的 TensorCraft3D v1 项目');
-  if (g.name.length > 120 || g.nodes.length > 128 || g.edges.length > 512) throw new Error('项目超过限制（128 层 / 512 连线）');
   if (g.structureOnly !== undefined && g.structureOnly !== true) throw new Error('structureOnly 只能是 true 或省略');
+  if (g.name.length > 120 || !g.structureOnly && (g.nodes.length > GRAPH_LIMITS.nodes || g.edges.length > GRAPH_LIMITS.edges)) throw new Error('项目超过限制（128 层 / 512 连线）');
+  if (g.structureOnly && (g.nodes.length > STRUCTURE_LIMITS.nodes || g.edges.length > STRUCTURE_LIMITS.edges)) throw new Error('仅结构模型超过限制（512 层 / 1024 连线）');
   const ids = new Set<string>();
   g.nodes.forEach(n => {
     if (!n || typeof n.id !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(n.id) || ids.has(n.id) || !OPS.includes(n.op) || typeof n.name !== 'string' || n.name.length > 120 || !n.params || typeof n.params !== 'object' || Array.isArray(n.params)) throw new Error('节点数据或 ID 无效');

@@ -155,6 +155,8 @@ class Parser:
                         except ImportIssue: pass
         self.input_shapes = input_shapes
         self.graph = {"version": 1, "name": "Imported PyTorch", "nodes": [], "edges": []}
+        # Nodes and edges an import may hold; a structure-only one, never run, may hold more.
+        self.limits = (128, 512)
         self.inputs = []
         self.node_sources = {}
         # Keep functional-operation descriptors alive too; object IDs can be reused.
@@ -690,7 +692,7 @@ class Parser:
         raise ImportIssue("无法识别调用的模块", expression)
 
     def add(self, kind, params, sources, name, node=None):
-        if len(self.graph["nodes"]) >= 128: raise ImportIssue("导入模型超过 128 个节点", node, "LIMIT")
+        if len(self.graph["nodes"]) >= self.limits[0]: raise ImportIssue(f"导入模型超过 {self.limits[0]} 个节点", node, "LIMIT")
         key = f"import_{len(self.graph['nodes'])}"
         self.node_sources[key] = node
         self.graph["nodes"].append({"id": key, "name": name[:120], "op": kind, "params": params.copy(), "position": {"x": 0, "y": 0}})
@@ -699,22 +701,9 @@ class Parser:
             edge = {"id": f"edge_{len(self.graph['edges'])}", "source": source.node, "target": key}
             if source.port: edge["sourcePort"] = source.port
             if target_port: edge["targetPort"] = target_port
-            if len(self.graph["edges"]) >= 512: raise ImportIssue("导入模型超过 512 条连线", node, "LIMIT")
+            if len(self.graph["edges"]) >= self.limits[1]: raise ImportIssue(f"导入模型超过 {self.limits[1]} 条连线", node, "LIMIT")
             self.graph["edges"].append(edge)
         return Tensor(key)
-
-    def add_block(self, name, label, body, count, source, node=None):
-        """A repeated block built straight from its layers: one Group node whose subgraph `name` holds
-        `body` (op, params, input indices, name), entered at its first layer and left at its last,
-        repeated `count` times. It is marked manual, so no automatic pass ever dissolves it."""
-        layers = [{"id": f"n{index}", "name": title[:120], "op": op, "params": dict(params), "position": {"x": index * 210, "y": 100}} for index, (op, params, _, title) in enumerate(body)]
-        links = [{"id": f"e{index}_{order}", "source": f"n{source_index}", "target": f"n{index}"} for index, (_, _, sources, _) in enumerate(body) for order, source_index in enumerate(sources)]
-        self.graph.setdefault("subgraphs", {})[name] = {"id": name, "name": label[:120], "origin": "manual", "nodes": layers, "edges": links}
-        instance = self.add("Group", {}, [(source, None)], label, node)
-        group = next(item for item in self.graph["nodes"] if item["id"] == instance.node)
-        group["subgraph"] = name
-        if count > 1: group["repeat"] = count
-        return instance
 
     def input(self, name):
         shape = self.input_shapes.get(name)
@@ -1906,8 +1895,7 @@ class Parser:
         ids and subgraph names stay inside `[a-zA-Z][a-zA-Z0-9_]{0,63}`, matching the graph IR
         contract, and the result is what `backend.graph.expand_subgraphs` rebuilds.
         """
-        # Blocks built whole (add_block) already have their subgraph; only parsed containers fold here.
-        groups = [node for node in self.graph["nodes"] if node["op"] == "Group" and "subgraph" not in node]
+        groups = [node for node in self.graph["nodes"] if node["op"] == "Group"]
         if not groups: return
         # 由深到浅折叠：一个 Group 节点必然在它父块 replay 时被创建，所以 id 更大。反过来处理
         # 外层块会先把它内部那个 Group 节点一起搬进子图并移出主图，内层就再也没有机会折叠。
@@ -2003,12 +1991,14 @@ class Parser:
         if len(shape) != 2: raise ImportIssue("tokens 需要 [B,S] 形状的整数序列", anchor, "INPUT_SHAPE")
         if shape[1] > config["max_seq_len"]: raise ImportIssue(f"序列长度 {shape[1]} 超过 ModelArgs.max_seq_len {config['max_seq_len']}：官方代码的 RoPE 表和 KV cache 放不下", anchor, "INPUT_SHAPE")
         if structure_only:
-            output = deepseek_reference.emit_structure(config, self.add, self.add_block, tokens, anchor)
+            # Every layer, flat in one graph: it is never run, so it may pass a runnable graph's budget.
+            self.limits = (deepseek_reference.STRUCTURE_NODES, deepseek_reference.STRUCTURE_EDGES)
+            output = deepseek_reference.emit(config, self.add, tokens, anchor)
             self.graph["structureOnly"] = True
             _, parameters = deepseek_reference.size(config, latent_attention_parameters, moe_parameters)
             dense = min(config["n_dense_layers"], config["n_layers"])
             notes = (["权重为 FP8：只有运行才需要它的量化内核，结构与参数量不受影响"] if config["dtype"] == "fp8" else []) + (["启用 YaRN：只改变 RoPE 频率与 softmax 缩放，不改变形状和参数量，图中未表示"] if config["max_seq_len"] > config["original_seq_len"] else [])
-            self.warnings.append({"level": "info", "code": "DEEPSEEK_STRUCTURE_ONLY", "message": f"已识别 DeepSeek-V3 官方 inference/model.py（提交 {deepseek_reference.OFFICIAL_COMMIT[:7]}）。这组 ModelArgs 约 {parameters / 1e9:.1f}B 参数，超出工作台的运行上限，已按结构导入：{dense} 个稠密层和 {config['n_layers'] - dense} 个 MoE 层各折叠成一个重复块，只显示结构、形状和参数量，不能训练、推理、观测或导出可运行代码。" + "".join(f"{note}。" for note in notes)})
+            self.warnings.append({"level": "info", "code": "DEEPSEEK_STRUCTURE_ONLY", "message": f"已识别 DeepSeek-V3 官方 inference/model.py（提交 {deepseek_reference.OFFICIAL_COMMIT[:7]}）。这组 ModelArgs 约 {parameters / 1e9:.1f}B 参数，超出工作台的运行上限，已按结构导入：{dense} 个稠密层和 {config['n_layers'] - dense} 个 MoE 层全部展开在一张图中，只显示结构、形状和参数量，不能训练、推理、观测或导出可运行代码。" + "".join(f"{note}。" for note in notes)})
             return output
         output = deepseek_reference.emit(config, self.add, tokens, anchor)
         self.warnings.append({"level": "info", "code": "DEEPSEEK_REFERENCE", "message": f"已识别 DeepSeek-V3 官方 inference/model.py（提交 {deepseek_reference.OFFICIAL_COMMIT[:7]}）：按单卡、bf16、从位置 0 开始的一次前向导入。此时 KV cache 只装着当前序列，结果与不用缓存相同；计算图以 float32 运行，KV cache、分布式与 FP8 路径不在图中。"})
@@ -2084,8 +2074,9 @@ class Parser:
             if kept: self.warnings.append({"level": "info", "code": "SHARED_WEIGHTS", "message": f"有 {kept} 处重复调用同一参数层，已导入为权重共享：这些层复用首次调用的权重，不重复计入参数量。"})
         if self.graph.get("structureOnly"):
             # The backend analysis refuses what cannot run, so a structure-only import is laid out as
-            # its chain and checked by the workbench's own analysis, against structural bounds.
-            for index, node in enumerate(self.graph["nodes"]): node["position"] = {"x": 210 * index, "y": 100}
+            # its chain and checked by the workbench's own analysis, against structural bounds; a long
+            # chain wraps every 24 layers, so the topology view fits it whole instead of one row hundreds long.
+            for index, node in enumerate(self.graph["nodes"]): node["position"] = {"x": 210 * (index % 24), "y": 100 + 180 * (index // 24)}
             self.warnings.append({"level": "info", "code": "STRUCTURE_ONLY", "message": "已导入模型结构和参数配置；原模型权重、训练脚本及优化器不随源码导入。"})
             return selected, None
         try: analysis = analyze_graph(self.graph)
