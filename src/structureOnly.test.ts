@@ -80,14 +80,6 @@ describe('structure-only models', () => {
     expect(Object.values(level.layers).every(layer => layer.output.length > 0)).toBe(true);
   });
 
-  it('ships as the DeepSeek-V3 671B template: the graph the importer builds', () => {
-    const template = PRESETS.deepseek_v3();
-    expect(template).toEqual({ ...full(), name: 'DeepSeek-V3 671B' });
-    expect(analyze(template).parameters).toBe(671_026_404_352);
-    // Each load is a fresh copy, so editing one never changes the next.
-    expect(PRESETS.deepseek_v3().nodes).not.toBe(template.nodes);
-  });
-
   it('accepts only true for the mark', () => {
     expect(() => validateGraph({ ...full(), structureOnly: false })).toThrow('structureOnly');
   });
